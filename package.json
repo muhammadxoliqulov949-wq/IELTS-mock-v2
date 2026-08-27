@@ -6,7 +6,7 @@
   "scripts": {
     "test": "node tests/api.test.js && node tests/boot.test.js",
     "dev": "vercel dev",
-    "preview": "python3 -m http.server 3000",
+    "preview": "node server.js",
     "deploy": "vercel --prod"
   },
   "engines": {
