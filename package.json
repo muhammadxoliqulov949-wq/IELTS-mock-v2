@@ -1,0 +1,15 @@
+{
+  "name": "ielts-mock-v2",
+  "version": "2.0.0",
+  "private": true,
+  "description": "IELTS mock exam web app — timed Listening/Reading/Writing/Speaking tests, instant band scores, mistake notebook, AI-scored Writing & Speaking feedback and an AI Coach.",
+  "scripts": {
+    "test": "node tests/api.test.js && node tests/boot.test.js",
+    "dev": "vercel dev",
+    "preview": "python3 -m http.server 3000",
+    "deploy": "vercel --prod"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
