@@ -321,3 +321,85 @@ html, body {
 @media (prefers-reduced-motion: reduce) {
   .page-fade { animation: none; }
 }
+/* ---------- Sticky shrinking nav (IELTS Zone style) ---------- */
+.nav {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  transition: padding 0.3s ease, background 0.3s ease, backdrop-filter 0.3s ease, box-shadow 0.3s ease;
+}
+.nav-scrolled {
+  padding: 12px 0 !important;
+  background: rgba(11, 13, 18, 0.75);
+  backdrop-filter: blur(14px);
+  box-shadow: 0 8px 30px -12px rgba(0, 0, 0, 0.5);
+  border-bottom: 1px solid var(--panel-border);
+}
+.nav-scrolled .brand-mark { transform: scale(0.9); }
+
+/* ---------- Login button / user chip ---------- */
+.login-btn {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13.5px;
+}
+.user-chip {
+  display: flex; align-items: center; gap: 8px;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  padding: 6px 14px 6px 6px;
+  border-radius: 999px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.user-chip img { width: 26px; height: 26px; border-radius: 50%; }
+
+/* ---------- Mobile hamburger menu ---------- */
+.hamburger { display: none; flex-direction: column; gap: 4px; background: none; border: none; cursor: pointer; padding: 8px; }
+.hamburger span { width: 22px; height: 2px; background: var(--text); border-radius: 2px; transition: transform 0.25s, opacity 0.25s; }
+
+.mobile-menu {
+  position: fixed; inset: 0;
+  background: rgba(11, 13, 18, 0.97);
+  backdrop-filter: blur(10px);
+  z-index: 60;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  gap: 26px;
+  opacity: 0; pointer-events: none;
+  transition: opacity 0.3s ease;
+}
+.mobile-menu.open { opacity: 1; pointer-events: auto; }
+.mobile-menu a { color: var(--text); text-decoration: none; font-size: 22px; font-family: var(--font-display); }
+.mobile-menu .close-menu { position: absolute; top: 24px; right: 24px; background: none; border: none; color: var(--text); font-size: 28px; cursor: pointer; }
+
+/* ---------- Responsive: tablet & mobile ---------- */
+@media (max-width: 900px) {
+  .reading-grid { grid-template-columns: 1fr !important; }
+  .library { grid-template-columns: repeat(2, 1fr) !important; }
+}
+
+@media (max-width: 720px) {
+  .nav-links { display: none; }
+  .hamburger { display: flex; }
+  .shell { padding: 0 18px; }
+  .hero { padding: 30px 0 20px; gap: 26px; }
+  .hero h1 { font-size: 30px; }
+  .hero-copy { font-size: 15px; }
+  .hero-actions { flex-direction: column; }
+  .hero-actions .btn { width: 100%; text-align: center; }
+  .section { padding: 26px 0; }
+  .section-header { flex-direction: column; align-items: flex-start; }
+  .feature-grid { grid-template-columns: 1fr !important; }
+  .library { grid-template-columns: 1fr !important; }
+  .orb-a, .orb-b, .orb-c { opacity: 0.28; filter: blur(40px); }
+  .shape-ring, .shape-cube { display: none; }
+  .test-top { flex-wrap: wrap; gap: 8px; }
+  .glass[style*="grid-template-columns"] { grid-template-columns: 1fr !important; }
+}
+
+@media (max-width: 480px) {
+  .hero h1 { font-size: 26px; }
+  .big { font-size: 36px !important; }
+  .score-card { width: 100% !important; }
+  .btn { font-size: 13px; padding: 10px 16px; }
+}

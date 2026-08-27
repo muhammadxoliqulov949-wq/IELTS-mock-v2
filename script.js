@@ -3,9 +3,10 @@ const toast = document.querySelector('#toast');
 const CONTENT = window.IELTS_CONTENT;
 const SERVICES = window.IELTS_SERVICES;
 const STORAGE = 'ielts-v2-store';
+const GOOGLE_CLIENT_ID = '644107198192-45nq6hr0g5qp0ubjr795uu07s0oi9ij6.apps.googleusercontent.com';
 
 let store = load();
-function load() { try { return { attempts: [], mistakes: [], coachMessages: [], ...JSON.parse(localStorage.getItem(STORAGE)) }; } catch { return { attempts: [], mistakes: [], coachMessages: [] }; } }
+function load() { try { return { attempts: [], mistakes: [], coachMessages: [], user: null, ...JSON.parse(localStorage.getItem(STORAGE)) }; } catch { return { attempts: [], mistakes: [], coachMessages: [], user: null }; } }
 function save() { localStorage.setItem(STORAGE, JSON.stringify(store)); }
 function go(path) { location.hash = path; }
 function route() { return location.hash.slice(1) || '/'; }
@@ -33,21 +34,30 @@ function weakestSkill() {
   return scored.sort((a, b) => a.band - b.band)[0].s;
 }
 
+/* ---------------- SHELL / NAV ---------------- */
 function shell(body, active) {
-  return `<div class="shell"><nav class="nav"><a class="brand" href="#/"><span class="brand-mark">B</span>IELTS Mock</a>
+  const mockActive = ['listening', 'reading', 'writing', 'speaking', 'mock'].includes(active);
+  const user = store.user;
+  return `<div class="shell"><nav class="nav" id="mainNav"><a class="brand" href="#/"><span class="brand-mark">B</span>IELTS Mock</a>
     <div class="nav-links">
-      <a class="${active === 'listening' ? 'active' : ''}" href="#/listening">Listening</a>
-      <a class="${active === 'reading' ? 'active' : ''}" href="#/reading">Reading</a>
-      <a class="${active === 'writing' ? 'active' : ''}" href="#/writing">Writing</a>
-      <a class="${active === 'speaking' ? 'active' : ''}" href="#/speaking">Speaking</a>
+      <a class="${mockActive ? 'active' : ''}" href="#/mock">Mock Test</a>
       <a class="${active === 'mistakes' ? 'active' : ''}" href="#/mistakes">Mistakes</a>
       <a class="${active === 'coach' ? 'active' : ''}" href="#/coach">AI Coach</a>
     </div>
-    <div class="nav-actions"><span class="avatar">AM</span></div>
-  </nav><div class="page-fade">${body}</div></div>`;
+    <div class="nav-actions">
+      ${user ? `<div class="user-chip" data-logout><img src="${user.picture}" alt=""/>${user.name.split(' ')[0]}</div>` : `<div id="google-login-btn"></div>`}
+      <button class="hamburger" id="hamburgerBtn"><span></span><span></span><span></span></button>
+    </div>
+  </nav><div class="page-fade">${body}</div>
+  <div class="mobile-menu" id="mobileMenu">
+    <button class="close-menu" id="closeMenuBtn">×</button>
+    <a href="#/mock">Mock Test</a>
+    <a href="#/mistakes">Mistakes</a>
+    <a href="#/coach">AI Coach</a>
+  </div></div>`;
 }
 
-/* ---------------- HOME (Intro -> Body -> Conclusion -> Coach CTA) ---------------- */
+/* ---------------- HOME ---------------- */
 function home() {
   const overall = bandAverage();
   const weakest = weakestSkill();
@@ -64,7 +74,7 @@ function home() {
         <h1>Know your level.<br>Fix your <span>weaknesses.</span><br>Improve with AI.</h1>
         <p class="hero-copy">Take a real-format IELTS mock exam, get an instant band estimate, see exactly which questions you missed and why, then talk to an AI coach that builds your next study step from your own results.</p>
         <div class="hero-actions">
-          <button class="btn btn-primary" data-go="/listening">Start the full mock exam</button>
+          <button class="btn btn-primary" data-go="/mock">Start the full mock exam</button>
           <button class="btn btn-ghost" data-go="/mistakes">See my mistakes</button>
         </div>
         <p class="micro">Practice estimates only · Not affiliated with or endorsed by IELTS, British Council, IDP, or Cambridge</p>
@@ -112,6 +122,28 @@ function home() {
     </section>`, '');
 }
 
+/* ---------------- MOCK HUB ---------------- */
+function mockHub() {
+  const cards = [
+    { key: 'listening', title: 'Listening', meta: '4 parts · 40 questions · 30 min', href: '/listening' },
+    { key: 'reading', title: 'Reading', meta: '3 passages · 40 questions · 60 min', href: '/reading' },
+    { key: 'writing', title: 'Writing', meta: '2 tasks · 60 min', href: '/writing' },
+    { key: 'speaking', title: 'Speaking', meta: '3 parts · 11-14 min · voice recorded', href: '/speaking' }
+  ];
+  return shell(`
+    <section class="section">
+      <div class="eyebrow">Full mock exam</div>
+      <h1 style="font-family:var(--font-display);font-size:30px;margin:10px 0 22px">Choose a section to practice.</h1>
+      <div class="library">${cards.map(c => `
+        <article class="test-card">
+          <div class="test-meta"><span>${c.title}</span><span>${store.attempts.some(a => a.section === c.key) ? 'Done' : 'Not started'}</span></div>
+          <h3>${c.title}</h3>
+          <span class="pill">${c.meta}</span>
+          <div class="test-meta" style="margin-top:20px"><span></span><button class="btn btn-primary" style="padding:7px 14px;font-size:12.5px" data-go="${c.href}">Start ↗</button></div>
+        </article>`).join('')}</div>
+    </section>`, 'mock');
+}
+
 /* ---------------- LISTENING ---------------- */
 let listeningState = { partIndex: 0, answers: {}, played: {}, deadline: null };
 function listening() {
@@ -152,7 +184,7 @@ function reading() {
     <section class="section">
       <div class="test-top"><span class="eyebrow">Reading · Passage ${passage.passageNumber} of 3 · ${passage.difficulty}</span><span class="timer" data-timer>--:--</span></div>
       <h1 style="font-family:var(--font-display);font-size:26px;margin:10px 0 20px">${passage.title}</h1>
-      <div style="display:grid;grid-template-columns:1.1fr 0.9fr;gap:20px">
+      <div class="reading-grid" style="display:grid;grid-template-columns:1.1fr 0.9fr;gap:20px">
         <div class="glass" style="padding:22px;max-height:560px;overflow-y:auto;font-size:14px;line-height:1.7;white-space:pre-line">${passage.text}</div>
         <div style="display:flex;flex-direction:column;gap:12px;max-height:560px;overflow-y:auto">
           ${passage.questions.map((q, i) => `
@@ -171,9 +203,7 @@ function reading() {
         ${readingState.passageIndex < 2 ? '<button class="btn btn-primary" data-r-next>Next passage ↗</button>' : '<button class="btn btn-primary" data-r-submit>Submit Reading ↗</button>'}
       </div>
     </section>`, 'reading');
-}
-
-/* ---------------- WRITING ---------------- */
+}/* ---------------- WRITING ---------------- */
 let writingState = { answers: {}, deadline: null };
 function writing() {
   const test = CONTENT.writing;
@@ -315,7 +345,6 @@ function startTimer(deadlineGetter, onExpire) {
   tick();
   timerInterval = setInterval(tick, 1000);
 }
-
 /* ---------------- BIND ---------------- */
 function bind() {
   document.querySelectorAll('[data-go]').forEach(el => el.onclick = () => go(el.dataset.go));
@@ -514,8 +543,47 @@ function bind() {
       }
     };
   }
+
+  bindNavExtras();
 }
 
+function bindNavExtras() {
+  const nav = document.querySelector('#mainNav');
+  if (nav) {
+    const onScroll = () => { if (window.scrollY > 40) nav.classList.add('nav-scrolled'); else nav.classList.remove('nav-scrolled'); };
+    window.addEventListener('scroll', onScroll);
+    onScroll();
+  }
+
+  const hamburger = document.querySelector('#hamburgerBtn');
+  const mobileMenu = document.querySelector('#mobileMenu');
+  const closeMenu = document.querySelector('#closeMenuBtn');
+  if (hamburger && mobileMenu) {
+    hamburger.onclick = () => mobileMenu.classList.add('open');
+    if (closeMenu) closeMenu.onclick = () => mobileMenu.classList.remove('open');
+    mobileMenu.querySelectorAll('a').forEach(a => a.onclick = () => mobileMenu.classList.remove('open'));
+  }
+
+  const loginContainer = document.querySelector('#google-login-btn');
+  if (loginContainer && window.google && GOOGLE_CLIENT_ID !== 'YOUR_CLIENT_ID_HERE') {
+    window.google.accounts.id.initialize({ client_id: GOOGLE_CLIENT_ID, callback: handleGoogleLogin });
+    window.google.accounts.id.renderButton(loginContainer, { theme: 'filled_black', size: 'medium', shape: 'pill' });
+  }
+
+  const userChip = document.querySelector('[data-logout]');
+  if (userChip) userChip.onclick = () => { if (confirm('Sign out?')) { store.user = null; save(); render(); } };
+}
+
+function handleGoogleLogin(response) {
+  const payload = JSON.parse(atob(response.credential.split('.')[1]));
+  store.user = { name: payload.name, email: payload.email, picture: payload.picture };
+  save();
+  notify(`Welcome, ${payload.name.split(' ')[0]}!`);
+  render();
+}
+window.handleGoogleLogin = handleGoogleLogin;
+
+/* ---------------- SUBMIT HANDLERS ---------------- */
 function submitListening() {
   const allQuestions = CONTENT.listening.parts.flatMap(p => p.questions);
   recordMistakes('listening', allQuestions, listeningState.answers, i => i);
@@ -544,9 +612,11 @@ function submitReading() {
   go('/mistakes');
 }
 
+/* ---------------- RENDER / ROUTER ---------------- */
 function render() {
   const r = route();
   if (r === '/') app.innerHTML = home();
+  else if (r === '/mock') app.innerHTML = mockHub();
   else if (r === '/listening') app.innerHTML = listening();
   else if (r === '/reading') app.innerHTML = reading();
   else if (r === '/writing') app.innerHTML = writing();
