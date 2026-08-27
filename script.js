@@ -4,15 +4,32 @@ const CONTENT = window.IELTS_CONTENT;
 const SERVICES = window.IELTS_SERVICES;
 const STORAGE = 'ielts-v2-store';
 const GOOGLE_CLIENT_ID = '644107198192-45nq6hr0g5qp0ubjr795uu07s0oi9ij6.apps.googleusercontent.com';
+const BAND_LABEL = { listening: 'Listening', reading: 'Reading', writing: 'Writing', speaking: 'Speaking' };
 
 let store = load();
-function load() { try { return { attempts: [], mistakes: [], coachMessages: [], user: null, ...JSON.parse(localStorage.getItem(STORAGE)) }; } catch { return { attempts: [], mistakes: [], coachMessages: [], user: null }; } }
+function load() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(STORAGE)) || {};
+    return { attempts: [], mistakes: [], feedback: {}, coachMessages: [], user: null, ...raw };
+  } catch { return { attempts: [], mistakes: [], feedback: {}, coachMessages: [], user: null }; }
+}
 function save() { localStorage.setItem(STORAGE, JSON.stringify(store)); }
 function go(path) { location.hash = path; }
 function route() { return location.hash.slice(1) || '/'; }
 function esc(v) { return String(v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[c])); }
 function notify(msg) { toast.textContent = msg; toast.classList.add('show'); setTimeout(() => toast.classList.remove('show'), 2400); }
 function fmtTime(seconds) { const m = Math.floor(Math.max(0, seconds) / 60); const s = Math.max(0, seconds) % 60; return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`; }
+/* persist a per-section deadline so a page refresh does not reset the timer */
+function deadlineKey(section) { return `${STORAGE}:deadline:${section}`; }
+function loadDeadline(section, minutes) {
+  const key = deadlineKey(section);
+  const saved = Number(localStorage.getItem(key)) || 0;
+  if (saved > Date.now()) return saved;
+  const fresh = Date.now() + minutes * 60000;
+  localStorage.setItem(key, String(fresh));
+  return fresh;
+}
+function clearDeadline(section) { localStorage.removeItem(deadlineKey(section)); }
 
 function bandAverage() {
   const sections = ['listening', 'reading', 'writing', 'speaking'];
@@ -38,23 +55,29 @@ function weakestSkill() {
 function shell(body, active) {
   const mockActive = ['listening', 'reading', 'writing', 'speaking', 'mock'].includes(active);
   const user = store.user;
-  return `<div class="shell"><nav class="nav" id="mainNav"><a class="brand" href="#/"><span class="brand-mark">B</span>IELTS Mock</a>
+  const links = [
+    { key: 'mock', label: 'Mock Test', active: mockActive },
+    { key: 'results', label: 'Results', active: active === 'results' },
+    { key: 'mistakes', label: 'Mistakes', active: active === 'mistakes' },
+    { key: 'coach', label: 'AI Coach', active: active === 'coach' }
+  ];
+  return `<div class="shell"><nav class="nav" id="mainNav" aria-label="Main navigation"><a class="brand" href="#/"><span class="brand-mark">B</span>IELTS Mock</a>
     <div class="nav-links">
-      <a class="${mockActive ? 'active' : ''}" href="#/mock">Mock Test</a>
-      <a class="${active === 'mistakes' ? 'active' : ''}" href="#/mistakes">Mistakes</a>
-      <a class="${active === 'coach' ? 'active' : ''}" href="#/coach">AI Coach</a>
+      ${links.map(l => `<a class="${l.active ? 'active' : ''}" href="#/${l.key}">${l.label}</a>`).join('')}
     </div>
     <div class="nav-actions">
       ${user ? `<div class="user-chip" data-logout><img src="${user.picture}" alt=""/>${user.name.split(' ')[0]}</div>` : `<div id="google-login-btn"></div>`}
-      <button class="hamburger" id="hamburgerBtn"><span></span><span></span><span></span></button>
+      <button class="hamburger" id="hamburgerBtn" aria-label="Open menu"><span></span><span></span><span></span></button>
     </div>
   </nav><div class="page-fade">${body}</div>
   <div class="mobile-menu" id="mobileMenu">
-    <button class="close-menu" id="closeMenuBtn">×</button>
-    <a href="#/mock">Mock Test</a>
-    <a href="#/mistakes">Mistakes</a>
-    <a href="#/coach">AI Coach</a>
-  </div></div>`;
+    <button class="close-menu" id="closeMenuBtn" aria-label="Close menu">×</button>
+    ${links.map(l => `<a href="#/${l.key}">${l.label}</a>`).join('')}
+  </div>
+  <footer class="footer">
+    <p>IELTS Mock by Bandly AI · Practice estimates only — not affiliated with or endorsed by IELTS, British Council, IDP, or Cambridge.</p>
+    <p style="margin-top:6px"><a href="#/" style="color:var(--cyan);text-decoration:none">Home</a> · <a href="#/mock" style="color:var(--cyan);text-decoration:none">Mock Test</a> · <a href="#/results" style="color:var(--cyan);text-decoration:none">Results</a> · <a href="#/mistakes" style="color:var(--cyan);text-decoration:none">Mistakes</a> · <a href="#/coach" style="color:var(--cyan);text-decoration:none">AI Coach</a></p>
+  </footer></div>`;
 }
 
 /* ---------------- HOME ---------------- */
@@ -148,7 +171,7 @@ function mockHub() {
 let listeningState = { partIndex: 0, answers: {}, played: {}, deadline: null };
 function listening() {
   const test = CONTENT.listening;
-  if (!listeningState.deadline) listeningState.deadline = Date.now() + 30 * 60000;
+  if (!listeningState.deadline) listeningState.deadline = loadDeadline('listening', 30);
   const part = test.parts[listeningState.partIndex];
   const played = listeningState.played[part.id];
   return shell(`
@@ -178,7 +201,7 @@ function listening() {
 let readingState = { passageIndex: 0, answers: {}, deadline: null };
 function reading() {
   const test = CONTENT.reading;
-  if (!readingState.deadline) readingState.deadline = Date.now() + 60 * 60000;
+  if (!readingState.deadline) readingState.deadline = loadDeadline('reading', 60);
   const passage = test.passages[readingState.passageIndex];
   return shell(`
     <section class="section">
@@ -207,7 +230,7 @@ function reading() {
 let writingState = { answers: {}, deadline: null };
 function writing() {
   const test = CONTENT.writing;
-  if (!writingState.deadline) writingState.deadline = Date.now() + 60 * 60000;
+  if (!writingState.deadline) writingState.deadline = loadDeadline('writing', 60);
   return shell(`
     <section class="section">
       <div class="test-top"><span class="eyebrow">Writing · Task 1 & Task 2</span><span class="timer" data-timer>--:--</span></div>
@@ -255,6 +278,38 @@ function speaking() {
     </section>`, 'speaking');
 }
 
+/* ---------------- RESULTS ---------------- */
+function resultsPage() {
+  const attempts = [...store.attempts].sort((a, b) => b.date - a.date);
+  return shell(`
+    <section class="section">
+      <div class="eyebrow">Results & history</div>
+      <h1 style="font-family:var(--font-display);font-size:28px;margin:10px 0 10px">Every attempt, in one place.</h1>
+      <p style="color:var(--muted);font-size:14.5px;margin-bottom:26px">Band scores, saved mistakes and AI feedback for each section you have completed.</p>
+      ${attempts.length ? `
+        <div class="result-grid">
+          ${attempts.map((a, i) => {
+            const fb = store.feedback[a.section];
+            const icon = a.raw !== undefined ? `<span class="result-raw">${a.raw}/${a.total} correct</span>` : '';
+            const arrow = i > 0 ? `<span class="result-arrow">${a.band > attempts[i - 1].band ? '▲' : a.band < attempts[i - 1].band ? '▼' : '—'}</span>` : '';
+            return `
+            <article class="test-card result-card">
+              <div class="test-meta"><span>${BAND_LABEL[a.section] || a.section}</span><span>${new Date(a.date).toLocaleDateString()}</span></div>
+              <div class="result-band">${a.band}<small> / 9 ${arrow}</small></div>
+              ${icon}
+              ${fb && fb.tasks ? `<div style="margin-top:10px;font-size:12.5px;color:var(--muted)">${fb.tasks.map(t => `${esc(t.title)}: <strong style="color:var(--cyan)">${t.band}</strong>`).join(' · ')}</div>` : ''}
+              <button class="btn btn-ghost" style="margin-top:14px;font-size:12.5px;padding:7px 12px" data-detail="${i}">View feedback ↗</button>
+            </article>`;
+          }).join('')}
+        </div>
+        <div id="result-detail" style="margin-top:18px"></div>` : `
+        <div class="glass" style="padding:30px;text-align:center">
+          <p style="color:var(--muted)">No attempts yet. Take your first mock section to see results here.</p>
+          <button class="btn btn-primary" style="margin-top:14px" data-go="/mock">Start a section ↗</button>
+        </div>`}
+    </section>`, 'results');
+}
+
 /* ---------------- MISTAKES ---------------- */
 function mistakes() {
   const groups = { listening: [], reading: [] };
@@ -274,6 +329,8 @@ function mistakes() {
           <div class="glass" style="padding:16px 18px">
             <p style="margin:0 0 8px;font-size:14px">${esc(m.prompt)}</p>
             <p style="margin:0;font-size:13px;color:var(--muted)">Your answer: <span style="color:var(--coral)">${esc(m.given || '(no answer)')}</span> · Correct: <span style="color:var(--cyan)">${esc(m.correct)}</span></p>
+            <p style="margin:8px 0 0;font-size:12.5px;color:var(--muted)">${new Date(m.date || Date.now()).toLocaleDateString()}</p>
+            <button class="btn btn-ghost" style="margin-top:10px;font-size:12px;padding:6px 10px" data-remove-mistake="${esc(m.sig)}">Remove</button>
           </div>`).join('')}</div>` : '').join('')}
     </section>`, 'mistakes');
 }
@@ -303,18 +360,29 @@ function coach() {
 
 function aiFeedbackBlock(feedback) {
   if (!feedback) return '';
-  const rows = Object.entries(feedback.criteria || {}).map(([k, v]) => `<div class="score-label"><span>${k.replace(/([A-Z])/g, ' $1')}</span><strong>${v}</strong></div>`).join('');
   const str = (feedback.strengths || []).map(s => `<li>${esc(s)}</li>`).join('');
   const imp = (feedback.improvements || []).map(s => `<li>${esc(s)}</li>`).join('');
+  const criteriaRows = Object.entries(feedback.criteria || {}).map(([k, v]) => `<div class="score-label"><span>${k.replace(/([A-Z])/g, ' $1')}</span><strong>${v}</strong></div>`).join('');
+  const tasks = (feedback.tasks || []).map(t => `
+    <div class="glass" style="padding:16px 20px;margin-top:14px">
+      <div class="score-label"><span>${esc(t.title)}</span><strong class="result-band" style="font-size:20px">${t.band}<small style="font-size:12px"> / 9</small></strong></div>
+      ${Object.entries(t.criteria || {}).map(([k, v]) => `<div class="score-label"><span>${k.replace(/([A-Z])/g, ' $1')}</span><strong>${v}</strong></div>`).join('')}
+      <p style="color:var(--muted);font-size:14px;margin:12px 0">${esc(t.summary || '')}</p>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+        <div><p class="eyebrow">Strengths</p><ul style="font-size:13px;line-height:1.6;margin:0;padding-left:18px">${(t.strengths || []).map(s => `<li>${esc(s)}</li>`).join('')}</ul></div>
+        <div><p class="eyebrow">To improve</p><ul style="font-size:13px;line-height:1.6;margin:0;padding-left:18px">${(t.improvements || []).map(s => `<li>${esc(s)}</li>`).join('')}</ul></div>
+      </div>
+    </div>`).join('');
   return `<div class="glass" style="padding:24px;margin-top:20px">
     <p class="eyebrow">AI Examiner Result</p>
     <div class="big" style="margin:10px 0">${feedback.band} <small>/ 9</small></div>
-    ${rows}
+    ${criteriaRows}
+    ${tasks}
     <p style="color:var(--muted);font-size:14px;margin:16px 0">${esc(feedback.summary || '')}</p>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+    ${!feedback.tasks ? `<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
       <div><p class="eyebrow">Strengths</p><ul style="font-size:13.5px;line-height:1.7">${str}</ul></div>
       <div><p class="eyebrow">To improve</p><ul style="font-size:13.5px;line-height:1.7">${imp}</ul></div>
-    </div>
+    </div>` : ''}
   </div>`;
 }
 
@@ -322,7 +390,9 @@ function recordMistakes(section, questions, answers, keyFn) {
   questions.forEach((q, i) => {
     const given = answers[keyFn(i)];
     if (!SERVICES.isCorrect(q, given)) {
-      store.mistakes.push({ section, prompt: q.prompt, given, correct: q.options ? q.options[q.answer] : q.answer, date: Date.now() });
+      const sig = `${section}:${q.prompt}:${SERVICES.normalizeAnswer(q.answer)}`;
+      if (store.mistakes.some(m => m.sig === sig)) return; /* avoid duplicates across attempts */
+      store.mistakes.push({ sig, section, prompt: q.prompt, given, correct: q.options ? q.options[q.answer] : q.answer, date: Date.now() });
     }
   });
 }
@@ -414,19 +484,19 @@ function bind() {
     const wSubmit = document.querySelector('[data-w-submit]');
     if (wSubmit) wSubmit.onclick = async () => {
       const tasks = CONTENT.writing.tasks;
-      const combinedPrompt = tasks.map(t => `${t.title}: ${t.prompt}`).join('\n\n');
-      const combinedResponse = tasks.map((t, i) => `[${t.title}]\n${writingState.answers[i] || '(no answer)'}`).join('\n\n');
+      const payload = { mode: 'writing', tasks: tasks.map((t, i) => ({ title: t.title, prompt: t.prompt, response: writingState.answers[i] || '' })) };
       wSubmit.disabled = true; wSubmit.textContent = 'AI examiner is grading…';
       try {
         const res = await fetch('/api/grade', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ mode: 'writing', prompt: combinedPrompt, response: combinedResponse })
+          body: JSON.stringify(payload)
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Grading failed');
         store.attempts.push({ section: 'writing', band: data.band, date: Date.now() });
+        store.feedback.writing = data;
         save();
-        clearInterval(timerInterval);
+        clearTimerAndDeadline('writing');
         document.querySelector('#writing-result').innerHTML = aiFeedbackBlock(data);
       } catch (err) {
         notify(`Error: ${err.message}`);
@@ -459,17 +529,27 @@ function bind() {
     if (spNext) spNext.onclick = () => { speakingState.partIndex++; render(); };
     const spSubmit = document.querySelector('[data-sp-submit]');
     if (spSubmit) spSubmit.onclick = async () => {
-      const allText = [...speakingState.transcripts.sp1, speakingState.transcripts.sp2, ...speakingState.transcripts.sp3].filter(Boolean).join('\n\n');
-      if (!allText) return notify('Please record at least one answer first');
+      const test = CONTENT.speaking;
+      const parts = test.parts.map((p) => ({
+        title: p.title,
+        qa: p.partNumber === 1
+          ? (p.questions || []).map((q, i) => ({ q, a: speakingState.transcripts.sp1[i] || '' }))
+          : p.partNumber === 2
+            ? [{ q: p.topic, a: speakingState.transcripts.sp2 || '' }]
+            : (p.questions || []).map((q, i) => ({ q, a: speakingState.transcripts.sp3[i] || '' }))
+      }));
+      const hasAny = parts.some(p => p.qa.some(x => x.a));
+      if (!hasAny) return notify('Please record at least one answer first');
       spSubmit.disabled = true; spSubmit.textContent = 'AI examiner is grading…';
       try {
         const res = await fetch('/api/grade', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ mode: 'speaking', prompt: 'IELTS Speaking Parts 1-3', response: allText })
+          body: JSON.stringify({ mode: 'speaking', parts })
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Grading failed');
         store.attempts.push({ section: 'speaking', band: data.band, date: Date.now() });
+        store.feedback.speaking = data;
         save();
         document.querySelector('#speaking-result').innerHTML = aiFeedbackBlock(data);
       } catch (err) {
@@ -480,36 +560,69 @@ function bind() {
     };
     const cueFlow = document.querySelector('#speaking-cue-flow');
     if (cueFlow) {
-      cueFlow.innerHTML = `<button class="btn btn-primary" style="margin-top:16px" data-sp2-start>Start 1-minute prep</button><p class="micro" data-sp2-status></p>`;
-      const startBtn = cueFlow.querySelector('[data-sp2-start]');
-      startBtn.onclick = () => {
-        let prep = 60;
-        startBtn.disabled = true;
-        const status = cueFlow.querySelector('[data-sp2-status]');
-        const prepTimer = setInterval(() => {
-          prep--; status.textContent = `Prep time: ${prep}s`;
-          if (prep <= 0) { clearInterval(prepTimer); startRecordingPart2(); }
-        }, 1000);
-      };
+      let sp2Timers = [];
+      let sp2Recognition = null;
+      let sp2Phase = 'idle'; /* idle → prep → recording → done */
+      const sp2Btn = document.createElement('button');
+      sp2Btn.className = 'btn btn-primary';
+      sp2Btn.style.marginTop = '16px';
+      sp2Btn.textContent = 'Start 1-minute prep';
+      cueFlow.appendChild(sp2Btn);
+      const status = document.createElement('p');
+      status.className = 'micro';
+      cueFlow.appendChild(status);
+      function stopSp2Timers() { while (sp2Timers.length) clearInterval(sp2Timers.pop()); }
+      function setSp2Phase(p) {
+        sp2Phase = p;
+        sp2Btn.disabled = (p === 'prep' || p === 'recording');
+        sp2Btn.textContent = p === 'done' ? '↻ Re-record answer' : p === 'recording' ? 'Recording…' : 'Start 1-minute prep';
+      }
       function startRecordingPart2() {
         const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-        const status = cueFlow.querySelector('[data-sp2-status]');
-        if (!SR) { notify('Speech recognition not supported'); return; }
+        if (!SR) { notify('Speech recognition not supported — try Chrome or Edge'); setSp2Phase('idle'); return; }
         const recognition = new SR();
-        recognition.lang = 'en-US'; recognition.continuous = true; recognition.interimResults = true;
+        sp2Recognition = recognition;
+        recognition.lang = 'en-US'; recognition.continuous = true; recognition.interimResults = false;
         recognition.onresult = (e) => {
-          let finalText = '';
-          for (let i = 0; i < e.results.length; i++) finalText += e.results[i][0].transcript + ' ';
-          speakingState.transcripts.sp2 = finalText.trim();
+          /* use final results only — re-reading all results would duplicate text */
+          let text = '';
+          for (let i = 0; i < e.results.length; i++) if (e.results[i].isFinal) text += e.results[i][0].transcript + ' ';
+          speakingState.transcripts.sp2 = text.trim();
+        };
+        recognition.onend = () => {
+          if (sp2Phase === 'recording') { setSp2Phase('done'); status.textContent = '✓ Recorded. Click Next part when ready.'; }
+        };
+        recognition.onerror = () => {
+          if (sp2Phase === 'recording') { setSp2Phase('idle'); status.textContent = 'Recording stopped. Click to try again.'; }
         };
         recognition.start();
+        setSp2Phase('recording');
         status.textContent = '🔴 Recording… speak now (2 minutes)';
         let talk = 120;
-        const talkTimer = setInterval(() => {
-          talk--; status.textContent = `🔴 Recording… ${talk}s left`;
-          if (talk <= 0) { clearInterval(talkTimer); recognition.stop(); status.textContent = '✓ Recorded. Click Next part when ready.'; }
-        }, 1000);
+        sp2Timers.push(setInterval(() => {
+          talk--;
+          if (talk <= 0) {
+            stopSp2Timers();
+            try { recognition.stop(); } catch {}
+            setSp2Phase('done');
+            status.textContent = '✓ Recorded. Click Next part when ready.';
+          } else {
+            status.textContent = `🔴 Recording… ${talk}s left`;
+          }
+        }, 1000));
       }
+      sp2Btn.onclick = () => {
+        if (sp2Recognition && sp2Phase === 'recording') { try { sp2Recognition.stop(); } catch {} }
+        stopSp2Timers();
+        setSp2Phase('prep');
+        let prep = 60;
+        status.textContent = `Prep time: ${prep}s`;
+        sp2Timers.push(setInterval(() => {
+          prep--;
+          if (prep <= 0) { stopSp2Timers(); startRecordingPart2(); }
+          else status.textContent = `Prep time: ${prep}s`;
+        }, 1000));
+      };
     }
   }
 
@@ -529,7 +642,8 @@ function bind() {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             message: text,
-            profile: { band: bandAverage(), weakest: weakestSkill(), mistakeCount: store.mistakes.length }
+            profile: { band: bandAverage(), weakest: weakestSkill(), mistakeCount: store.mistakes.length },
+            history: store.coachMessages
           })
         });
         const data = await res.json();
@@ -543,6 +657,26 @@ function bind() {
       }
     };
   }
+
+  /* Results page: show saved AI feedback for an attempt */
+  document.querySelectorAll('[data-detail]').forEach(el => el.onclick = () => {
+    const i = Number(el.dataset.detail);
+    const attempt = [...store.attempts].sort((a, b) => b.date - a.date)[i];
+    const box = document.querySelector('#result-detail');
+    if (!attempt || !box) return;
+    const fb = store.feedback[attempt.section];
+    box.innerHTML = fb
+      ? aiFeedbackBlock(fb)
+      : `<div class="glass" style="padding:20px"><p class="micro" style="margin:0">No saved AI feedback for this attempt.</p></div>`;
+    box.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+
+  /* Mistakes page: remove a single mistake */
+  document.querySelectorAll('[data-remove-mistake]').forEach(el => el.onclick = () => {
+    const sig = el.dataset.removeMistake;
+    const idx = store.mistakes.findIndex(m => m.sig === sig);
+    if (idx >= 0) { store.mistakes.splice(idx, 1); save(); render(); }
+  });
 
   bindNavExtras();
 }
@@ -584,6 +718,11 @@ function handleGoogleLogin(response) {
 window.handleGoogleLogin = handleGoogleLogin;
 
 /* ---------------- SUBMIT HANDLERS ---------------- */
+function clearTimerAndDeadline(section) {
+  clearInterval(timerInterval);
+  clearDeadline(section);
+}
+
 function submitListening() {
   const allQuestions = CONTENT.listening.parts.flatMap(p => p.questions);
   recordMistakes('listening', allQuestions, listeningState.answers, i => i);
@@ -591,10 +730,10 @@ function submitListening() {
   const band = SERVICES.bandFromRaw(correct, allQuestions.length);
   store.attempts.push({ section: 'listening', band, raw: correct, total: allQuestions.length, date: Date.now() });
   save();
-  clearInterval(timerInterval);
+  clearTimerAndDeadline('listening');
   notify(`Listening complete: Band ${band} (${correct}/${allQuestions.length})`);
   listeningState = { partIndex: 0, answers: {}, played: {}, deadline: null };
-  go('/mistakes');
+  go('/results');
 }
 
 function submitReading() {
@@ -606,10 +745,10 @@ function submitReading() {
   const band = SERVICES.bandFromRaw(correct, total);
   store.attempts.push({ section: 'reading', band, raw: correct, total, date: Date.now() });
   save();
-  clearInterval(timerInterval);
+  clearTimerAndDeadline('reading');
   notify(`Reading complete: Band ${band} (${correct}/${total})`);
   readingState = { passageIndex: 0, answers: {}, deadline: null };
-  go('/mistakes');
+  go('/results');
 }
 
 /* ---------------- RENDER / ROUTER ---------------- */
@@ -621,6 +760,7 @@ function render() {
   else if (r === '/reading') app.innerHTML = reading();
   else if (r === '/writing') app.innerHTML = writing();
   else if (r === '/speaking') app.innerHTML = speaking();
+  else if (r === '/results') app.innerHTML = resultsPage();
   else if (r === '/mistakes') app.innerHTML = mistakes();
   else if (r === '/coach') app.innerHTML = coach();
   else app.innerHTML = home();
