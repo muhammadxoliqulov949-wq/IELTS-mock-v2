@@ -284,3 +284,40 @@ html, body {
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
 .footer { text-align: center; color: var(--muted); font-size: 12.5px; padding: 40px 0; }
+/* ---------- Page transitions & extra motion (IELTS Zone-inspired) ---------- */
+.page-fade { animation: pageFadeIn 0.5s ease both; }
+@keyframes pageFadeIn {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.test-card, .feature, .glass {
+  transition: transform 0.25s ease, box-shadow 0.25s ease, border-color 0.25s ease;
+}
+.test-card:hover {
+  transform: translateY(-6px) scale(1.015);
+  box-shadow: 0 20px 40px -20px rgba(109, 91, 255, 0.35);
+}
+.feature:hover { transform: translateY(-4px); }
+
+.opt-btn.selected {
+  background: var(--primary-soft) !important;
+  border-color: var(--primary) !important;
+  color: #fff !important;
+}
+
+.test-top { display: flex; justify-content: space-between; align-items: center; }
+.timer {
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 600;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: rgba(255, 107, 107, 0.12);
+  color: var(--coral);
+  border: 1px solid rgba(255, 107, 107, 0.25);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .page-fade { animation: none; }
+}
