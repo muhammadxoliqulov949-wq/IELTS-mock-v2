@@ -16,6 +16,7 @@
   /* chrome tokens — redefined per theme below */
   --nav-bg: rgba(255, 255, 255, 0.045);
   --nav-scrolled: rgba(11, 13, 18, 0.86);
+  --nav-pill-border: rgba(255, 255, 255, 0.14);
   --dropdown-bg: rgba(19, 22, 31, 0.97);
   --toast-bg: #1a1d27;
 }
@@ -120,33 +121,47 @@ html, body {
 .app { min-height: 100vh; }
 .shell { max-width: 1180px; margin: 0 auto; padding: 0 24px; }
 
-/* ---------- Nav: full-width sticky header, premium hierarchy ---------- */
+/* ---------- Nav: sticky header that morphs into a floating pill on scroll ---------- */
 /* 5 primary links + "More" dropdown + theme/language + user menu.
+   At the top of the page the bar is transparent; once you scroll it becomes
+   a slim, fully rounded capsule ("pill") that stays pinned with the page.
    Below 900px the links collapse into the hamburger menu (same breakpoint,
    so there is never a width where navigation disappears). */
 .site-header {
   position: sticky;
   top: 0;
   z-index: 40;
-  background: var(--nav-bg);
-  -webkit-backdrop-filter: blur(16px) saturate(1.3);
-  backdrop-filter: blur(16px) saturate(1.3);
+  background: transparent;
   border-bottom: 1px solid transparent;
-  transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
+  transition: padding 0.3s ease;
 }
 .site-header.scrolled {
-  background: var(--nav-scrolled);
-  border-bottom-color: var(--panel-border);
-  box-shadow: 0 12px 32px -20px rgba(0, 0, 0, 0.55);
+  padding: 10px 16px 8px;
 }
 .nav {
   max-width: 1180px;
   margin: 0 auto;
-  padding: 11px 24px;
+  padding: 11px 14px;
   display: flex;
   align-items: center;
   gap: 18px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  transition: padding 0.3s ease, background 0.3s ease, box-shadow 0.3s ease,
+              border-color 0.3s ease, max-width 0.3s ease;
 }
+/* Scrolled state: slim floating capsule */
+.site-header.scrolled .nav {
+  max-width: 1120px;
+  padding: 7px 10px;
+  background: var(--nav-scrolled);
+  -webkit-backdrop-filter: blur(18px) saturate(1.4);
+  backdrop-filter: blur(18px) saturate(1.4);
+  border-color: var(--nav-pill-border);
+  box-shadow: 0 16px 40px -20px rgba(0, 0, 0, 0.6), 0 4px 12px -6px rgba(0, 0, 0, 0.25);
+}
+.site-header.scrolled .brand { font-size: 15px; }
+.site-header.scrolled .brand-mark { transform: scale(0.88); }
 .brand {
   display: flex;
   align-items: center;
@@ -711,7 +726,9 @@ textarea:focus-visible, [tabindex]:focus-visible {
 
 @media (max-width: 720px) {
   .shell { padding: 0 18px; }
-  .nav { padding: 10px 18px; }
+  .nav { padding: 10px 14px; }
+  .site-header.scrolled { padding: 8px 12px 6px; }
+  .site-header.scrolled .nav { max-width: none; padding: 6px 8px; }
   .hero { padding: 30px 0 20px; gap: 26px; }
   .hero h1 { font-size: 30px; }
   .hero-copy { font-size: 15px; }
@@ -765,6 +782,7 @@ body[data-theme="light"] {
   --primary-soft: rgba(109,91,255,0.12);
   --nav-bg: rgba(255,255,255,0.72);
   --nav-scrolled: rgba(255,255,255,0.92);
+  --nav-pill-border: rgba(20,24,40,0.12);
   --dropdown-bg: rgba(255,255,255,0.98);
   --toast-bg: #ffffff;
 }

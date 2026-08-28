@@ -16,7 +16,7 @@ premium plan has been added and is tested.
 | `confirm("Sign out?")` on chip click | **User dropdown** (name, email, Dashboard, Settings, Sign out) |
 | No `aria-current`, no focus ring | `aria-current="page"`, visible `:focus-visible` ring, `aria-expanded` on menus |
 | Mobile menu without auth/theme/lang | Full mobile menu: all 10 links + theme + language + sign-in/out |
-| Floating pill, no light-theme variant | Full-width sticky header with blur + scroll shadow |
+| Floating pill, no light-theme variant | Sticky header that **morphs into a slim floating pill (capsule)** on scroll — blur, shadow, theme tokens; always pinned while scrolling |
 
 ### Bugs fixed
 1. **Background timer** — leaving a test page no longer auto-submits it elsewhere;
