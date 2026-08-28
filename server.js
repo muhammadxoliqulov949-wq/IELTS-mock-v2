@@ -13,6 +13,7 @@ const path = require('path');
 
 const gradeHandler = require('./api/grade.js');
 const coachHandler = require('./api/coach.js');
+const quizHandler = require('./api/quiz.js');
 
 const PORT = process.env.PORT || 3000;
 const MIME = {
@@ -20,10 +21,12 @@ const MIME = {
   '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
+  '.webmanifest': 'application/manifest+json; charset=utf-8',
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
-  '.ico': 'image/x-icon'
+  '.ico': 'image/x-icon',
+  '.txt': 'text/plain; charset=utf-8'
 };
 
 function attachBody(req) {
@@ -62,6 +65,7 @@ const server = http.createServer(async (req, res) => {
 
   if (url.pathname.startsWith('/api/grade')) return handleApi(gradeHandler, req, res);
   if (url.pathname.startsWith('/api/coach')) return handleApi(coachHandler, req, res);
+  if (url.pathname.startsWith('/api/quiz')) return handleApi(quizHandler, req, res);
 
   let filePath = url.pathname === '/' ? '/index.html' : decodeURIComponent(url.pathname);
   const abs = path.normalize(path.join(__dirname, filePath));

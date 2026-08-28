@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://ielts-mock.vercel.app/sitemap.xml

@@ -51,15 +51,17 @@ storage.set('ielts-v2-store', JSON.stringify(seed));
 const src = fs.readFileSync(path + '/script.js', 'utf8');
 const fn = new Function('document', 'localStorage', 'location', 'window', 'confirm', src + '\n;globalThis.__render = render; globalThis.__go = go;');
 try {
-  // load content + services globals
-  eval(fs.readFileSync(path + '/data.js', 'utf8').replace('window.IELTS_CONTENT', 'window.IELTS_CONTENT'));
-  eval(fs.readFileSync(path + '/services.js', 'utf8').replace('window.IELTS_SERVICES', 'window.IELTS_SERVICES'));
+  // load content + i18n + premium pack + services globals
+  eval(fs.readFileSync(path + '/data.js', 'utf8'));
+  eval(fs.readFileSync(path + '/i18n.js', 'utf8'));
+  eval(fs.readFileSync(path + '/content2.js', 'utf8'));
+  eval(fs.readFileSync(path + '/services.js', 'utf8'));
   fn(global.document, global.localStorage, global.location, global.window, global.confirm);
   const render = globalThis.__render;
   console.log('script.js BOOTED OK');
 
   // render each route
-  const routes = ['/', '/mock', '/listening', '/reading', '/writing', '/speaking', '/results', '/mistakes', '/coach', '/unknown'];
+  const routes = ['/', '/mock', '/listening', '/reading', '/writing', '/speaking', '/results', '/mistakes', '/coach', '/dashboard', '/lessons', '/vocabulary', '/quiz', '/fullmock', '/settings', '/login', '/unknown'];
   let ok = true;
   for (const r of routes) {
     global.location.hash = '#' + r;

@@ -4,7 +4,10 @@
   "private": true,
   "description": "IELTS mock exam web app — timed Listening/Reading/Writing/Speaking tests, instant band scores, mistake notebook, AI-scored Writing & Speaking feedback and an AI Coach.",
   "scripts": {
-    "test": "node tests/api.test.js && node tests/boot.test.js",
+    "test": "node tests/api.test.js && node tests/boot.test.js && node tests/premium.test.js && node tests/quiz.test.js",
+    "test:api": "node tests/api.test.js",
+    "test:boot": "node tests/boot.test.js",
+    "test:premium": "node tests/premium.test.js",
     "dev": "vercel dev",
     "preview": "node server.js",
     "deploy": "vercel --prod"
