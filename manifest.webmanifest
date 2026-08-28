@@ -1,0 +1,15 @@
+{
+  "name": "IELTS Mock | Bandly AI — Premium IELTS Practice",
+  "short_name": "IELTS Mock",
+  "description": "Full-length IELTS mock tests with instant band scores, explanations, AI feedback, dashboard and personal study plans.",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0b0d12",
+  "theme_color": "#0b0d12",
+  "categories": ["education", "productivity"],
+  "icons": [
+    { "src": "/icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}

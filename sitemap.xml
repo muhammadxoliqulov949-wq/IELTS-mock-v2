@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://ielts-mock.vercel.app/</loc><changefreq>weekly</changefreq><priority>1.0</priority></url>
+  <url><loc>https://ielts-mock.vercel.app/#/mock</loc><changefreq>weekly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://ielts-mock.vercel.app/#/dashboard</loc><changefreq>weekly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://ielts-mock.vercel.app/#/fullmock</loc><changefreq>weekly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://ielts-mock.vercel.app/#/lessons</loc><changefreq>weekly</changefreq><priority>0.6</priority></url>
+  <url><loc>https://ielts-mock.vercel.app/#/vocabulary</loc><changefreq>weekly</changefreq><priority>0.6</priority></url>
+  <url><loc>https://ielts-mock.vercel.app/#/quiz</loc><changefreq>weekly</changefreq><priority>0.6</priority></url>
+</urlset>

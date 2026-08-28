@@ -2,6 +2,8 @@ const app = document.querySelector('#app');
 const toast = document.querySelector('#toast');
 const CONTENT = window.IELTS_CONTENT;
 const SERVICES = window.IELTS_SERVICES;
+const I18N = window.IELTS_I18N || { t: (k) => k, current: () => 'en', setLang() {} };
+const t = (k) => I18N.t(k);
 const STORAGE = 'ielts-v2-store';
 const GOOGLE_CLIENT_ID = '644107198192-45nq6hr0g5qp0ubjr795uu07s0oi9ij6.apps.googleusercontent.com';
 const BAND_LABEL = { listening: 'Listening', reading: 'Reading', writing: 'Writing', speaking: 'Speaking' };
@@ -10,12 +12,24 @@ let store = load();
 function load() {
   try {
     const raw = JSON.parse(localStorage.getItem(STORAGE)) || {};
-    return { attempts: [], mistakes: [], feedback: {}, coachMessages: [], user: null, ...raw };
-  } catch { return { attempts: [], mistakes: [], feedback: {}, coachMessages: [], user: null }; }
+    return {
+      attempts: [], mistakes: [], feedback: {}, coachMessages: [], user: null,
+      selectedTest: 'test1', theme: 'dark', lang: 'en', vocabKnown: {}, fullMock: null, quizzes: [], ...raw
+    };
+  } catch {
+    return { attempts: [], mistakes: [], feedback: {}, coachMessages: [], user: null, selectedTest: 'test1', theme: 'dark', lang: 'en', vocabKnown: {}, fullMock: null, quizzes: [] };
+  }
 }
 function save() { localStorage.setItem(STORAGE, JSON.stringify(store)); }
 function go(path) { location.hash = path; }
 function route() { return location.hash.slice(1) || '/'; }
+/* Apply persisted preferences on every render so the whole app reflects them. */
+function applyPrefs() {
+  const lang = store.lang || 'en';
+  if (I18N.setLang) I18N.setLang(lang);
+  if (document.documentElement) document.documentElement.lang = lang;
+  if (document.body) { document.body.dataset.lang = lang; document.body.dataset.theme = store.theme || 'dark'; }
+}
 function esc(v) { return String(v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[c])); }
 function notify(msg) { toast.textContent = msg; toast.classList.add('show'); setTimeout(() => toast.classList.remove('show'), 2400); }
 function fmtTime(seconds) { const m = Math.floor(Math.max(0, seconds) / 60); const s = Math.max(0, seconds) % 60; return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`; }
@@ -53,20 +67,29 @@ function weakestSkill() {
 
 /* ---------------- SHELL / NAV ---------------- */
 function shell(body, active) {
-  const mockActive = ['listening', 'reading', 'writing', 'speaking', 'mock'].includes(active);
+  const mockActive = ['listening', 'reading', 'writing', 'speaking', 'mock', 'fullmock'].includes(active);
   const user = store.user;
   const links = [
-    { key: 'mock', label: 'Mock Test', active: mockActive },
-    { key: 'results', label: 'Results', active: active === 'results' },
-    { key: 'mistakes', label: 'Mistakes', active: active === 'mistakes' },
-    { key: 'coach', label: 'AI Coach', active: active === 'coach' }
+    { key: 'dashboard', label: t('nav_dashboard'), active: active === 'dashboard' },
+    { key: 'mock', label: t('nav_mock'), active: mockActive },
+    { key: 'fullmock', label: t('nav_fullmock'), active: active === 'fullmock' },
+    { key: 'results', label: t('nav_results'), active: active === 'results' },
+    { key: 'mistakes', label: t('nav_mistakes'), active: active === 'mistakes' },
+    { key: 'lessons', label: t('nav_lessons'), active: active === 'lessons' },
+    { key: 'vocabulary', label: t('nav_vocabulary'), active: active === 'vocabulary' },
+    { key: 'quiz', label: t('nav_quiz'), active: active === 'quiz' },
+    { key: 'coach', label: t('nav_coach'), active: active === 'coach' },
+    { key: 'settings', label: t('nav_settings'), active: active === 'settings' }
   ];
+  const langShort = (store.lang || 'en').toUpperCase();
   return `<div class="shell"><nav class="nav" id="mainNav" aria-label="Main navigation"><a class="brand" href="#/"><span class="brand-mark">B</span>IELTS Mock</a>
     <div class="nav-links">
       ${links.map(l => `<a class="${l.active ? 'active' : ''}" href="#/${l.key}">${l.label}</a>`).join('')}
     </div>
     <div class="nav-actions">
-      ${user ? `<div class="user-chip" data-logout><img src="${user.picture}" alt=""/>${user.name.split(' ')[0]}</div>` : `<div id="google-login-btn"></div>`}
+      <button class="icon-btn" data-toggle-theme aria-label="Toggle theme" title="${store.theme === 'light' ? t('theme_dark') : t('theme_light')}">${store.theme === 'light' ? '☀' : '☾'}</button>
+      <button class="lang-btn" data-toggle-lang aria-label="Language">${langShort}</button>
+      ${user ? `<div class="user-chip" data-logout><img src="${user.picture || ''}" alt=""/>${String(user.name || user.email || 'User').split(' ')[0]}</div>` : `<a class="btn btn-ghost btn-sm" href="#/login">${t('nav_login')}</a>`}
       <button class="hamburger" id="hamburgerBtn" aria-label="Open menu"><span></span><span></span><span></span></button>
     </div>
   </nav><div class="page-fade">${body}</div>
@@ -76,7 +99,7 @@ function shell(body, active) {
   </div>
   <footer class="footer">
     <p>IELTS Mock by Bandly AI · Practice estimates only — not affiliated with or endorsed by IELTS, British Council, IDP, or Cambridge.</p>
-    <p style="margin-top:6px"><a href="#/" style="color:var(--cyan);text-decoration:none">Home</a> · <a href="#/mock" style="color:var(--cyan);text-decoration:none">Mock Test</a> · <a href="#/results" style="color:var(--cyan);text-decoration:none">Results</a> · <a href="#/mistakes" style="color:var(--cyan);text-decoration:none">Mistakes</a> · <a href="#/coach" style="color:var(--cyan);text-decoration:none">AI Coach</a></p>
+    <p style="margin-top:6px"><a href="#/" style="color:var(--cyan);text-decoration:none">Home</a> · <a href="#/dashboard" style="color:var(--cyan);text-decoration:none">${t('nav_dashboard')}</a> · <a href="#/mock" style="color:var(--cyan);text-decoration:none">Mock Test</a> · <a href="#/results" style="color:var(--cyan);text-decoration:none">Results</a> · <a href="#/mistakes" style="color:var(--cyan);text-decoration:none">Mistakes</a> · <a href="#/coach" style="color:var(--cyan);text-decoration:none">AI Coach</a></p>
   </footer></div>`;
 }
 
@@ -123,7 +146,7 @@ function home() {
     </section>
 
     <section class="section">
-      <div class="section-header"><div><div class="eyebrow">Full mock exam</div><h2>Choose a section.</h2></div></div>
+      <div class="section-header"><div><div class="eyebrow">Full mock exam</div><h2>Choose a section.</h2></div><div class="test-switch">${testSwitch()}</div></div>
       <div class="library">${cards.map(c => `
         <article class="test-card">
           <div class="test-meta"><span>${c.title}</span><span>${store.attempts.some(a => a.section === c.key) ? 'Done' : 'Not started'}</span></div>
@@ -131,6 +154,44 @@ function home() {
           <span class="pill">${c.meta}</span>
           <div class="test-meta" style="margin-top:20px"><span></span><button class="btn btn-primary" style="padding:7px 14px;font-size:12.5px" data-go="${c.href}">Start ↗</button></div>
         </article>`).join('')}</div>
+    </section>
+
+    <section class="section">
+      <div class="section-header"><div><div class="eyebrow">Personalised learning</div><h2>More than a mock. A study system.</h2></div></div>
+      <div class="feature-grid">
+        <article class="feature"><div class="feature-icon">◆</div><h3>Explanations</h3><p>Every Listening and Reading answer comes with a short explanation, so a wrong answer becomes a lesson.</p></article>
+        <article class="feature"><div class="feature-icon">◈</div><h3>Mini lessons</h3><p>Bite-sized Writing, Reading, Listening and Speaking strategies you can apply immediately.</p></article>
+        <article class="feature"><div class="feature-icon">◉</div><h3>Vocabulary</h3><p>Topic-based IELTS word lists with meanings, examples and mastery tracking.</p></article>
+        <article class="feature"><div class="feature-icon">◎</div><h3>Quick quiz</h3><p>Short knowledge checks that keep the key exam rules fresh between full tests.</p></article>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="plans">
+        <article class="plan plan-free">
+          <div class="test-meta"><span>${t('free_plan')}</span><span>£0</span></div>
+          <h3>Start free</h3>
+          <ul>
+            <li>Full Listening & Reading mock</li>
+            <li>Mistake notebook</li>
+            <li>Basic results & band estimate</li>
+            <li>First AI Coach conversation</li>
+          </ul>
+          <button class="btn btn-primary" data-go="/mock">Start free ↗</button>
+        </article>
+        <article class="plan plan-premium">
+          <div class="test-meta"><span>${t('premium_plan')}</span><span class="pill">${t('nav_coming_soon')}</span></div>
+          <h3>Everything + AI</h3>
+          <ul>
+            <li>All practice tests, including Test 2</li>
+            <li>Explanations on every answer</li>
+            <li>Advanced AI feedback & coach</li>
+            <li>Dashboard, full mock, quiz, PWA</li>
+          </ul>
+          <p class="micro">${t('premium_note')}</p>
+          <button class="btn btn-ghost" data-go="/dashboard">Preview ↗</button>
+        </article>
+      </div>
     </section>
 
     <section class="section">
@@ -146,6 +207,14 @@ function home() {
 }
 
 /* ---------------- MOCK HUB ---------------- */
+function testSwitch() {
+  const meta = CONTENT.testMeta || { tests: [{ id: 'test1', label: 'Practice Test 1' }, { id: 'test2', label: 'Practice Test 2', premium: true }] };
+  const labels = ['listening', 'reading', 'writing', 'speaking'].map(s => SERVICES.getSkillContent(s, store.selectedTest));
+  return `<div class="seg" role="tablist">
+    ${meta.tests.map(tb => `<button class="seg-btn ${store.selectedTest === tb.id ? 'active' : ''}" data-test="${tb.id}" ${tb.premium ? 'title="Premium"' : ''}>${tb.premium ? '⭐ ' : ''}${tb.id === 'test2' ? t('test2') : t('test1')}</button>`).join('')}
+  </div>`;
+}
+
 function mockHub() {
   const cards = [
     { key: 'listening', title: 'Listening', meta: '4 parts · 40 questions · 30 min', href: '/listening' },
@@ -153,10 +222,11 @@ function mockHub() {
     { key: 'writing', title: 'Writing', meta: '2 tasks · 60 min', href: '/writing' },
     { key: 'speaking', title: 'Speaking', meta: '3 parts · 11-14 min · voice recorded', href: '/speaking' }
   ];
+  const activeTest = SERVICES.getSkillContent('listening', store.selectedTest);
   return shell(`
     <section class="section">
-      <div class="eyebrow">Full mock exam</div>
-      <h1 style="font-family:var(--font-display);font-size:30px;margin:10px 0 22px">Choose a section to practice.</h1>
+      <div class="section-header"><div><div class="eyebrow">Full mock exam</div><h1 style="font-family:var(--font-display);font-size:30px;margin:10px 0 0">Choose a section to practice.</h1></div><div class="test-switch">${testSwitch()}</div></div>
+      <p class="micro" style="margin:14px 0 20px">${SERVICES.testLabel(store.selectedTest, store.lang)} — ${activeTest && activeTest.difficulty ? activeTest.difficulty : ''}</p>
       <div class="library">${cards.map(c => `
         <article class="test-card">
           <div class="test-meta"><span>${c.title}</span><span>${store.attempts.some(a => a.section === c.key) ? 'Done' : 'Not started'}</span></div>
@@ -168,10 +238,11 @@ function mockHub() {
 }
 
 /* ---------------- LISTENING ---------------- */
+function currentTest(skill) { return SERVICES.getSkillContent(skill, store.selectedTest); }
 let listeningState = { partIndex: 0, answers: {}, played: {}, deadline: null };
 function listening() {
-  const test = CONTENT.listening;
-  if (!listeningState.deadline) listeningState.deadline = loadDeadline('listening', 30);
+  const test = currentTest('listening');
+  if (!listeningState.deadline) listeningState.deadline = loadDeadline('listening:' + store.selectedTest, 30);
   const part = test.parts[listeningState.partIndex];
   const played = listeningState.played[part.id];
   return shell(`
@@ -200,8 +271,8 @@ function listening() {
 /* ---------------- READING ---------------- */
 let readingState = { passageIndex: 0, answers: {}, deadline: null };
 function reading() {
-  const test = CONTENT.reading;
-  if (!readingState.deadline) readingState.deadline = loadDeadline('reading', 60);
+  const test = currentTest('reading');
+  if (!readingState.deadline) readingState.deadline = loadDeadline('reading:' + store.selectedTest, 60);
   const passage = test.passages[readingState.passageIndex];
   return shell(`
     <section class="section">
@@ -229,8 +300,8 @@ function reading() {
 }/* ---------------- WRITING ---------------- */
 let writingState = { answers: {}, deadline: null };
 function writing() {
-  const test = CONTENT.writing;
-  if (!writingState.deadline) writingState.deadline = loadDeadline('writing', 60);
+  const test = currentTest('writing');
+  if (!writingState.deadline) writingState.deadline = loadDeadline('writing:' + store.selectedTest, 60);
   return shell(`
     <section class="section">
       <div class="test-top"><span class="eyebrow">Writing · Task 1 & Task 2</span><span class="timer" data-timer>--:--</span></div>
@@ -251,7 +322,7 @@ function writing() {
 /* ---------------- SPEAKING ---------------- */
 let speakingState = { partIndex: 0, transcripts: { sp1: [], sp2: '', sp3: [] } };
 function speaking() {
-  const test = CONTENT.speaking;
+  const test = currentTest('speaking');
   const part = test.parts[speakingState.partIndex];
   return shell(`
     <section class="section">
@@ -426,7 +497,7 @@ function bind() {
     const playBtn = document.querySelector('[data-play-part]');
     if (playBtn) playBtn.onclick = () => {
       if (!window.speechSynthesis) return notify('Audio not supported in this browser');
-      const part = CONTENT.listening.parts[listeningState.partIndex];
+      const part = currentTest('listening').parts[listeningState.partIndex];
       window.speechSynthesis.cancel();
       const utter = new SpeechSynthesisUtterance(part.transcript);
       utter.rate = 0.95;
@@ -436,13 +507,13 @@ function bind() {
       window.speechSynthesis.speak(utter);
     };
     document.querySelectorAll('[data-l-answer]').forEach(el => el.onclick = () => {
-      const part = CONTENT.listening.parts[listeningState.partIndex];
+      const part = currentTest('listening').parts[listeningState.partIndex];
       const globalIndex = (part.partNumber - 1) * 10 + Number(el.dataset.lAnswer);
       listeningState.answers[globalIndex] = el.dataset.value;
       render();
     });
     document.querySelectorAll('[data-l-text]').forEach(el => el.onchange = () => {
-      const part = CONTENT.listening.parts[listeningState.partIndex];
+      const part = currentTest('listening').parts[listeningState.partIndex];
       const globalIndex = (part.partNumber - 1) * 10 + Number(el.dataset.lText);
       listeningState.answers[globalIndex] = el.value;
     });
@@ -483,7 +554,7 @@ function bind() {
     });
     const wSubmit = document.querySelector('[data-w-submit]');
     if (wSubmit) wSubmit.onclick = async () => {
-      const tasks = CONTENT.writing.tasks;
+      const tasks = currentTest('writing').tasks;
       const payload = { mode: 'writing', tasks: tasks.map((t, i) => ({ title: t.title, prompt: t.prompt, response: writingState.answers[i] || '' })) };
       wSubmit.disabled = true; wSubmit.textContent = 'AI examiner is grading…';
       try {
@@ -515,7 +586,7 @@ function bind() {
       el.textContent = '● Recording…'; el.disabled = true;
       recognition.onresult = (e) => {
         const text = e.results[0][0].transcript;
-        const part = CONTENT.speaking.parts[speakingState.partIndex];
+        const part = currentTest('speaking').parts[speakingState.partIndex];
         if (part.partNumber === 1) speakingState.transcripts.sp1[el.dataset.spRecord] = text;
         if (part.partNumber === 3) speakingState.transcripts.sp3[el.dataset.spRecord] = text;
         const label = document.querySelector(`.sp-transcript-${el.dataset.spRecord}`);
@@ -529,7 +600,7 @@ function bind() {
     if (spNext) spNext.onclick = () => { speakingState.partIndex++; render(); };
     const spSubmit = document.querySelector('[data-sp-submit]');
     if (spSubmit) spSubmit.onclick = async () => {
-      const test = CONTENT.speaking;
+      const test = currentTest('speaking');
       const parts = test.parts.map((p) => ({
         title: p.title,
         qa: p.partNumber === 1
@@ -679,6 +750,107 @@ function bind() {
   });
 
   bindNavExtras();
+  bindPremium();
+}
+
+function bindPremium() {
+  const r = route();
+
+  /* Test switch: change the selected practice test and reset section state. */
+  document.querySelectorAll('[data-test]').forEach(el => el.onclick = () => {
+    const id = el.dataset.test;
+    if (store.selectedTest === id) return;
+    store.selectedTest = id;
+    save();
+    listeningState = { partIndex: 0, answers: {}, played: {}, deadline: null };
+    readingState = { passageIndex: 0, answers: {}, deadline: null };
+    writingState = { answers: {}, deadline: null };
+    speakingState = { partIndex: 0, transcripts: { sp1: [], sp2: '', sp3: [] } };
+    render();
+  });
+
+  /* Theme + language toggles (available from the nav on every page). */
+  document.querySelectorAll('[data-toggle-theme]').forEach(el => el.onclick = () => {
+    store.theme = store.theme === 'light' ? 'dark' : 'light';
+    save(); applyPrefs(); render();
+  });
+  document.querySelectorAll('[data-toggle-lang]').forEach(el => el.onclick = () => {
+    store.lang = store.lang === 'en' ? 'uz' : store.lang === 'uz' ? 'ru' : 'en';
+    save(); applyPrefs(); render();
+  });
+  document.querySelectorAll('[data-set-lang]').forEach(el => el.onclick = () => {
+    store.lang = el.dataset.setLang; save(); applyPrefs(); render();
+  });
+  document.querySelectorAll('[data-set-theme]').forEach(el => el.onclick = () => {
+    store.theme = el.dataset.setTheme; save(); applyPrefs(); render();
+  });
+
+  /* Lessons filters. */
+  document.querySelectorAll('[data-filter-lesson]').forEach(el => el.onclick = () => {
+    const cat = el.dataset.filterLesson;
+    document.querySelectorAll('.lesson-card').forEach(card => {
+      card.style.display = (cat && card.dataset.cat !== cat) ? 'none' : '';
+    });
+    document.querySelectorAll('[data-filter-lesson]').forEach(b => b.classList.toggle('active', b === el));
+  });
+  document.querySelectorAll('[data-lesson-open]').forEach(el => el.onclick = () => {
+    const id = el.dataset.lessonOpen;
+    const l = (CONTENT.lessons || []).find(x => x.id === id);
+    if (!l) return;
+    notify(`${l.title} — ${l.bullets.length} key points.`);
+  });
+
+  /* Vocabulary mastery toggle. */
+  document.querySelectorAll('[data-vocab-word]').forEach(el => el.onclick = () => {
+    const w = el.dataset.vocabWord;
+    if (store.vocabKnown[w]) delete store.vocabKnown[w]; else store.vocabKnown[w] = true;
+    save(); render();
+  });
+
+  /* Quiz interactions. */
+  document.querySelectorAll('[data-quiz-answer]').forEach(el => el.onclick = () => {
+    quizState.answers[quizState.index] = el.dataset.quizAnswer;
+    render();
+  });
+  const qBack = document.querySelector('[data-quiz-back]');
+  if (qBack) qBack.onclick = () => { quizState.index = Math.max(0, quizState.index - 1); render(); };
+  const qNext = document.querySelector('[data-quiz-next]');
+  if (qNext) qNext.onclick = () => {
+    const q = quizState.questions[quizState.index];
+    if (q && String(quizState.answers[quizState.index]) === String(q.answer)) quizState.score++;
+    quizState.index++; render();
+  };
+  const qFinish = document.querySelector('[data-quiz-finish]');
+  if (qFinish) qFinish.onclick = () => {
+    const q = quizState.questions[quizState.index];
+    if (q && String(quizState.answers[quizState.index]) === String(q.answer)) quizState.score++;
+    quizState.done = true; render();
+  };
+  const qRestart = document.querySelector('[data-quiz-restart]');
+  if (qRestart) qRestart.onclick = () => {
+    quizState = { questions: [], index: 0, answers: {}, done: false, score: 0 };
+    render();
+  };
+
+  /* Auth form (demo auth stored locally; swap to Supabase/Firebase in prod). */
+  const authForm = document.querySelector('#auth-form');
+  if (authForm) authForm.onsubmit = (e) => {
+    e.preventDefault();
+    const fd = new FormData(authForm);
+    const email = String(fd.get('email') || '').trim();
+    const password = String(fd.get('password') || '');
+    const name = String(fd.get('name') || '').trim() || email.split('@')[0] || 'User';
+    if (!email || password.length < 4) return notify('Enter a valid email and a password (4+ chars).');
+    store.user = { name, email, picture: '', auth: 'demo' };
+    save();
+    notify(`Welcome, ${name.split(' ')[0]}!`);
+    go('/dashboard');
+  };
+  const googleBtn = document.querySelector('[data-google-auth]');
+  if (googleBtn) googleBtn.onclick = () => {
+    const g = window.google && window.google.accounts && window.google.accounts.id;
+    if (g) g.prompt(); else notify('Google sign-in available in Chrome/Edge.');
+  };
 }
 
 function bindNavExtras() {
@@ -704,8 +876,9 @@ function bindNavExtras() {
     window.google.accounts.id.renderButton(loginContainer, { theme: 'filled_black', size: 'medium', shape: 'pill' });
   }
 
-  const userChip = document.querySelector('[data-logout]');
-  if (userChip) userChip.onclick = () => { if (confirm('Sign out?')) { store.user = null; save(); render(); } };
+  document.querySelectorAll('[data-logout]').forEach(userChip => {
+    userChip.onclick = () => { if (confirm('Sign out?')) { store.user = null; save(); render(); } };
+  });
 }
 
 function handleGoogleLogin(response) {
@@ -724,7 +897,7 @@ function clearTimerAndDeadline(section) {
 }
 
 function submitListening() {
-  const allQuestions = CONTENT.listening.parts.flatMap(p => p.questions);
+  const allQuestions = currentTest('listening').parts.flatMap(p => p.questions);
   recordMistakes('listening', allQuestions, listeningState.answers, i => i);
   const correct = allQuestions.filter((q, i) => SERVICES.isCorrect(q, listeningState.answers[i])).length;
   const band = SERVICES.bandFromRaw(correct, allQuestions.length);
@@ -738,7 +911,7 @@ function submitListening() {
 
 function submitReading() {
   let correct = 0, total = 0;
-  CONTENT.reading.passages.forEach((p, pi) => {
+  currentTest('reading').passages.forEach((p, pi) => {
     recordMistakes('reading', p.questions, readingState.answers, qi => `${pi}-${qi}`);
     p.questions.forEach((q, qi) => { total++; if (SERVICES.isCorrect(q, readingState.answers[`${pi}-${qi}`])) correct++; });
   });
@@ -751,8 +924,198 @@ function submitReading() {
   go('/results');
 }
 
+/* ---------------- DASHBOARD ---------------- */
+function bandSvg(trend) {
+  const w = 560, h = 180, pad = 30;
+  const max = 9, min = 0;
+  const xs = trend.map((_, i) => pad + (i * (w - pad * 2)) / Math.max(1, trend.length - 1));
+  const ys = trend.map(p => h - pad - ((p.band - min) / (max - min)) * (h - pad * 2));
+  const poly = xs.map((x, i) => `${x},${ys[i]}`).join(' ');
+  const last = xs.length ? { x: xs[xs.length - 1], y: ys[ys.length - 1] } : null;
+  return `<svg class="band-chart" viewBox="0 0 ${w} ${h}" role="img" aria-label="${t('band_trend')}">
+    <line x1="${pad}" y1="${h - pad}" x2="${w - pad}" y2="${h - pad}" stroke="var(--panel-border)" />
+    ${[0, 3, 6, 9].map(v => { const y = h - pad - ((v - min) / (max - min)) * (h - pad * 2); return `<line x1="${pad}" y1="${y}" x2="${w - pad}" y2="${y}" stroke="var(--panel-border)" stroke-dasharray="4 5"/><text x="8" y="${y + 4}" fill="var(--muted)" font-size="11">${v}</text>`; }).join('')}
+    <polyline points="${poly}" fill="none" stroke="var(--cyan)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />
+    ${xs.map((x, i) => `<circle cx="${x}" cy="${ys[i]}" r="4" fill="var(--cyan)"><title>${trend[i].section}: ${trend[i].band} (${trend[i].label})</title></circle>`).join('')}
+    ${last ? `<circle cx="${last.x}" cy="${last.y}" r="6" fill="var(--coral)" />` : ''}
+  </svg>`;
+}
+
+function dashboard() {
+  const overall = SERVICES.overallBand(store.attempts);
+  const weakest = weakestSkill();
+  const trend = SERVICES.bandTrend(store.attempts);
+  const week = SERVICES.weeklyActivity(store.attempts);
+  const plan = SERVICES.personalPlan(store.attempts);
+  const minutes = SERVICES.studyMinutes(store.attempts);
+  const user = store.user;
+  return shell(`
+    <section class="section">
+      <div class="section-header">
+        <div><div class="eyebrow">${t('nav_dashboard')}</div><h1 style="margin:8px 0 6px">${t('dashboard_title')}</h1><p class="micro">${t('dashboard_subtitle')}</p></div>
+        ${user ? `<div class="glass user-panel"><img src="${esc(user.picture || '')}" alt=""/><div><h3>${esc(user.name || 'User')}</h3><p class="micro">${esc(user.email || '')}</p></div></div>` : `<a class="btn btn-primary" href="#/login">${t('nav_login')} ↗</a>`}
+      </div>
+      <div class="stat-grid">
+        <div class="stat"><span>${t('overall_band')}</span><strong>${overall ?? '—'}<small> /9</small></strong></div>
+        <div class="stat"><span>${t('weakest_skill')}</span><strong class="cap">${weakest || '—'}</strong></div>
+        <div class="stat"><span>${t('study_minutes')}</span><strong>${minutes}<small> min</small></strong></div>
+        <div class="stat"><span>Attempts</span><strong>${store.attempts.length}</strong></div>
+      </div>
+      <div class="dash-grid">
+        <div class="glass dash-panel">
+          <div class="panel-title">${t('band_trend')}</div>
+          ${trend.length ? bandSvg(trend) : `<p class="micro">Complete a section to see your band trend.</p>`}
+        </div>
+        <div class="glass dash-panel">
+          <div class="panel-title">${t('weekly_activity')}</div>
+          <div class="week">${week.map(d => `<div class="bar-col"><i style="height:${Math.max(6, d.pct)}%"></i><span>${d.count}</span><em>${esc(d.label)}</em></div>`).join('')}</div>
+        </div>
+      </div>
+      <div class="glass">
+        <div class="panel-title">${t('personalized_plan')}</div>
+        <div class="plan-list">${plan.map(p => `<div class="plan-item"><span class="pill">${esc(p.day)}</span><div><strong>${esc(p.title)}</strong><p class="micro">${esc(p.detail)}</p></div></div>`).join('')}</div>
+        <div style="display:flex;gap:10px;margin-top:18px;flex-wrap:wrap">
+          <button class="btn btn-primary" data-go="/fullmock">${t('start_full_mock')} ↗</button>
+          <button class="btn btn-ghost" data-go="/quiz">${t('nav_quiz')} ↗</button>
+          <button class="btn btn-ghost" data-go="/lessons">${t('lesson_list')} ↗</button>
+        </div>
+      </div>
+    </section>`, 'dashboard');
+}
+
+/* ---------------- LESSONS ---------------- */
+function lessons() {
+  const list = CONTENT.lessons || [];
+  const cats = [...new Set(list.map(l => l.category))];
+  return shell(`
+    <section class="section">
+      <div class="section-header"><div><div class="eyebrow">${t('lesson_list')}</div><h1 style="margin:8px 0 0">${t('lesson_list')}</h1></div></div>
+      <div class="filter-pills">${cats.map(c => `<button class="pill" data-filter-lesson="${esc(c)}">${esc(c)}</button>`).join('')}</div>
+      <div class="lesson-grid">${list.map(lessonCard).join('')}</div>
+    </section>`, 'lessons');
+}
+function lessonCard(l) {
+  return `<article class="test-card lesson-card" data-cat="${esc(l.category)}"><div class="test-meta"><span>${esc(l.category)}</span><span>${esc(l.level)}</span></div><h3>${esc(l.title)}</h3><p class="micro">${l.minutes} min</p><ul class="lesson-bullets">${l.bullets.slice(0, 3).map(b => `<li>${esc(b)}</li>`).join('')}</ul><button class="btn btn-ghost btn-sm" data-lesson-open="${esc(l.id)}">Read ↗</button></article>`;
+}
+
+/* ---------------- VOCABULARY ---------------- */
+function vocabulary() {
+  const sets = CONTENT.vocabulary || {};
+  const ids = Object.keys(sets);
+  let known = 0, total = 0;
+  ids.forEach(k => sets[k].words.forEach(w => { total++; if (store.vocabKnown[w.word]) known++; }));
+  const mastery = SERVICES.vocabMastery(known, total);
+  return shell(`
+    <section class="section">
+      <div class="section-header"><div><div class="eyebrow">${t('vocabulary_title')}</div><h1 style="margin:8px 0 6px">${t('vocabulary_title')}</h1></div></div>
+      <div class="progress"><i style="width:${mastery}%"></i><span>${mastery}% ${t('vocab_mastery')}</span></div>
+      ${ids.map(id => {
+        const set = sets[id];
+        return `<div class="glass vocab-set"><div class="panel-title">${esc(set.title)} <span class="pill">${esc(set.level)}</span></div>
+          <div class="vocab-grid">${set.words.map(w => {
+            const knownVocab = !!store.vocabKnown[w.word];
+            return `<div class="vocab-card ${knownVocab ? 'known' : ''}"><div class="vocab-head"><strong>${esc(w.word)}</strong><span class="micro">${esc(w.pos)}</span></div><p class="micro">${esc(w.meaning)}</p><p class="micro vocab-ex">“${esc(w.example)}”</p><button class="btn btn-ghost btn-sm ${knownVocab ? 'is-known' : ''}" data-vocab-word="${esc(w.word)}">${knownVocab ? '✓ Known' : 'Mark known'}</button></div>`;
+          }).join('')}</div>
+        </div>`;
+      }).join('')}
+    </section>`, 'vocabulary');
+}
+
+/* ---------------- QUIZ ---------------- */
+let quizState = { questions: [], index: 0, answers: {}, done: false, score: 0 };
+function quizPage() {
+  if (!quizState.questions.length) quizState.questions = SERVICES.quizFrom(CONTENT.quiz || {}, 4);
+  if (quizState.done) {
+    const pct = Math.round((quizState.score / quizState.questions.length) * 100);
+    return shell(`<section class="section"><div class="glass center-card"><div class="result-band">${pct}<small>%</small></div><h2>${t('quiz_your_score')}</h2><p class="micro">${quizState.score}/${quizState.questions.length}</p><button class="btn btn-primary" data-quiz-restart>Retry ↗</button><button class="btn btn-ghost" data-go="/vocabulary">${t('nav_vocabulary')} ↗</button></div></section>`, 'quiz');
+  }
+  const q = quizState.questions[quizState.index];
+  return shell(`
+    <section class="section">
+      <div class="section-header"><div><div class="eyebrow">${t('quiz_title')}</div><h1 style="margin:8px 0 0">${t('quiz_title')}</h1></div></div>
+      <div class="quiz-progress"><i style="width:${((quizState.index + 1) / quizState.questions.length) * 100}%"></i></div>
+      <div class="glass quiz-card">
+        <div class="test-meta"><span>Question ${quizState.index + 1}/${quizState.questions.length}</span><span class="pill">${q.type || 'mcq'}</span></div>
+        <h3 style="margin:14px 0 18px">${esc(q.prompt)}</h3>
+        <div class="quiz-opts">${(q.options || []).map((o, oi) => `<button class="btn btn-ghost opt-btn ${String(quizState.answers[quizState.index]) === String(oi) ? 'selected' : ''}" data-quiz-answer="${oi}">${String.fromCharCode(65 + oi)}. ${esc(o)}</button>`).join('')}</div>
+        ${quizState.answers[quizState.index] !== undefined ? `<div class="explain-box"><span class="label">${t('explanation')}:</span> ${esc(q.explanation || '')}</div>` : ''}
+        <div style="display:flex;gap:10px;margin-top:20px">
+          ${quizState.index > 0 ? '<button class="btn btn-ghost" data-quiz-back>← Back</button>' : ''}
+          ${quizState.index < quizState.questions.length - 1 ? '<button class="btn btn-primary" data-quiz-next>'+t('quiz_next')+' ↗</button>' : '<button class="btn btn-primary" data-quiz-finish>'+t('quiz_finish')+' ↗</button>'}
+        </div>
+      </div>
+    </section>`, 'quiz');
+}
+
+/* ---------------- FULL MOCK ---------------- */
+function fullmock() {
+  const steps = [
+    { key: 'listening', title: 'Listening', color: 'var(--cyan)', max: 40 },
+    { key: 'reading', title: 'Reading', color: 'var(--cyan)', max: 40 },
+    { key: 'writing', title: 'Writing', color: 'var(--coral)', max: 9 },
+    { key: 'speaking', title: 'Speaking', color: 'var(--coral)', max: 9 }
+  ];
+  const overall = SERVICES.overallBand(store.attempts);
+  return shell(`
+    <section class="section">
+      <div class="section-header"><div><div class="eyebrow">${t('fullmock_title')}</div><h1 style="margin:8px 0 6px">${t('fullmock_title')}</h1><p class="micro">${t('fullmock_subtitle')}</p></div><div class="test-switch">${testSwitch()}</div></div>
+      <div class="mock-flow">
+        ${steps.map((s, i) => {
+          const done = store.attempts.some(a => a.section === s.key);
+          return `<a class="mock-step ${done ? 'done' : ''}" href="#/${s.key}"><span class="step-num">${i + 1}</span><div><strong>${s.title}</strong><p class="micro">${done ? '✓ Completed' : t('not_started')} · ${s.max}</p></div>${done ? '' : '↗'}</a>`;
+        }).join('')}
+      </div>
+      <div class="glass" style="margin-top:20px">
+        <div class="panel-title">Combined result</div>
+        <div class="big" style="margin:10px 0">${overall ?? '—'} <small>/ 9</small></div>
+        <p class="micro">${store.attempts.length}/4 sections attempted.</p>
+        <div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap">
+          <button class="btn btn-primary" data-go="/listening">Start with Listening ↗</button>
+          <button class="btn btn-ghost" data-go="/dashboard">${t('nav_dashboard')} ↗</button>
+        </div>
+      </div>
+    </section>`, 'fullmock');
+}
+
+/* ---------------- SETTINGS ---------------- */
+function settings() {
+  const user = store.user;
+  return shell(`
+    <section class="section">
+      <div class="section-header"><div><div class="eyebrow">${t('settings_title')}</div><h1 style="margin:8px 0 0">${t('settings_title')}</h1></div></div>
+      <div class="glass setting-card">
+        <div class="setting-row"><span>${t('language')}</span><div class="seg">${['en', 'uz', 'ru'].map(l => `<button class="seg-btn ${(store.lang || 'en') === l ? 'active' : ''}" data-set-lang="${l}">${l.toUpperCase()}</button>`).join('')}</div></div>
+        <div class="setting-row"><span>Theme</span><div class="seg">${['dark', 'light'].map(th => `<button class="seg-btn ${store.theme === th ? 'active' : ''}" data-set-theme="${th}">${th === 'light' ? t('theme_light') : t('theme_dark')}</button>`).join('')}</div></div>
+        <div class="setting-row"><span>Practice test</span><div class="test-switch">${testSwitch()}</div></div>
+        <div class="setting-row"><span>Account</span>${user ? `<button class="btn btn-ghost btn-sm" data-logout>${t('nav_logout')}</button>` : `<button class="btn btn-ghost btn-sm" data-go="/login">${t('nav_login')}</button>`}</div>
+      </div>
+    </section>`, 'settings');
+}
+
+/* ---------------- AUTH ---------------- */
+function authPage(mode) {
+  const isSignup = mode === 'signup';
+  return shell(`
+    <section class="section auth-wrap">
+      <div class="glass auth-card center-card">
+        <h1 style="margin:0 0 6px">${isSignup ? t('auth_signup_title') : t('auth_title')}</h1>
+        <p class="micro">${t('auth_demo_note')}</p>
+        <form id="auth-form" data-auth-mode="${isSignup ? 'signup' : 'login'}">
+          ${isSignup ? `<label class="field"><span>${t('auth_name')}</span><input name="name" class="btn btn-ghost" required placeholder="Aziz"/></label>` : ''}
+          <label class="field"><span>${t('auth_email')}</span><input name="email" type="email" class="btn btn-ghost" required placeholder="you@example.com"/></label>
+          <label class="field"><span>${t('auth_password')}</span><input name="password" type="password" class="btn btn-ghost" required placeholder="••••••••"/></label>
+          <button class="btn btn-primary" type="submit" style="width:100%">${t('auth_submit')} ↗</button>
+        </form>
+        <button class="btn btn-ghost google-btn" data-google-auth style="width:100%;margin-top:12px">${t('auth_google')}</button>
+        <div id="google-login-btn" style="margin-top:12px"></div>
+        <p class="micro">${isSignup ? `<a href="#/login">${t('auth_switch')}</a>` : `<a href="#/signup">${t('auth_switch_signup')}</a>`}</p>
+      </div>
+    </section>`, 'auth');
+}
+
 /* ---------------- RENDER / ROUTER ---------------- */
 function render() {
+  applyPrefs();
   const r = route();
   if (r === '/') app.innerHTML = home();
   else if (r === '/mock') app.innerHTML = mockHub();
@@ -763,11 +1126,31 @@ function render() {
   else if (r === '/results') app.innerHTML = resultsPage();
   else if (r === '/mistakes') app.innerHTML = mistakes();
   else if (r === '/coach') app.innerHTML = coach();
+  else if (r === '/dashboard') app.innerHTML = dashboard();
+  else if (r === '/lessons') app.innerHTML = lessons();
+  else if (r === '/vocabulary') app.innerHTML = vocabulary();
+  else if (r === '/quiz') app.innerHTML = quizPage();
+  else if (r === '/fullmock') app.innerHTML = fullmock();
+  else if (r === '/settings') app.innerHTML = settings();
+  else if (r === '/login') app.innerHTML = authPage('login');
+  else if (r === '/signup') app.innerHTML = authPage('signup');
   else app.innerHTML = home();
   bind();
   const msgBox = document.querySelector('#coach-messages');
   if (msgBox) msgBox.scrollTop = msgBox.scrollHeight;
 }
 
+/* ---------------- BOOT ---------------- */
+function registerPWA() {
+  if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
+  const done = () => navigator.serviceWorker.register('sw.js', { scope: '/' }).then(() => {
+    if (typeof console !== 'undefined') console.log('PWA service worker registered');
+  }).catch(() => {});
+  if (document && document.readyState === 'complete') done();
+  else if (window && typeof window.addEventListener === 'function') window.addEventListener('load', done);
+}
+
+applyPrefs();
+registerPWA();
 window.addEventListener('hashchange', render);
 render();
