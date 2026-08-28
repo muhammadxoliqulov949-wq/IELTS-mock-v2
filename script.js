@@ -4,46 +4,23 @@ const CONTENT = window.IELTS_CONTENT;
 const SERVICES = window.IELTS_SERVICES;
 const I18N = window.IELTS_I18N || { t: (k) => k, current: () => 'en', setLang() {} };
 const t = (k) => I18N.t(k);
-const STORAGE_BASE = 'ielts-v2-store';
-const USER_KEY = 'ielts-v2-user';
+const STORAGE = 'ielts-v2-store';
 const GOOGLE_CLIENT_ID = '644107198192-45nq6hr0g5qp0ubjr795uu07s0oi9ij6.apps.googleusercontent.com';
 const BAND_LABEL = { listening: 'Listening', reading: 'Reading', writing: 'Writing', speaking: 'Speaking' };
 
-function getStorageKey() {
-  try {
-    const userRaw = localStorage.getItem(USER_KEY);
-    if (userRaw) {
-      const u = JSON.parse(userRaw);
-      if (u && u.email) return STORAGE_BASE + ':' + u.email;
-    }
-  } catch {}
-  return STORAGE_BASE + ':guest';
-}
-function loadUserFromStorage() {
-  try { return JSON.parse(localStorage.getItem(USER_KEY)) || null; } catch { return null; }
-}
-function saveUserToStorage(user) {
-  try { localStorage.setItem(USER_KEY, JSON.stringify(user || null)); } catch {}
-}
-
 let store = load();
 function load() {
-  const key = getStorageKey();
-  const userFromStorage = loadUserFromStorage() || store?.user || null;
   try {
-    const raw = JSON.parse(localStorage.getItem(key)) || {};
+    const raw = JSON.parse(localStorage.getItem(STORAGE)) || {};
     return {
-      attempts: [], mistakes: [], feedback: {}, coachMessages: [], user: userFromStorage,
-      selectedTest: 'test1', theme: 'dark', lang: 'en', vocabKnown: {}, fullMock: null, quizzes: [], warningConfirmed: {}, ...raw
+      attempts: [], mistakes: [], feedback: {}, coachMessages: [], user: null,
+      selectedTest: 'test1', theme: 'dark', lang: 'en', vocabKnown: {}, fullMock: null, quizzes: [], ...raw
     };
   } catch {
-    return { attempts: [], mistakes: [], feedback: {}, coachMessages: [], user: userFromStorage, selectedTest: 'test1', theme: 'dark', lang: 'en', vocabKnown: {}, fullMock: null, quizzes: [] };
+    return { attempts: [], mistakes: [], feedback: {}, coachMessages: [], user: null, selectedTest: 'test1', theme: 'dark', lang: 'en', vocabKnown: {}, fullMock: null, quizzes: [] };
   }
 }
-function save() {
-  saveUserToStorage(store.user);
-  localStorage.setItem(getStorageKey(), JSON.stringify({ ...store, user: store.user }));
-}
+function save() { localStorage.setItem(STORAGE, JSON.stringify(store)); }
 function go(path) { location.hash = path; }
 function route() { return location.hash.slice(1) || '/'; }
 /* Apply persisted preferences on every render so the whole app reflects them. */
@@ -63,7 +40,7 @@ function esc(v) { return String(v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<'
 function notify(msg) { toast.textContent = msg; toast.classList.add('show'); setTimeout(() => toast.classList.remove('show'), 2400); }
 function fmtTime(seconds) { const m = Math.floor(Math.max(0, seconds) / 60); const s = Math.max(0, seconds) % 60; return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`; }
 /* persist a per-section deadline so a page refresh does not reset the timer */
-function deadlineKey(section) { return getStorageKey() + ':deadline:' + section; }
+function deadlineKey(section) { return `${STORAGE}:deadline:${section}`; }
 function loadDeadline(section, minutes) {
   const key = deadlineKey(section);
   const saved = Number(localStorage.getItem(key)) || 0;
@@ -102,7 +79,9 @@ function shell(body, active) {
   const isMock = ['mock', 'listening', 'reading', 'writing', 'speaking'].includes(active);
   const user = store.user;
   const primary = [
+    { key: 'dashboard', label: t('nav_dashboard'), active: active === 'dashboard' },
     { key: 'mock', label: t('nav_mock'), active: isMock },
+    { key: 'fullmock', label: t('nav_fullmock'), active: active === 'fullmock' },
     { key: 'results', label: t('nav_results'), active: active === 'results' },
     { key: 'coach', label: t('nav_coach'), active: active === 'coach' }
   ];
@@ -111,8 +90,7 @@ function shell(body, active) {
     { key: 'lessons', label: t('nav_lessons'), active: active === 'lessons' },
     { key: 'vocabulary', label: t('nav_vocabulary'), active: active === 'vocabulary' },
     { key: 'quiz', label: t('nav_quiz'), active: active === 'quiz' },
-    { key: 'settings', label: t('nav_settings'), active: active === 'settings' },
-    { key: 'dashboard', label: t('nav_dashboard'), active: active === 'dashboard' }
+    { key: 'settings', label: t('nav_settings'), active: active === 'settings' }
   ];
   const allLinks = [...primary, ...more];
   const moreActive = more.find(l => l.active) || null;
@@ -120,10 +98,6 @@ function shell(body, active) {
   const nextLang = store.lang === 'en' ? 'UZ' : store.lang === 'uz' ? 'RU' : 'EN';
   const displayName = String(user ? (user.name || user.email || 'User') : 'User');
   const firstName = displayName.split(' ')[0];
-  const warningPages = ['listening','reading','writing','speaking','mock'];
-  const showWarning = warningPages.includes(active) && (!store.warningConfirmed || !store.warningConfirmed[active]);
-  const warningHtml = showWarning ? testWarningHtml(active, active === 'listening' ? '30 minutes' : active === 'reading' ? '60 minutes' : active === 'writing' ? '60 minutes' : active === 'speaking' ? '14 minutes' : 'Full mock exam') : '';
-  const bodyWithWarning = warningHtml ? warningHtml + body : body;
   return `<header class="site-header" id="siteHeader">
   <nav class="nav" id="mainNav" aria-label="Main navigation">
     <a class="brand" href="#/"><span class="brand-mark">B</span><span class="brand-name">IELTS Mock</span></a>
@@ -157,7 +131,7 @@ function shell(body, active) {
     </div>
   </nav>
 </header>
-<div class="shell"><div class="page-fade">${bodyWithWarning}</div></div>
+<div class="shell"><div class="page-fade">${body}</div></div>
 <div class="mobile-menu" id="mobileMenu">
   <button class="close-menu" id="closeMenuBtn" aria-label="${t('modal_close')}">×</button>
   <div class="mm-brand"><span class="brand-mark">B</span> IELTS Mock</div>
@@ -350,9 +324,6 @@ function mockHub() {
 function currentTest(skill) { return SERVICES.getSkillContent(skill, store.selectedTest); }
 let listeningState = { partIndex: 0, answers: {}, played: {}, deadline: null };
 function listening() {
-  if (!requireAuth()) return;
-  const completed = sectionCompletedResult('listening');
-  if (completed) return shell(completed, 'listening');
   const test = currentTest('listening');
   if (!listeningState.deadline) listeningState.deadline = loadDeadline('listening:' + store.selectedTest, 30);
   const part = test.parts[listeningState.partIndex];
@@ -383,9 +354,6 @@ function listening() {
 /* ---------------- READING ---------------- */
 let readingState = { passageIndex: 0, answers: {}, deadline: null };
 function reading() {
-  if (!requireAuth()) return;
-  const completed = sectionCompletedResult('reading');
-  if (completed) return shell(completed, 'reading');
   const test = currentTest('reading');
   if (!readingState.deadline) readingState.deadline = loadDeadline('reading:' + store.selectedTest, 60);
   const passage = test.passages[readingState.passageIndex];
@@ -415,9 +383,6 @@ function reading() {
 }/* ---------------- WRITING ---------------- */
 let writingState = { answers: {}, deadline: null };
 function writing() {
-  if (!requireAuth()) return;
-  const completed = sectionCompletedResult('writing');
-  if (completed) return shell(completed, 'writing');
   const test = currentTest('writing');
   if (!writingState.deadline) writingState.deadline = loadDeadline('writing:' + store.selectedTest, 60);
   return shell(`
@@ -440,9 +405,6 @@ function writing() {
 /* ---------------- SPEAKING ---------------- */
 let speakingState = { partIndex: 0, transcripts: { sp1: [], sp2: '', sp3: [] } };
 function speaking() {
-  if (!requireAuth()) return;
-  const completed = sectionCompletedResult('speaking');
-  if (completed) return shell(completed, 'speaking');
   const test = currentTest('speaking');
   const part = test.parts[speakingState.partIndex];
   return shell(`
@@ -1060,18 +1022,6 @@ function bindNavExtras() {
   document.querySelectorAll('[data-logout]').forEach(el => {
     el.onclick = () => { store.user = null; save(); render(); };
   });
-
-  /* Warning modal: confirm once and persist; close hides it permanently for this section */
-  const closeBtn = document.querySelector('#testWarningModal button');
-  if (closeBtn) {
-    closeBtn.onclick = () => {
-      const active = route().slice(1) || 'mock';
-      store.warningConfirmed = store.warningConfirmed || {};
-      store.warningConfirmed[active] = true;
-      save();
-      document.getElementById('testWarningModal').style.display = 'none';
-    };
-  }
 }
 
 function setMenu(menu, open, trigger) {
@@ -1306,68 +1256,8 @@ function quizPage() {
     </section>`, 'quiz');
 }
 
-function requireAuth() {
-  if (!store.user || !store.user.email) {
-    go('/login');
-    return false;
-  }
-  return true;
-}
-
-function sectionCompletedResult(section) {
-  const attempts = store.attempts.filter(a => a.section === section);
-  if (!attempts.length) return null;
-  const attempt = attempts[attempts.length - 1];
-  const fb = store.feedback[section];
-  const label = BAND_LABEL[section] || section;
-  return `<section class="section"><div class="section-header"><div><div class="eyebrow">${label} · Completed · ${t('done')}</div><h1 style="font-family:var(--font-display);font-size:28px;margin:10px 0 0">${label} — Completed</h1></div></div>
-    <div class="glass" style="padding:30px;text-align:center;margin-top:20px">
-      <div class="result-band">${attempt.band}<small> / 9</small></div>
-      <p class="micro">Completed on ${new Date(attempt.date).toLocaleDateString()}</p>
-      ${attempt.raw !== undefined ? `<p style="font-size:14px;color:var(--muted);margin-top:8px">${attempt.raw}/${attempt.total} correct answers</p>` : ''}
-      ${fb ? aiFeedbackBlock(fb) : `<p style="margin-top:16px;color:var(--muted);font-size:14px">No detailed AI feedback saved for this attempt.</p>`}
-      <div style="margin-top:20px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
-        <button class="btn btn-ghost" data-go="/results">View all results ↗</button>
-        <button class="btn btn-primary" data-go="/mock">Back to Mock Test ↗</button>
-      </div>
-    </div>
-  </section>`;
-}
-
 /* ---------------- FULL MOCK ---------------- */
-window.closeTestWarning = function() {
-  const modal = document.getElementById('testWarningModal');
-  if (modal) { modal.style.display = 'none'; }
-};
-window.confirmTestWarning = function() {
-  const active = (window.location && window.location.hash ? window.location.hash.slice(2) : '') || 'mock';
-  const s = (typeof store !== 'undefined') ? store : null;
-  if (s) {
-    s.warningConfirmed = s.warningConfirmed || {};
-    s.warningConfirmed[active] = true;
-    if (typeof save === 'function') save();
-  }
-  if (typeof closeTestWarning === 'function') closeTestWarning();
-};
-
-function testWarningHtml(sectionName, timeMsg) {
-  return `
-  <div id="testWarningModal" class="modal-backdrop" style="z-index:95;display:flex;">
-    <div class="modal glass" role="dialog" aria-modal="true" aria-labelledby="warningTitle" style="max-width:520px;padding:28px;text-align:center;">
-      <h2 id="warningTitle" style="font-family:var(--font-display);font-size:22px;margin:0 0 14px;color:var(--coral)">⚠ Before you start</h2>
-      <p style="font-size:15px;line-height:1.6;margin-bottom:8px">Once this <strong>${sectionName}</strong> test begins, <strong>the timer cannot be stopped or paused</strong>.</p>
-      <p style="font-size:15px;line-height:1.6;margin-bottom:8px">When the time is up, the window will close automatically and <strong>you will not be able to return to this test</strong> — only the result will be shown.</p>
-      <p style="font-size:13.5px;color:var(--muted);margin-bottom:22px">Completed tests are marked <strong>Bajarildi (Done)</strong> and only show results.</p>
-      <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;">
-        <button class="btn btn-primary" onclick="window.confirmTestWarning()">I understand — Start</button>
-        <button class="btn btn-ghost" onclick="closeTestWarning();go('/mock');">Cancel</button>
-      </div>
-    </div>
-  </div>`;
-}
-
 function fullmock() {
-  if (!requireAuth()) return shell(`<section class="section"><div class="glass" style="padding:40px;text-align:center"><h2>Please sign in to start the Mock Test</h2><p>Sign in to access the full-length exam and save your results.</p><a class="btn btn-primary" href="#/login">Sign in ↗</a></div></section>`, 'mock');
   const steps = [
     { key: 'listening', title: 'Listening', color: 'var(--cyan)', max: 40 },
     { key: 'reading', title: 'Reading', color: 'var(--cyan)', max: 40 },
@@ -1438,7 +1328,7 @@ function render() {
   const r = route();
   let html;
   if (r === '/') html = home();
-  else if (r === '/mock') html = fullmock();
+  else if (r === '/mock') html = mockHub();
   else if (r === '/listening') html = listening();
   else if (r === '/reading') html = reading();
   else if (r === '/writing') html = writing();
@@ -1450,6 +1340,7 @@ function render() {
   else if (r === '/lessons') html = lessons();
   else if (r === '/vocabulary') html = vocabulary();
   else if (r === '/quiz') html = quizPage();
+  else if (r === '/fullmock') html = fullmock();
   else if (r === '/settings') html = settings();
   else if (r === '/login') html = authPage('login');
   else if (r === '/signup') html = authPage('signup');
