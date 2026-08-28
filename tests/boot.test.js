@@ -55,6 +55,8 @@ try {
   eval(fs.readFileSync(path + '/data.js', 'utf8'));
   eval(fs.readFileSync(path + '/i18n.js', 'utf8'));
   eval(fs.readFileSync(path + '/content2.js', 'utf8'));
+  eval(fs.readFileSync(path + '/content3.js', 'utf8'));
+  eval(fs.readFileSync(path + '/content4.js', 'utf8'));
   eval(fs.readFileSync(path + '/services.js', 'utf8'));
   fn(global.document, global.localStorage, global.location, global.window, global.confirm);
   const render = globalThis.__render;

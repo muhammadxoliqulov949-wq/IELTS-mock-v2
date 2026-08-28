@@ -29,12 +29,14 @@ window.IELTS_SERVICES = {
 
   /* ---------- premium helpers ---------- */
 
-  /* Return the content object for a test id (test1/test2) and a skill. */
+  /* Return the content object for a test id (test1/test2/test3/...) and a skill. */
   getSkillContent(skill, testId) {
     const c = window.IELTS_CONTENT || {};
     const id = testId || 'test1';
-    if (id === 'test2') return c[skill + '2'] || c[skill];
-    return c[skill];
+    const n = /^test(\d+)$/.exec(id);
+    if (!n) return c[skill];
+    const suffix = n[1] === '1' ? '' : n[1];
+    return c[skill + suffix] || c[skill];
   },
 
   /* Return the human test label (localised when possible). */
