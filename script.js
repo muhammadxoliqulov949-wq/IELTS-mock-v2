@@ -306,7 +306,7 @@ function testSwitch() {
   const meta = CONTENT.testMeta || { tests: [{ id: 'test1', label: 'Practice Test 1' }, { id: 'test2', label: 'Practice Test 2', premium: true }] };
   const labels = ['listening', 'reading', 'writing', 'speaking'].map(s => SERVICES.getSkillContent(s, store.selectedTest));
   return `<div class="seg" role="tablist">
-    ${meta.tests.map(tb => `<button class="seg-btn ${store.selectedTest === tb.id ? 'active' : ''}" data-test="${tb.id}" ${tb.premium ? `title="${t('test2_free')}"` : ''}>${tb.premium ? '⭐ ' : ''}${tb.id === 'test2' ? t('test2') : t('test1')}</button>`).join('')}
+    ${meta.tests.map(tb => `<button class="seg-btn ${store.selectedTest === tb.id ? 'active' : ''}" data-test="${tb.id}" ${tb.premium ? `title="${t('test2_free')}"` : ''}>${tb.premium ? '⭐ ' : ''}${esc(SERVICES.testLabel(tb.id, store.lang))}</button>`).join('')}
   </div>`;
 }
 
