@@ -121,22 +121,22 @@ html, body {
 .app { min-height: 100vh; }
 .shell { max-width: 1180px; margin: 0 auto; padding: 0 24px; }
 
-/* ---------- Nav: sticky header that morphs into a floating pill on scroll ---------- */
-/* 5 primary links + "More" dropdown + theme/language + user menu.
-   At the top of the page the bar is transparent; once you scroll it becomes
-   a slim, fully rounded capsule ("pill") that stays pinned with the page.
+/* ---------- Nav: sticky floating pill header ---------- */
+/* The nav is ALWAYS a rounded capsule ("pill"): a subtle floating one at the
+   top of the page, and a slimmer, more prominent pill while scrolling — it
+   stays pinned (sticky) and follows the page at all times.
    Below 900px the links collapse into the hamburger menu (same breakpoint,
    so there is never a width where navigation disappears). */
 .site-header {
   position: sticky;
   top: 0;
   z-index: 40;
+  padding: 10px 16px 0;
   background: transparent;
-  border-bottom: 1px solid transparent;
   transition: padding 0.3s ease;
 }
 .site-header.scrolled {
-  padding: 10px 16px 8px;
+  padding: 10px 16px 10px;
 }
 .nav {
   max-width: 1180px;
@@ -145,19 +145,21 @@ html, body {
   display: flex;
   align-items: center;
   gap: 18px;
-  border: 1px solid transparent;
+  border: 1px solid var(--nav-pill-border);
   border-radius: 999px;
+  background: var(--nav-bg);
+  -webkit-backdrop-filter: blur(16px) saturate(1.3);
+  backdrop-filter: blur(16px) saturate(1.3);
   transition: padding 0.3s ease, background 0.3s ease, box-shadow 0.3s ease,
               border-color 0.3s ease, max-width 0.3s ease;
 }
-/* Scrolled state: slim floating capsule */
+/* Scrolled state: slimmer, more prominent floating capsule */
 .site-header.scrolled .nav {
   max-width: 1120px;
   padding: 7px 10px;
   background: var(--nav-scrolled);
   -webkit-backdrop-filter: blur(18px) saturate(1.4);
   backdrop-filter: blur(18px) saturate(1.4);
-  border-color: var(--nav-pill-border);
   box-shadow: 0 16px 40px -20px rgba(0, 0, 0, 0.6), 0 4px 12px -6px rgba(0, 0, 0, 0.25);
 }
 .site-header.scrolled .brand { font-size: 15px; }
@@ -727,7 +729,8 @@ textarea:focus-visible, [tabindex]:focus-visible {
 @media (max-width: 720px) {
   .shell { padding: 0 18px; }
   .nav { padding: 10px 14px; }
-  .site-header.scrolled { padding: 8px 12px 6px; }
+  .site-header { padding: 8px 12px 0; }
+  .site-header.scrolled { padding: 8px 12px 8px; }
   .site-header.scrolled .nav { max-width: none; padding: 6px 8px; }
   .hero { padding: 30px 0 20px; gap: 26px; }
   .hero h1 { font-size: 30px; }

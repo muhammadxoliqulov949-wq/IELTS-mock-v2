@@ -28,6 +28,14 @@ const MIME = {
   '.ico': 'image/x-icon',
   '.txt': 'text/plain; charset=utf-8'
 };
+/* Always revalidate the app code so edits show up on a normal reload.
+   Only images get a long cache (they are content-addressed enough). */
+const CACHE = {
+  '.svg': 'public, max-age=86400',
+  '.png': 'public, max-age=604800',
+  '.jpg': 'public, max-age=604800',
+  '.ico': 'public, max-age=604800'
+};
 
 function attachBody(req) {
   return new Promise((resolve) => {
@@ -74,7 +82,11 @@ const server = http.createServer(async (req, res) => {
   }
   fs.readFile(abs, (err, data) => {
     if (err) { res.writeHead(404); res.end('Not found'); return; }
-    res.writeHead(200, { 'Content-Type': MIME[path.extname(abs)] || 'application/octet-stream' });
+    const ext = path.extname(abs);
+    res.writeHead(200, {
+      'Content-Type': MIME[ext] || 'application/octet-stream',
+      'Cache-Control': CACHE[ext] || 'no-cache, must-revalidate'
+    });
     res.end(data);
   });
 });
