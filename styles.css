@@ -192,6 +192,8 @@ html, body {
   gap: 2px;
   align-items: center;
   min-width: 0;
+  /* the three primary actions sit centred in the pill */
+  margin-inline: auto;
 }
 .nav-links > a {
   padding: 8px 13px;
@@ -355,9 +357,11 @@ body[data-theme="light"] .nav-more-btn:hover { background: rgba(17, 21, 43, 0.05
   white-space: nowrap;
 }
 
-/* ---------- Mobile hamburger menu ---------- */
+/* ---------- Hamburger menu (all breakpoints) ---------- */
+/* On desktop the three primary tabs stay centred and the hamburger reveals
+   the remaining features; on mobile it is the main menu. */
 .hamburger {
-  display: none;
+  display: flex;
   flex-direction: column;
   justify-content: center;
   align-items: center;
@@ -413,6 +417,13 @@ body[data-theme="light"] .mobile-menu { background: rgba(246, 247, 251, 0.97); }
   font-weight: 500;
 }
 .mm-links a.active { color: var(--primary); }
+/* Desktop: the hamburger menu lists the remaining features only —
+   the three primary actions already sit centred in the top bar. */
+@media (min-width: 901px) {
+  .mm-primaries { display: none; }
+  .mm-links a { font-size: 17px; }
+  .mm-links { gap: 12px; }
+}
 .mm-actions {
   display: flex;
   gap: 10px;
@@ -654,6 +665,20 @@ body[data-theme="light"] .skill-dot { background: rgba(17,21,43,0.12); }
 }
 .next-step h2 { font-family: var(--font-display); font-size: 22px; margin: 8px 0 6px; }
 .next-step p { color: var(--muted); font-size: 14px; margin: 0; }
+
+/* ---------- Test-flow icons (warning / gate / completed) ---------- */
+.warn-icon {
+  width: 58px; height: 58px; margin: 0 auto;
+  display: grid; place-items: center;
+  border-radius: 50%;
+  font-size: 25px;
+  color: var(--primary);
+  background: var(--primary-soft);
+  border: 1px solid var(--panel-border);
+}
+body[data-theme="light"] .warn-icon { color: var(--primary); }
+.warn-icon.ok { background: rgba(45, 212, 191, 0.14); color: var(--cyan); border-color: rgba(45, 212, 191, 0.35); }
+.test-card.is-done { border-color: rgba(45, 212, 191, 0.35); }
 
 /* ---------- Modal (lesson detail) ---------- */
 .modal-backdrop {

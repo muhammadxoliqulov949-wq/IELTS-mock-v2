@@ -4,46 +4,76 @@ const CONTENT = window.IELTS_CONTENT;
 const SERVICES = window.IELTS_SERVICES;
 const I18N = window.IELTS_I18N || { t: (k) => k, current: () => 'en', setLang() {} };
 const t = (k) => I18N.t(k);
-const STORAGE_BASE = 'ielts-v2-store';
-const USER_KEY = 'ielts-v2-user';
+const STORAGE = 'ielts-v2-store';
+/* Session identity lives under its own key so the account store
+   (ielts-v2-store:<email>) can be picked up on boot. Results saved for one
+   email are invisible to guests and to any other account on this device. */
+const SESSION_KEY = 'ielts-v2-user';
 const GOOGLE_CLIENT_ID = '644107198192-45nq6hr0g5qp0ubjr795uu07s0oi9ij6.apps.googleusercontent.com';
 const BAND_LABEL = { listening: 'Listening', reading: 'Reading', writing: 'Writing', speaking: 'Speaking' };
 
-function getStorageKey() {
-  try {
-    const userRaw = localStorage.getItem(USER_KEY);
-    if (userRaw) {
-      const u = JSON.parse(userRaw);
-      if (u && u.email) return STORAGE_BASE + ':' + u.email;
-    }
-  } catch {}
-  return STORAGE_BASE + ':guest';
+function sessionUser() {
+  try { return JSON.parse(localStorage.getItem(SESSION_KEY)) || null; } catch { return null; }
 }
-function loadUserFromStorage() {
-  try { return JSON.parse(localStorage.getItem(USER_KEY)) || null; } catch { return null; }
+function storageKey() {
+  const u = sessionUser();
+  return u && u.email ? `${STORAGE}:${String(u.email).toLowerCase()}` : STORAGE;
 }
-function saveUserToStorage(user) {
-  try { localStorage.setItem(USER_KEY, JSON.stringify(user || null)); } catch {}
-}
-
 let store = load();
+function storeDefaults() {
+  return { attempts: [], mistakes: [], feedback: {}, coachMessages: [], selectedTest: 'test1', theme: 'dark', lang: 'en', vocabKnown: {}, fullMock: null, quizzes: [] };
+}
 function load() {
-  const key = getStorageKey();
-  const userFromStorage = loadUserFromStorage() || store?.user || null;
   try {
-    const raw = JSON.parse(localStorage.getItem(key)) || {};
-    return {
-      attempts: [], mistakes: [], feedback: {}, coachMessages: [], user: userFromStorage,
-      selectedTest: 'test1', theme: 'dark', lang: 'en', vocabKnown: {}, fullMock: null, quizzes: [], warningConfirmed: {}, ...raw
-    };
+    const raw = JSON.parse(localStorage.getItem(storageKey())) || {};
+    return { ...storeDefaults(), ...raw, user: sessionUser() };
   } catch {
-    return { attempts: [], mistakes: [], feedback: {}, coachMessages: [], user: userFromStorage, selectedTest: 'test1', theme: 'dark', lang: 'en', vocabKnown: {}, fullMock: null, quizzes: [] };
+    return { ...storeDefaults(), user: sessionUser() };
   }
 }
 function save() {
-  saveUserToStorage(store.user);
-  localStorage.setItem(getStorageKey(), JSON.stringify({ ...store, user: store.user }));
+  const { user, ...data } = store;
+  localStorage.setItem(storageKey(), JSON.stringify(data));
 }
+/* Switch account: persist the current scope, swap the session, reload data. */
+function resetSectionStates() {
+  listeningState = { partIndex: 0, answers: {}, played: {}, deadline: null };
+  readingState = { passageIndex: 0, answers: {}, deadline: null };
+  writingState = { answers: {}, deadline: null };
+  speakingState = { partIndex: 0, transcripts: { sp1: [], sp2: '', sp3: [] } };
+}
+function signIn(user) {
+  save(); /* keep whatever the current scope has */
+  localStorage.setItem(SESSION_KEY, JSON.stringify(user));
+  store = load();
+  save();
+  resetSectionStates();
+}
+function signOut() {
+  save();
+  localStorage.removeItem(SESSION_KEY);
+  store = load();
+  resetSectionStates();
+}
+let pendingRoute = null; /* where to return after a successful sign-in */
+/* One-time migration for sessions created before per-account storage:
+   move the legacy inline user (and their data) into the account store so
+   nobody gets signed out or loses results on upgrade. */
+function migrateLegacySession() {
+  if (sessionUser()) return;
+  try {
+    const raw = JSON.parse(localStorage.getItem(STORAGE));
+    if (!raw || !raw.user || !raw.user.email) return;
+    const user = raw.user;
+    const data = { ...storeDefaults(), ...raw };
+    delete data.user;
+    localStorage.setItem(`${STORAGE}:${String(user.email).toLowerCase()}`, JSON.stringify(data));
+    localStorage.setItem(SESSION_KEY, JSON.stringify(user));
+    localStorage.setItem(STORAGE, JSON.stringify(storeDefaults()));
+  } catch { /* corrupted legacy store — start clean */ }
+}
+migrateLegacySession();
+store = load();
 function go(path) { location.hash = path; }
 function route() { return location.hash.slice(1) || '/'; }
 /* Apply persisted preferences on every render so the whole app reflects them. */
@@ -62,17 +92,21 @@ const t2 = (k, vars) => (I18N.t2 ? I18N.t2(k, vars) : t(k));
 function esc(v) { return String(v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[c])); }
 function notify(msg) { toast.textContent = msg; toast.classList.add('show'); setTimeout(() => toast.classList.remove('show'), 2400); }
 function fmtTime(seconds) { const m = Math.floor(Math.max(0, seconds) / 60); const s = Math.max(0, seconds) % 60; return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`; }
-/* persist a per-section deadline so a page refresh does not reset the timer */
-function deadlineKey(section) { return getStorageKey() + ':deadline:' + section; }
+/* Persist a per-user, per-test deadline so a page refresh cannot reset the
+   timer and a timed-out test stays locked. */
+function deadlineKey(section) { return `${storageKey()}:deadline:${section}:${store.selectedTest}`; }
+function rawDeadline(section) { return Number(localStorage.getItem(deadlineKey(section))) || 0; }
 function loadDeadline(section, minutes) {
-  const key = deadlineKey(section);
-  const saved = Number(localStorage.getItem(key)) || 0;
-  if (saved > Date.now()) return saved;
   const fresh = Date.now() + minutes * 60000;
-  localStorage.setItem(key, String(fresh));
+  localStorage.setItem(deadlineKey(section), String(fresh));
   return fresh;
 }
 function clearDeadline(section) { localStorage.removeItem(deadlineKey(section)); }
+/* Latest attempt for a section within the selected practice test. */
+function attemptFor(section, testId) {
+  return [...store.attempts].reverse().find(a => a.section === section && (a.test || 'test1') === testId) || null;
+}
+function sectionDone(section, testId) { return !!attemptFor(section, testId); }
 
 function bandAverage() {
   const sections = ['listening', 'reading', 'writing', 'speaking'];
@@ -95,48 +129,40 @@ function weakestSkill() {
 }
 
 /* ---------------- SHELL / NAV ---------------- */
-/* Premium navigation: 5 primary links + "More" dropdown + user menu.
-   Everything else (secondary pages, theme, language, auth) lives in
-   dropdowns or the mobile menu — never crammed into the top bar. */
+/* Focused navigation: exactly three primary actions centred in the top bar
+   (Mock Test, Results, AI Coach). Everything else — Dashboard, Mistakes,
+   Lessons, Vocabulary, Quiz, Settings — lives behind the hamburger menu,
+   so the top bar stays calm on desktop and mobile alike. */
+function navLinks(active) {
+  const isMock = ['mock', 'fullmock', 'listening', 'reading', 'writing', 'speaking'].includes(active);
+  return {
+    primary: [
+      { key: 'mock', label: t('nav_mock'), active: isMock },
+      { key: 'results', label: t('nav_results'), active: active === 'results' },
+      { key: 'coach', label: t('nav_coach'), active: active === 'coach' }
+    ],
+    rest: [
+      { key: 'dashboard', label: t('nav_dashboard'), active: active === 'dashboard' },
+      { key: 'mistakes', label: t('nav_mistakes'), active: active === 'mistakes' },
+      { key: 'lessons', label: t('nav_lessons'), active: active === 'lessons' },
+      { key: 'vocabulary', label: t('nav_vocabulary'), active: active === 'vocabulary' },
+      { key: 'quiz', label: t('nav_quiz'), active: active === 'quiz' },
+      { key: 'settings', label: t('nav_settings'), active: active === 'settings' }
+    ]
+  };
+}
 function shell(body, active) {
-  const isMock = ['mock', 'listening', 'reading', 'writing', 'speaking'].includes(active);
   const user = store.user;
-  const primary = [
-    { key: 'mock', label: t('nav_mock'), active: isMock },
-    { key: 'results', label: t('nav_results'), active: active === 'results' },
-    { key: 'coach', label: t('nav_coach'), active: active === 'coach' }
-  ];
-  const more = [
-    { key: 'mistakes', label: t('nav_mistakes'), active: active === 'mistakes' },
-    { key: 'lessons', label: t('nav_lessons'), active: active === 'lessons' },
-    { key: 'vocabulary', label: t('nav_vocabulary'), active: active === 'vocabulary' },
-    { key: 'quiz', label: t('nav_quiz'), active: active === 'quiz' },
-    { key: 'settings', label: t('nav_settings'), active: active === 'settings' },
-    { key: 'dashboard', label: t('nav_dashboard'), active: active === 'dashboard' }
-  ];
-  const allLinks = [...primary, ...more];
-  const moreActive = more.find(l => l.active) || null;
+  const { primary, rest } = navLinks(active);
   const langShort = (store.lang || 'en').toUpperCase();
   const nextLang = store.lang === 'en' ? 'UZ' : store.lang === 'uz' ? 'RU' : 'EN';
   const displayName = String(user ? (user.name || user.email || 'User') : 'User');
   const firstName = displayName.split(' ')[0];
-  const warningPages = ['listening','reading','writing','speaking','mock'];
-  const showWarning = warningPages.includes(active) && (!store.warningConfirmed || !store.warningConfirmed[active]);
-  const warningHtml = showWarning ? testWarningHtml(active, active === 'listening' ? '30 minutes' : active === 'reading' ? '60 minutes' : active === 'writing' ? '60 minutes' : active === 'speaking' ? '14 minutes' : 'Full mock exam') : '';
-  const bodyWithWarning = warningHtml ? warningHtml + body : body;
   return `<header class="site-header" id="siteHeader">
   <nav class="nav" id="mainNav" aria-label="Main navigation">
     <a class="brand" href="#/"><span class="brand-mark">B</span><span class="brand-name">IELTS Mock</span></a>
     <div class="nav-links">
       ${primary.map(l => `<a class="${l.active ? 'active' : ''}" href="#/${l.key}" ${l.active ? 'aria-current="page"' : ''}>${l.label}</a>`).join('')}
-      <div class="nav-more">
-        <button class="nav-more-btn ${moreActive ? 'active' : ''}" id="moreBtn" aria-expanded="false" aria-haspopup="true" title="${t('nav_more')}">
-          ${moreActive ? moreActive.label : t('nav_more')}<span class="caret">▾</span>
-        </button>
-        <div class="dropdown-menu" id="moreMenu">
-          ${more.map(l => `<a class="${l.active ? 'active' : ''}" href="#/${l.key}">${l.label}</a>`).join('')}
-        </div>
-      </div>
     </div>
     <div class="nav-actions">
       <button class="icon-btn" data-toggle-theme aria-label="Toggle theme" title="${store.theme === 'light' ? t('theme_dark') : t('theme_light')}">${store.theme === 'light' ? '☀' : '☾'}</button>
@@ -153,16 +179,19 @@ function shell(body, active) {
           <button class="user-logout" data-logout>${t('nav_logout')}</button>
         </div>
       </div>` : `<a class="btn btn-primary btn-sm nav-login" href="#/login">${t('nav_login')}</a>`}
-      <button class="hamburger" id="hamburgerBtn" aria-label="Open menu" aria-expanded="false"><span></span><span></span><span></span></button>
+      <button class="hamburger" id="hamburgerBtn" aria-label="${t('menu')}" aria-expanded="false" title="${t('menu')}"><span></span><span></span><span></span></button>
     </div>
   </nav>
 </header>
-<div class="shell"><div class="page-fade">${bodyWithWarning}</div></div>
+<div class="shell"><div class="page-fade">${body}</div></div>
 <div class="mobile-menu" id="mobileMenu">
   <button class="close-menu" id="closeMenuBtn" aria-label="${t('modal_close')}">×</button>
   <div class="mm-brand"><span class="brand-mark">B</span> IELTS Mock</div>
-  <div class="mm-links">
-    ${allLinks.map(l => `<a class="${l.active ? 'active' : ''}" href="#/${l.key}">${l.label}</a>`).join('')}
+  <div class="mm-links mm-primaries">
+    ${primary.map(l => `<a class="${l.active ? 'active' : ''}" href="#/${l.key}">${l.label}</a>`).join('')}
+  </div>
+  <div class="mm-links mm-rest">
+    ${rest.map(l => `<a class="${l.active ? 'active' : ''}" href="#/${l.key}">${l.label}</a>`).join('')}
   </div>
   <div class="mm-actions">
     <button class="btn btn-ghost" data-toggle-theme>${store.theme === 'light' ? '☀ ' + t('theme_dark') : '☾ ' + t('theme_light')}</button>
@@ -213,8 +242,8 @@ function sectionCards() {
     { key: 'speaking', title: 'Speaking', metaKey: 'meta_speaking', href: '/speaking' }
   ];
   return cards.map(c => `
-    <article class="test-card">
-      <div class="test-meta"><span>${c.title}</span><span>${store.attempts.some(a => a.section === c.key) ? t('test_done') : t('not_started')}</span></div>
+    <article class="test-card ${sectionDone(c.key, store.selectedTest) ? 'is-done' : ''}">
+      <div class="test-meta"><span>${c.title}</span><span>${sectionDone(c.key, store.selectedTest) ? '✓ ' + t('test_done') : t('not_started')}</span></div>
       <h3>${c.title}</h3>
       <span class="pill">${t(c.metaKey)}</span>
       <div class="test-meta" style="margin-top:20px"><span></span><button class="btn btn-primary btn-sm" data-go="${c.href}">${t('start')} ↗</button></div>
@@ -336,13 +365,38 @@ function testSwitch() {
   </div>`;
 }
 
+/* Single entry point for practice: "Mock Test" and the old "Full Mock" are
+   now one page — a guided four-step flow with per-test completion states and
+   a combined band panel. (#/fullmock is kept as an alias for old links.) */
 function mockHub() {
+  const steps = [
+    { key: 'listening', title: 'Listening', max: 40 },
+    { key: 'reading', title: 'Reading', max: 40 },
+    { key: 'writing', title: 'Writing', max: 9 },
+    { key: 'speaking', title: 'Speaking', max: 9 }
+  ];
+  const overall = SERVICES.overallBand(store.attempts);
   const activeTest = SERVICES.getSkillContent('listening', store.selectedTest);
   return shell(`
     <section class="section">
-      <div class="section-header"><div><div class="eyebrow">${t('home_mock_eyebrow')}</div><h1 style="font-family:var(--font-display);font-size:30px;margin:10px 0 0">${t('home_mock_title')}</h1></div><div class="test-switch">${testSwitch()}</div></div>
+      <div class="section-header"><div><div class="eyebrow">${t('home_mock_eyebrow')}</div><h1 style="font-family:var(--font-display);font-size:30px;margin:10px 0 0">${t('fullmock_title')}</h1><p class="micro">${t('fullmock_subtitle')}</p></div><div class="test-switch">${testSwitch()}</div></div>
       <p class="micro" style="margin:14px 0 20px">${esc(SERVICES.testLabel(store.selectedTest, store.lang))} — ${activeTest && activeTest.difficulty ? esc(activeTest.difficulty) : ''}</p>
-      <div class="library">${sectionCards()}</div>
+      <div class="mock-flow">
+        ${steps.map((s, i) => {
+          const a = attemptFor(s.key, store.selectedTest);
+          const done = !!a;
+          return `<a class="mock-step ${done ? 'done' : ''}" href="#/${s.key}"><span class="step-num">${done ? '✓' : i + 1}</span><div><strong>${s.title}</strong><p class="micro">${done ? `${t('test_done')} · ${a.band != null ? a.band + '/9' : ''}` : t('not_started')} · ${s.max}</p></div>${done ? '' : '↗'}</a>`;
+        }).join('')}
+      </div>
+      <div class="glass" style="margin-top:20px">
+        <div class="panel-title">${t('combined_result')}</div>
+        <div class="big" style="margin:10px 0">${overall ?? '—'} <small>/ 9</small></div>
+        <p class="micro">${t2('sections_attempted', { n: steps.filter(s => sectionDone(s.key, store.selectedTest)).length })}</p>
+        <div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap">
+          <button class="btn btn-primary" data-go="/listening">${t('start_with_listening')} ↗</button>
+          <button class="btn btn-ghost" data-go="/dashboard">${t('nav_dashboard')} ↗</button>
+        </div>
+      </div>
     </section>`, 'mock');
 }
 
@@ -350,11 +404,9 @@ function mockHub() {
 function currentTest(skill) { return SERVICES.getSkillContent(skill, store.selectedTest); }
 let listeningState = { partIndex: 0, answers: {}, played: {}, deadline: null };
 function listening() {
-  if (!requireAuth()) return;
-  const completed = sectionCompletedResult('listening');
-  if (completed) return shell(completed, 'listening');
   const test = currentTest('listening');
-  if (!listeningState.deadline) listeningState.deadline = loadDeadline('listening:' + store.selectedTest, 30);
+  const lDl = rawDeadline('listening');
+  listeningState.deadline = lDl > Date.now() ? lDl : null; /* timer only after an explicit start */
   const part = test.parts[listeningState.partIndex];
   const played = listeningState.played[part.id];
   return shell(`
@@ -383,11 +435,9 @@ function listening() {
 /* ---------------- READING ---------------- */
 let readingState = { passageIndex: 0, answers: {}, deadline: null };
 function reading() {
-  if (!requireAuth()) return;
-  const completed = sectionCompletedResult('reading');
-  if (completed) return shell(completed, 'reading');
   const test = currentTest('reading');
-  if (!readingState.deadline) readingState.deadline = loadDeadline('reading:' + store.selectedTest, 60);
+  const rDl = rawDeadline('reading');
+  readingState.deadline = rDl > Date.now() ? rDl : null;
   const passage = test.passages[readingState.passageIndex];
   return shell(`
     <section class="section">
@@ -415,11 +465,9 @@ function reading() {
 }/* ---------------- WRITING ---------------- */
 let writingState = { answers: {}, deadline: null };
 function writing() {
-  if (!requireAuth()) return;
-  const completed = sectionCompletedResult('writing');
-  if (completed) return shell(completed, 'writing');
   const test = currentTest('writing');
-  if (!writingState.deadline) writingState.deadline = loadDeadline('writing:' + store.selectedTest, 60);
+  const wDl = rawDeadline('writing');
+  writingState.deadline = wDl > Date.now() ? wDl : null;
   return shell(`
     <section class="section">
       <div class="test-top"><span class="eyebrow">Writing · Task 1 & Task 2</span><span class="timer" data-timer role="timer" aria-live="off">--:--</span></div>
@@ -440,9 +488,6 @@ function writing() {
 /* ---------------- SPEAKING ---------------- */
 let speakingState = { partIndex: 0, transcripts: { sp1: [], sp2: '', sp3: [] } };
 function speaking() {
-  if (!requireAuth()) return;
-  const completed = sectionCompletedResult('speaking');
-  if (completed) return shell(completed, 'speaking');
   const test = currentTest('speaking');
   const part = test.parts[speakingState.partIndex];
   return shell(`
@@ -616,10 +661,23 @@ function bind() {
   clearInterval(timerInterval);
   document.querySelectorAll('[data-go]').forEach(el => el.onclick = () => go(el.dataset.go));
 
+  /* Warning modal: the timer only starts on an explicit confirmation. */
+  const warnStart = document.querySelector('[data-warn-start]');
+  if (warnStart) warnStart.onclick = () => {
+    const [sec, mins] = String(warnStart.dataset.warnStart).split(':');
+    const dl = loadDeadline(sec, Number(mins));
+    if (sec === 'listening') listeningState.deadline = dl;
+    if (sec === 'reading') readingState.deadline = dl;
+    if (sec === 'writing') writingState.deadline = dl;
+    render();
+  };
+  const warnCancel = document.querySelector('[data-warn-cancel]');
+  if (warnCancel) warnCancel.onclick = () => go('/mock');
+
   const r = route();
 
   if (r === '/listening') {
-    startTimer(() => listeningState.deadline, submitListening);
+    if (listeningState.deadline) startTimer(() => listeningState.deadline, submitListening);
     const playBtn = document.querySelector('[data-play-part]');
     if (playBtn) playBtn.onclick = () => {
       if (!window.speechSynthesis) return notify('Audio not supported in this browser');
@@ -653,7 +711,7 @@ function bind() {
   }
 
   if (r === '/reading') {
-    startTimer(() => readingState.deadline, submitReading);
+    if (readingState.deadline) startTimer(() => readingState.deadline, submitReading);
     document.querySelectorAll('[data-r-answer]').forEach(el => el.onclick = () => {
       const key = `${readingState.passageIndex}-${el.dataset.rAnswer}`;
       readingState.answers[key] = el.dataset.value;
@@ -672,7 +730,7 @@ function bind() {
   }
 
   if (r === '/writing') {
-    startTimer(() => writingState.deadline, () => document.querySelector('[data-w-submit]')?.click());
+    if (writingState.deadline) startTimer(() => writingState.deadline, () => document.querySelector('[data-w-submit]')?.click());
     document.querySelectorAll('[data-w-text]').forEach(el => el.oninput = () => {
       writingState.answers[el.dataset.wText] = el.value;
       const words = el.value.trim() ? el.value.trim().split(/\s+/).length : 0;
@@ -691,14 +749,15 @@ function bind() {
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Grading failed');
-        store.attempts.push({ section: 'writing', band: data.band, date: Date.now() });
+        store.attempts.push({ section: 'writing', test: store.selectedTest, band: data.band, date: Date.now() });
         store.feedback.writing = data;
         save();
         clearTimerAndDeadline('writing');
+        resetSectionStates();
         document.querySelector('#writing-result').innerHTML = aiFeedbackBlock(data);
+        wSubmit.disabled = true; wSubmit.textContent = '✓ ' + t('test_done');
       } catch (err) {
         notify(`Error: ${err.message}`);
-      } finally {
         wSubmit.disabled = false; wSubmit.textContent = t('submit_writing') + ' ↗';
       }
     };
@@ -746,13 +805,14 @@ function bind() {
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Grading failed');
-        store.attempts.push({ section: 'speaking', band: data.band, date: Date.now() });
+        store.attempts.push({ section: 'speaking', test: store.selectedTest, band: data.band, date: Date.now() });
         store.feedback.speaking = data;
         save();
+        resetSectionStates();
         document.querySelector('#speaking-result').innerHTML = aiFeedbackBlock(data);
+        spSubmit.disabled = true; spSubmit.textContent = '✓ ' + t('test_done');
       } catch (err) {
         notify(`Error: ${err.message}`);
-      } finally {
         spSubmit.disabled = false; spSubmit.textContent = t('finish_speaking') + ' ↗';
       }
     };
@@ -1004,10 +1064,10 @@ function bindPremium() {
     const password = String(fd.get('password') || '');
     const name = String(fd.get('name') || '').trim() || email.split('@')[0] || 'User';
     if (!email || password.length < 4) return notify('Enter a valid email and a password (4+ chars).');
-    store.user = { name, email, picture: '', auth: 'demo' };
-    save();
+    const target = pendingRoute; pendingRoute = null;
+    signIn({ name, email, picture: '', auth: 'demo' });
     notify(`Welcome, ${name.split(' ')[0]}!`);
-    go('/dashboard');
+    go(target || '/dashboard');
   };
   const googleBtn = document.querySelector('[data-google-auth]');
   if (googleBtn) googleBtn.onclick = () => {
@@ -1021,22 +1081,11 @@ function bindNavExtras() {
   const mobileMenu = document.querySelector('#mobileMenu');
   const closeMenu = document.querySelector('#closeMenuBtn');
 
-  const moreBtn = document.querySelector('#moreBtn');
-  const moreMenu = document.querySelector('#moreMenu');
-  if (moreBtn && moreMenu) {
-    moreBtn.onclick = (e) => {
-      e.stopPropagation();
-      setMenu(document.querySelector('#userMenu'), false, document.querySelector('#userChip'));
-      setMenu(moreMenu, !moreMenu.classList.contains('open'), moreBtn);
-    };
-  }
-
   const userChip = document.querySelector('#userChip');
   const userMenu = document.querySelector('#userMenu');
   if (userChip && userMenu) {
     userChip.onclick = (e) => {
       e.stopPropagation();
-      setMenu(document.querySelector('#moreMenu'), false, document.querySelector('#moreBtn'));
       setMenu(userMenu, !userMenu.classList.contains('open'), userChip);
     };
   }
@@ -1058,20 +1107,8 @@ function bindNavExtras() {
 
   /* Explicit sign-out from the user menu / mobile menu — no native confirm(). */
   document.querySelectorAll('[data-logout]').forEach(el => {
-    el.onclick = () => { store.user = null; save(); render(); };
+    el.onclick = () => { pendingRoute = null; signOut(); render(); };
   });
-
-  /* Warning modal: confirm once and persist; close hides it permanently for this section */
-  const closeBtn = document.querySelector('#testWarningModal button');
-  if (closeBtn) {
-    closeBtn.onclick = () => {
-      const active = route().slice(1) || 'mock';
-      store.warningConfirmed = store.warningConfirmed || {};
-      store.warningConfirmed[active] = true;
-      save();
-      document.getElementById('testWarningModal').style.display = 'none';
-    };
-  }
 }
 
 function setMenu(menu, open, trigger) {
@@ -1099,12 +1136,8 @@ function bindDocOnce() {
     onScroll();
   }
 
-  /* close open dropdowns when clicking anywhere outside them */
+  /* close the user dropdown when clicking anywhere outside it */
   document.addEventListener('click', (e) => {
-    const moreMenu = document.querySelector('#moreMenu');
-    if (moreMenu && moreMenu.classList.contains('open') && !e.target.closest('.nav-more')) {
-      setMenu(moreMenu, false, document.querySelector('#moreBtn'));
-    }
     const userMenu = document.querySelector('#userMenu');
     if (userMenu && userMenu.classList.contains('open') && !e.target.closest('.nav-user')) {
       setMenu(userMenu, false, document.querySelector('#userChip'));
@@ -1124,10 +1157,10 @@ function bindDocOnce() {
 
 function handleGoogleLogin(response) {
   const payload = JSON.parse(atob(response.credential.split('.')[1]));
-  store.user = { name: payload.name, email: payload.email, picture: payload.picture };
-  save();
+  const target = pendingRoute; pendingRoute = null;
+  signIn({ name: payload.name, email: payload.email, picture: payload.picture });
   notify(`Welcome, ${payload.name.split(' ')[0]}!`);
-  render();
+  if (target) go(target); else render();
 }
 window.handleGoogleLogin = handleGoogleLogin;
 
@@ -1137,32 +1170,144 @@ function clearTimerAndDeadline(section) {
   clearDeadline(section);
 }
 
-function submitListening() {
+/* Grade the current in-memory answers and return the attempt object
+   (does not persist — callers decide when to record it). */
+function gradeListening() {
   const allQuestions = currentTest('listening').parts.flatMap(p => p.questions);
   recordMistakes('listening', allQuestions, listeningState.answers, i => i);
   const correct = allQuestions.filter((q, i) => SERVICES.isCorrect(q, listeningState.answers[i])).length;
   const band = SERVICES.bandFromRaw(correct, allQuestions.length);
-  store.attempts.push({ section: 'listening', band, raw: correct, total: allQuestions.length, date: Date.now() });
-  save();
-  clearTimerAndDeadline('listening');
-  notify(t2('complete_listening', { band, raw: correct, total: allQuestions.length }));
-  listeningState = { partIndex: 0, answers: {}, played: {}, deadline: null };
-  go('/results');
+  return { section: 'listening', test: store.selectedTest, band, raw: correct, total: allQuestions.length, date: Date.now() };
 }
-
-function submitReading() {
+function gradeReading() {
   let correct = 0, total = 0;
   currentTest('reading').passages.forEach((p, pi) => {
     recordMistakes('reading', p.questions, readingState.answers, qi => `${pi}-${qi}`);
     p.questions.forEach((q, qi) => { total++; if (SERVICES.isCorrect(q, readingState.answers[`${pi}-${qi}`])) correct++; });
   });
   const band = SERVICES.bandFromRaw(correct, total);
-  store.attempts.push({ section: 'reading', band, raw: correct, total, date: Date.now() });
+  return { section: 'reading', test: store.selectedTest, band, raw: correct, total, date: Date.now() };
+}
+
+function submitListening() {
+  const a = gradeListening();
+  store.attempts.push(a);
+  save();
+  clearTimerAndDeadline('listening');
+  notify(t2('complete_listening', { band: a.band, raw: a.raw, total: a.total }));
+  resetSectionStates();
+  go('/results');
+}
+
+function submitReading() {
+  const a = gradeReading();
+  store.attempts.push(a);
   save();
   clearTimerAndDeadline('reading');
-  notify(t2('complete_reading', { band, raw: correct, total }));
-  readingState = { passageIndex: 0, answers: {}, deadline: null };
+  notify(t2('complete_reading', { band: a.band, raw: a.raw, total: a.total }));
+  resetSectionStates();
   go('/results');
+}
+
+/* ---------------- TEST FLOW: gate → warning → live → locked ---------------- */
+/* A test section can be in one of four states for the signed-in user and the
+   selected practice test:
+     locked     – an attempt already exists → results-only view, no retake;
+     gated      – not signed in → sign-in card;
+     warned     – no deadline yet → page renders under a warning modal and the
+                  timer only starts after an explicit "Start";
+     live       – deadline saved → timer runs; on expiry the attempt is
+                  recorded automatically and the section locks.            */
+function warningModal(section, minutes) {
+  return `
+  <div class="modal-backdrop" id="warnBackdrop">
+    <div class="modal glass" role="dialog" aria-modal="true" aria-labelledby="warnTitle">
+      <div class="warn-icon"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></div>
+      <h2 id="warnTitle" style="font-family:var(--font-display);font-size:22px;margin:12px 0 10px">${t('warn_title')}</h2>
+      <p style="color:var(--muted);font-size:14.5px;line-height:1.7;margin:0 0 22px">${t2('warn_body', { minutes, start: t('warn_start') })}</p>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <button class="btn btn-primary" data-warn-start="${section}:${minutes}">${t('warn_start')} ↗</button>
+        <button class="btn btn-ghost" data-warn-cancel>${t('warn_cancel')}</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function gateView() {
+  return shell(`
+    <section class="section auth-wrap">
+      <div class="glass auth-card center-card">
+        <div class="warn-icon"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg></div>
+        <h1 style="font-family:var(--font-display);font-size:22px;margin:12px 0 8px">${t('gate_title')}</h1>
+        <p class="micro" style="margin-bottom:20px">${t('gate_body')}</p>
+        <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+          <a class="btn btn-primary" href="#/login">${t('nav_login')} ↗</a>
+          <a class="btn btn-ghost" href="#/signup">${t('auth_signup_title')}</a>
+        </div>
+      </div>
+    </section>`, 'auth');
+}
+
+function completedView(section, attempt) {
+  const fb = store.feedback ? store.feedback[section] : null;
+  const a = attempt || {};
+  return shell(`
+    <section class="section">
+      <div class="glass center-card" style="max-width:680px;margin:34px auto;padding:34px;text-align:center">
+        <div class="warn-icon ok">✓</div>
+        <h1 style="font-family:var(--font-display);font-size:26px;margin:14px 0 6px">${t('done_title')}</h1>
+        <p class="micro" style="margin-bottom:18px">${t('done_body')}</p>
+        <div class="result-band">${a.band != null ? a.band : '—'}<small> / 9</small></div>
+        ${a.raw !== undefined ? `<p class="micro" style="margin-top:6px">${a.raw}/${a.total} · ${new Date(a.date).toLocaleDateString()}</p>` : `<p class="micro" style="margin-top:6px">${new Date(a.date || Date.now()).toLocaleDateString()}</p>`}
+        <p class="micro">${BAND_LABEL[section] || section} · ${esc(SERVICES.testLabel(a.test || store.selectedTest, store.lang))}</p>
+        <div style="text-align:left">${aiFeedbackBlock(fb)}</div>
+        <div style="display:flex;gap:10px;justify-content:center;margin-top:22px;flex-wrap:wrap">
+          <button class="btn btn-primary" data-go="/results">${t('nav_results')} ↗</button>
+          <button class="btn btn-ghost" data-go="/mock">${t('nav_mock')} ↗</button>
+        </div>
+      </div>
+    </section>`, section);
+}
+
+/* Time ran out (either live on the page or while the user was away):
+   record the attempt from whatever answers exist and lock the section. */
+function finalizeTimeout(section) {
+  clearInterval(timerInterval);
+  let attempt = null;
+  if (section === 'listening') attempt = gradeListening();
+  else if (section === 'reading') attempt = gradeReading();
+  else if (section === 'speaking') {
+    attempt = { section: 'speaking', test: store.selectedTest, band: null, date: Date.now(), timedOut: true };
+  }
+  else if (section === 'writing') {
+    attempt = { section: 'writing', test: store.selectedTest, band: null, date: Date.now(), timedOut: true };
+    const tasks = currentTest('writing').tasks;
+    const payload = { mode: 'writing', tasks: tasks.map((tk, i) => ({ title: tk.title, prompt: tk.prompt, response: writingState.answers[i] || '' })) };
+    fetch('/api/grade', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+      .then(res => res.json().then(data => ({ ok: res.ok, data })))
+      .then(({ ok, data }) => {
+        if (!ok || !data) return;
+        attempt.band = data.band;
+        store.feedback.writing = data;
+        save();
+        if (route() === '/writing') render();
+      })
+      .catch(() => {});
+  }
+  if (attempt) { store.attempts.push(attempt); save(); }
+  clearDeadline(section);
+  resetSectionStates();
+  notify(t('time_up'));
+  return completedView(section, attempt);
+}
+
+function testGate(section, minutes, pageFn) {
+  const done = attemptFor(section, store.selectedTest);
+  if (done) return completedView(section, done);
+  if (!store.user) { pendingRoute = '/' + section; return gateView(); }
+  const raw = rawDeadline(section);
+  if (raw) return raw > Date.now() ? pageFn() : finalizeTimeout(section);
+  return pageFn() + warningModal(section, minutes);
 }
 
 /* ---------------- DASHBOARD ---------------- */
@@ -1216,7 +1361,7 @@ function dashboard() {
         <div class="panel-title">${t('personalized_plan')}</div>
         <div class="plan-list">${plan.map(p => `<div class="plan-item"><span class="pill">${esc(p.day)}</span><div><strong>${esc(p.title)}</strong><p class="micro">${esc(p.detail)}</p></div></div>`).join('')}</div>
         <div style="display:flex;gap:10px;margin-top:18px;flex-wrap:wrap">
-          <button class="btn btn-primary" data-go="/fullmock">${t('start_full_mock')} ↗</button>
+          <button class="btn btn-primary" data-go="/mock">${t('start_full_mock')} ↗</button>
           <button class="btn btn-ghost" data-go="/quiz">${t('nav_quiz')} ↗</button>
           <button class="btn btn-ghost" data-go="/lessons">${t('lesson_list')} ↗</button>
         </div>
@@ -1306,96 +1451,6 @@ function quizPage() {
     </section>`, 'quiz');
 }
 
-function requireAuth() {
-  if (!store.user || !store.user.email) {
-    go('/login');
-    return false;
-  }
-  return true;
-}
-
-function sectionCompletedResult(section) {
-  const attempts = store.attempts.filter(a => a.section === section);
-  if (!attempts.length) return null;
-  const attempt = attempts[attempts.length - 1];
-  const fb = store.feedback[section];
-  const label = BAND_LABEL[section] || section;
-  return `<section class="section"><div class="section-header"><div><div class="eyebrow">${label} · Completed · ${t('done')}</div><h1 style="font-family:var(--font-display);font-size:28px;margin:10px 0 0">${label} — Completed</h1></div></div>
-    <div class="glass" style="padding:30px;text-align:center;margin-top:20px">
-      <div class="result-band">${attempt.band}<small> / 9</small></div>
-      <p class="micro">Completed on ${new Date(attempt.date).toLocaleDateString()}</p>
-      ${attempt.raw !== undefined ? `<p style="font-size:14px;color:var(--muted);margin-top:8px">${attempt.raw}/${attempt.total} correct answers</p>` : ''}
-      ${fb ? aiFeedbackBlock(fb) : `<p style="margin-top:16px;color:var(--muted);font-size:14px">No detailed AI feedback saved for this attempt.</p>`}
-      <div style="margin-top:20px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
-        <button class="btn btn-ghost" data-go="/results">View all results ↗</button>
-        <button class="btn btn-primary" data-go="/mock">Back to Mock Test ↗</button>
-      </div>
-    </div>
-  </section>`;
-}
-
-/* ---------------- FULL MOCK ---------------- */
-window.closeTestWarning = function() {
-  const modal = document.getElementById('testWarningModal');
-  if (modal) { modal.style.display = 'none'; }
-};
-window.confirmTestWarning = function() {
-  const active = (window.location && window.location.hash ? window.location.hash.slice(2) : '') || 'mock';
-  const s = (typeof store !== 'undefined') ? store : null;
-  if (s) {
-    s.warningConfirmed = s.warningConfirmed || {};
-    s.warningConfirmed[active] = true;
-    if (typeof save === 'function') save();
-  }
-  if (typeof closeTestWarning === 'function') closeTestWarning();
-};
-
-function testWarningHtml(sectionName, timeMsg) {
-  return `
-  <div id="testWarningModal" class="modal-backdrop" style="z-index:95;display:flex;">
-    <div class="modal glass" role="dialog" aria-modal="true" aria-labelledby="warningTitle" style="max-width:520px;padding:28px;text-align:center;">
-      <h2 id="warningTitle" style="font-family:var(--font-display);font-size:22px;margin:0 0 14px;color:var(--coral)">⚠ Before you start</h2>
-      <p style="font-size:15px;line-height:1.6;margin-bottom:8px">Once this <strong>${sectionName}</strong> test begins, <strong>the timer cannot be stopped or paused</strong>.</p>
-      <p style="font-size:15px;line-height:1.6;margin-bottom:8px">When the time is up, the window will close automatically and <strong>you will not be able to return to this test</strong> — only the result will be shown.</p>
-      <p style="font-size:13.5px;color:var(--muted);margin-bottom:22px">Completed tests are marked <strong>Bajarildi (Done)</strong> and only show results.</p>
-      <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;">
-        <button class="btn btn-primary" onclick="window.confirmTestWarning()">I understand — Start</button>
-        <button class="btn btn-ghost" onclick="closeTestWarning();go('/mock');">Cancel</button>
-      </div>
-    </div>
-  </div>`;
-}
-
-function fullmock() {
-  if (!requireAuth()) return shell(`<section class="section"><div class="glass" style="padding:40px;text-align:center"><h2>Please sign in to start the Mock Test</h2><p>Sign in to access the full-length exam and save your results.</p><a class="btn btn-primary" href="#/login">Sign in ↗</a></div></section>`, 'mock');
-  const steps = [
-    { key: 'listening', title: 'Listening', color: 'var(--cyan)', max: 40 },
-    { key: 'reading', title: 'Reading', color: 'var(--cyan)', max: 40 },
-    { key: 'writing', title: 'Writing', color: 'var(--coral)', max: 9 },
-    { key: 'speaking', title: 'Speaking', color: 'var(--coral)', max: 9 }
-  ];
-  const overall = SERVICES.overallBand(store.attempts);
-  return shell(`
-    <section class="section">
-      <div class="section-header"><div><div class="eyebrow">${t('fullmock_title')}</div><h1 style="margin:8px 0 6px">${t('fullmock_title')}</h1><p class="micro">${t('fullmock_subtitle')}</p></div><div class="test-switch">${testSwitch()}</div></div>
-      <div class="mock-flow">
-        ${steps.map((s, i) => {
-          const done = store.attempts.some(a => a.section === s.key);
-          return `<a class="mock-step ${done ? 'done' : ''}" href="#/${s.key}"><span class="step-num">${i + 1}</span><div><strong>${s.title}</strong><p class="micro">${done ? '✓ Completed' : t('not_started')} · ${s.max}</p></div>${done ? '' : '↗'}</a>`;
-        }).join('')}
-      </div>
-      <div class="glass" style="margin-top:20px">
-        <div class="panel-title">Combined result</div>
-        <div class="big" style="margin:10px 0">${overall ?? '—'} <small>/ 9</small></div>
-        <p class="micro">${store.attempts.length}/4 sections attempted.</p>
-        <div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap">
-          <button class="btn btn-primary" data-go="/listening">Start with Listening ↗</button>
-          <button class="btn btn-ghost" data-go="/dashboard">${t('nav_dashboard')} ↗</button>
-        </div>
-      </div>
-    </section>`, 'fullmock');
-}
-
 /* ---------------- SETTINGS ---------------- */
 function settings() {
   const user = store.user;
@@ -1438,11 +1493,11 @@ function render() {
   const r = route();
   let html;
   if (r === '/') html = home();
-  else if (r === '/mock') html = fullmock();
-  else if (r === '/listening') html = listening();
-  else if (r === '/reading') html = reading();
-  else if (r === '/writing') html = writing();
-  else if (r === '/speaking') html = speaking();
+  else if (r === '/mock' || r === '/fullmock') html = mockHub();
+  else if (r === '/listening') html = testGate('listening', 30, listening);
+  else if (r === '/reading') html = testGate('reading', 60, reading);
+  else if (r === '/writing') html = testGate('writing', 60, writing);
+  else if (r === '/speaking') html = testGate('speaking', 14, speaking);
   else if (r === '/results') html = resultsPage();
   else if (r === '/mistakes') html = mistakes();
   else if (r === '/coach') html = coach();
@@ -1450,6 +1505,7 @@ function render() {
   else if (r === '/lessons') html = lessons();
   else if (r === '/vocabulary') html = vocabulary();
   else if (r === '/quiz') html = quizPage();
+  else if (r === '/fullmock') html = fullmock();
   else if (r === '/settings') html = settings();
   else if (r === '/login') html = authPage('login');
   else if (r === '/signup') html = authPage('signup');
