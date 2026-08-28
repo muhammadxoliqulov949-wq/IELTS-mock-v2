@@ -1,5 +1,10 @@
 # IELTS Mock v2 — Sayt auditi va baholash
 
+> **Yangilanish (2026-08-28):** premium polish o'tishi bajarildi — nav qayta loyihalandi
+> (5 asosiy link + "More" dropdown + user menyu), foni-timer / Speaking Part 2 (60s→120s) /
+> lesson modal / Vercel `/api` rewrite / to'liq i18n qoplami tuzatildi. Tafsilotlar:
+> `PREMIUM.md` → "2026-08-28 — Premium polish pass".
+
 **Sana:** 2026-08-27
 **Usul:** kodni to'liq o'qib chiqish (index.html, styles.css, script.js, data.js, services.js, api/grade.js) + lokal serverni ishga tushirib, API'larga so'rov yuborib tekshirish + Node'da funksiyalarni sinash.
 

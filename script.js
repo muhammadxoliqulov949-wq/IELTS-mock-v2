@@ -29,7 +29,13 @@ function applyPrefs() {
   if (I18N.setLang) I18N.setLang(lang);
   if (document.documentElement) document.documentElement.lang = lang;
   if (document.body) { document.body.dataset.lang = lang; document.body.dataset.theme = store.theme || 'dark'; }
+  /* keep the browser UI (address bar / PWA) in sync with the active theme */
+  if (typeof document !== 'undefined' && document.getElementById) {
+    const meta = document.getElementById('themeColorMeta');
+    if (meta) meta.setAttribute('content', (store.theme === 'light') ? '#f6f7fb' : '#0b0d12');
+  }
 }
+const t2 = (k, vars) => (I18N.t2 ? I18N.t2(k, vars) : t(k));
 function esc(v) { return String(v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[c])); }
 function notify(msg) { toast.textContent = msg; toast.classList.add('show'); setTimeout(() => toast.classList.remove('show'), 2400); }
 function fmtTime(seconds) { const m = Math.floor(Math.max(0, seconds) / 60); const s = Math.max(0, seconds) % 60; return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`; }
@@ -66,142 +72,231 @@ function weakestSkill() {
 }
 
 /* ---------------- SHELL / NAV ---------------- */
+/* Premium navigation: 5 primary links + "More" dropdown + user menu.
+   Everything else (secondary pages, theme, language, auth) lives in
+   dropdowns or the mobile menu — never crammed into the top bar. */
 function shell(body, active) {
-  const mockActive = ['listening', 'reading', 'writing', 'speaking', 'mock', 'fullmock'].includes(active);
+  const isMock = ['mock', 'listening', 'reading', 'writing', 'speaking'].includes(active);
   const user = store.user;
-  const links = [
+  const primary = [
     { key: 'dashboard', label: t('nav_dashboard'), active: active === 'dashboard' },
-    { key: 'mock', label: t('nav_mock'), active: mockActive },
+    { key: 'mock', label: t('nav_mock'), active: isMock },
     { key: 'fullmock', label: t('nav_fullmock'), active: active === 'fullmock' },
     { key: 'results', label: t('nav_results'), active: active === 'results' },
+    { key: 'coach', label: t('nav_coach'), active: active === 'coach' }
+  ];
+  const more = [
     { key: 'mistakes', label: t('nav_mistakes'), active: active === 'mistakes' },
     { key: 'lessons', label: t('nav_lessons'), active: active === 'lessons' },
     { key: 'vocabulary', label: t('nav_vocabulary'), active: active === 'vocabulary' },
     { key: 'quiz', label: t('nav_quiz'), active: active === 'quiz' },
-    { key: 'coach', label: t('nav_coach'), active: active === 'coach' },
     { key: 'settings', label: t('nav_settings'), active: active === 'settings' }
   ];
+  const allLinks = [...primary, ...more];
+  const moreActive = more.find(l => l.active) || null;
   const langShort = (store.lang || 'en').toUpperCase();
-  return `<div class="shell"><nav class="nav" id="mainNav" aria-label="Main navigation"><a class="brand" href="#/"><span class="brand-mark">B</span>IELTS Mock</a>
+  const nextLang = store.lang === 'en' ? 'UZ' : store.lang === 'uz' ? 'RU' : 'EN';
+  const displayName = String(user ? (user.name || user.email || 'User') : 'User');
+  const firstName = displayName.split(' ')[0];
+  return `<header class="site-header" id="siteHeader">
+  <nav class="nav" id="mainNav" aria-label="Main navigation">
+    <a class="brand" href="#/"><span class="brand-mark">B</span><span class="brand-name">IELTS Mock</span></a>
     <div class="nav-links">
-      ${links.map(l => `<a class="${l.active ? 'active' : ''}" href="#/${l.key}">${l.label}</a>`).join('')}
+      ${primary.map(l => `<a class="${l.active ? 'active' : ''}" href="#/${l.key}" ${l.active ? 'aria-current="page"' : ''}>${l.label}</a>`).join('')}
+      <div class="nav-more">
+        <button class="nav-more-btn ${moreActive ? 'active' : ''}" id="moreBtn" aria-expanded="false" aria-haspopup="true" title="${t('nav_more')}">
+          ${moreActive ? moreActive.label : t('nav_more')}<span class="caret">▾</span>
+        </button>
+        <div class="dropdown-menu" id="moreMenu">
+          ${more.map(l => `<a class="${l.active ? 'active' : ''}" href="#/${l.key}">${l.label}</a>`).join('')}
+        </div>
+      </div>
     </div>
     <div class="nav-actions">
       <button class="icon-btn" data-toggle-theme aria-label="Toggle theme" title="${store.theme === 'light' ? t('theme_dark') : t('theme_light')}">${store.theme === 'light' ? '☀' : '☾'}</button>
-      <button class="lang-btn" data-toggle-lang aria-label="Language">${langShort}</button>
-      ${user ? `<div class="user-chip" data-logout><img src="${user.picture || ''}" alt=""/>${String(user.name || user.email || 'User').split(' ')[0]}</div>` : `<a class="btn btn-ghost btn-sm" href="#/login">${t('nav_login')}</a>`}
-      <button class="hamburger" id="hamburgerBtn" aria-label="Open menu"><span></span><span></span><span></span></button>
+      <button class="icon-btn lang-btn" data-toggle-lang aria-label="Switch language" title="EN / UZ / RU">${langShort}</button>
+      ${user ? `<div class="nav-user">
+        <button class="user-chip" id="userChip" aria-expanded="false" aria-haspopup="true">
+          ${user.picture ? `<img src="${esc(user.picture)}" alt=""/>` : `<span class="avatar">${esc(firstName[0].toUpperCase())}</span>`}
+          <span class="user-name">${esc(firstName)}</span><span class="caret">▾</span>
+        </button>
+        <div class="dropdown-menu user-menu" id="userMenu">
+          <div class="user-menu-head"><strong>${esc(user.name || 'User')}</strong><span>${esc(user.email || '')}</span></div>
+          <a href="#/dashboard">${t('nav_dashboard')}</a>
+          <a href="#/settings">${t('nav_settings')}</a>
+          <button class="user-logout" data-logout>${t('nav_logout')}</button>
+        </div>
+      </div>` : `<a class="btn btn-primary btn-sm nav-login" href="#/login">${t('nav_login')}</a>`}
+      <button class="hamburger" id="hamburgerBtn" aria-label="Open menu" aria-expanded="false"><span></span><span></span><span></span></button>
     </div>
-  </nav><div class="page-fade">${body}</div>
-  <div class="mobile-menu" id="mobileMenu">
-    <button class="close-menu" id="closeMenuBtn" aria-label="Close menu">×</button>
-    ${links.map(l => `<a href="#/${l.key}">${l.label}</a>`).join('')}
+  </nav>
+</header>
+<div class="shell"><div class="page-fade">${body}</div></div>
+<div class="mobile-menu" id="mobileMenu">
+  <button class="close-menu" id="closeMenuBtn" aria-label="${t('modal_close')}">×</button>
+  <div class="mm-brand"><span class="brand-mark">B</span> IELTS Mock</div>
+  <div class="mm-links">
+    ${allLinks.map(l => `<a class="${l.active ? 'active' : ''}" href="#/${l.key}">${l.label}</a>`).join('')}
   </div>
-  <footer class="footer">
-    <p>IELTS Mock by Bandly AI · Practice estimates only — not affiliated with or endorsed by IELTS, British Council, IDP, or Cambridge.</p>
-    <p style="margin-top:6px"><a href="#/" style="color:var(--cyan);text-decoration:none">Home</a> · <a href="#/dashboard" style="color:var(--cyan);text-decoration:none">${t('nav_dashboard')}</a> · <a href="#/mock" style="color:var(--cyan);text-decoration:none">Mock Test</a> · <a href="#/results" style="color:var(--cyan);text-decoration:none">Results</a> · <a href="#/mistakes" style="color:var(--cyan);text-decoration:none">Mistakes</a> · <a href="#/coach" style="color:var(--cyan);text-decoration:none">AI Coach</a></p>
-  </footer></div>`;
+  <div class="mm-actions">
+    <button class="btn btn-ghost" data-toggle-theme>${store.theme === 'light' ? '☀ ' + t('theme_dark') : '☾ ' + t('theme_light')}</button>
+    <button class="btn btn-ghost" data-toggle-lang>${langShort} → ${nextLang}</button>
+    ${user ? `<button class="btn btn-ghost" data-logout>${t('nav_logout')}</button>` : `<a class="btn btn-primary" href="#/login">${t('nav_login')}</a>`}
+  </div>
+</div>
+<footer class="footer">
+  <div class="footer-inner">
+    <div class="footer-brand"><span class="brand-mark sm">B</span><span>IELTS Mock <em>${t('footer_by')}</em></span></div>
+    <nav class="footer-links" aria-label="Footer">
+      <a href="#/">${t('nav_home')}</a>
+      <a href="#/dashboard">${t('nav_dashboard')}</a>
+      <a href="#/mock">${t('nav_mock')}</a>
+      <a href="#/results">${t('nav_results')}</a>
+      <a href="#/mistakes">${t('nav_mistakes')}</a>
+      <a href="#/coach">${t('nav_coach')}</a>
+    </nav>
+    <p class="footer-legal"><span>© ${new Date().getFullYear()} Bandly AI</span><span>${t('disclaimer')}</span></p>
+  </div>
+</footer>`;
 }
 
 /* ---------------- HOME ---------------- */
+function bandRing(value, pct) {
+  const r = 54, c = 2 * Math.PI * r;
+  const off = c * (1 - Math.max(0, Math.min(100, pct)) / 100);
+  const label = (value === null || value === undefined) ? '—' : value;
+  return `<svg class="ring" viewBox="0 0 132 132" role="img" aria-label="${label} / 9">
+    <defs>
+      <linearGradient id="ringGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" stop-color="var(--cyan)"/>
+        <stop offset="100%" stop-color="var(--primary)"/>
+      </linearGradient>
+    </defs>
+    <circle class="ring-track" cx="66" cy="66" r="${r}"/>
+    <circle class="ring-arc" cx="66" cy="66" r="${r}" stroke="url(#ringGrad)" stroke-dasharray="${c.toFixed(1)}" stroke-dashoffset="${off.toFixed(1)}"/>
+    <text class="ring-num" x="66" y="70">${label}</text>
+    <text class="ring-den" x="66" y="90">/ 9</text>
+  </svg>`;
+}
+
+function sectionCards() {
+  const cards = [
+    { key: 'listening', title: 'Listening', metaKey: 'meta_listening', href: '/listening' },
+    { key: 'reading', title: 'Reading', metaKey: 'meta_reading', href: '/reading' },
+    { key: 'writing', title: 'Writing', metaKey: 'meta_writing', href: '/writing' },
+    { key: 'speaking', title: 'Speaking', metaKey: 'meta_speaking', href: '/speaking' }
+  ];
+  return cards.map(c => `
+    <article class="test-card">
+      <div class="test-meta"><span>${c.title}</span><span>${store.attempts.some(a => a.section === c.key) ? t('test_done') : t('not_started')}</span></div>
+      <h3>${c.title}</h3>
+      <span class="pill">${t(c.metaKey)}</span>
+      <div class="test-meta" style="margin-top:20px"><span></span><button class="btn btn-primary btn-sm" data-go="${c.href}">${t('start')} ↗</button></div>
+    </article>`).join('');
+}
+
 function home() {
   const overall = bandAverage();
   const weakest = weakestSkill();
-  const cards = [
-    { key: 'listening', title: 'Listening', meta: '4 parts · 40 questions · 30 min', href: '/listening' },
-    { key: 'reading', title: 'Reading', meta: '3 passages · 40 questions · 60 min', href: '/reading' },
-    { key: 'writing', title: 'Writing', meta: '2 tasks · 60 min', href: '/writing' },
-    { key: 'speaking', title: 'Speaking', meta: '3 parts · 11-14 min · voice recorded', href: '/speaking' }
-  ];
+  const sections = ['listening', 'reading', 'writing', 'speaking'];
+  const latest = {};
+  store.attempts.forEach(a => { latest[a.section] = a; });
+  const doneCount = sections.filter(s => latest[s]).length;
+  const heroLines = t('hero_title').split('\n');
   return shell(`
     <section class="hero">
       <div>
-        <div class="eyebrow">Full-length mock exam · Band 1-9</div>
-        <h1>Know your level.<br>Fix your <span>weaknesses.</span><br>Improve with AI.</h1>
-        <p class="hero-copy">Take a real-format IELTS mock exam, get an instant band estimate, see exactly which questions you missed and why, then talk to an AI coach that builds your next study step from your own results.</p>
+        <div class="eyebrow">${t('hero_eyebrow')}</div>
+        <h1>${heroLines[0] || ''}<br>${heroLines.length > 1 ? `<span>${heroLines[1]}</span>` : ''}${heroLines.length > 2 ? `<br>${heroLines[2]}` : ''}</h1>
+        <p class="hero-copy">${t('hero_subtitle')}</p>
         <div class="hero-actions">
-          <button class="btn btn-primary" data-go="/mock">Start the full mock exam</button>
-          <button class="btn btn-ghost" data-go="/mistakes">See my mistakes</button>
+          <button class="btn btn-primary" data-go="/mock">${t('start_full_mock')}</button>
+          <button class="btn btn-ghost" data-go="/mistakes">${t('see_mistakes')}</button>
         </div>
-        <p class="micro">Practice estimates only · Not affiliated with or endorsed by IELTS, British Council, IDP, or Cambridge</p>
+        <div class="hero-stats">
+          <span>⏱ ${t('home_stat1')}</span>
+          <span>🤖 ${t('home_stat2')}</span>
+          <span>🌐 ${t('home_stat3')}</span>
+        </div>
       </div>
       <div class="preview-wrap">
         <div class="glass score-card">
-          <div class="score-label"><span>Overall estimated band</span><span>${store.attempts.length}/4 sections</span></div>
-          <div class="big">${overall ?? '—'} <small>/ 9</small></div>
-          <div class="meter"><i style="width:${Math.min(100, (store.attempts.length / 4) * 100)}%"></i></div>
-          ${weakest ? `<p class="micro" style="margin-top:10px">Weakest so far: <strong style="color:var(--coral);text-transform:capitalize">${weakest}</strong></p>` : ''}
+          <div class="score-label"><span>${t('overall_band')}</span><span>${doneCount}/4</span></div>
+          ${bandRing(overall, overall ? (overall / 9) * 100 : 0)}
+          <div class="skill-rows">
+            ${sections.map(s => `
+              <div class="skill-row">
+                <span class="skill-dot ${latest[s] ? 'on' : ''}"></span>
+                <span class="skill-name cap">${s}</span>
+                <span class="skill-band">${latest[s] ? latest[s].band : '—'}</span>
+              </div>`).join('')}
+          </div>
+          ${weakest ? `<p class="micro" style="margin-top:12px">${t('weakest_skill')}: <strong class="cap" style="color:var(--coral)">${weakest}</strong></p>` : ''}
         </div>
       </div>
     </section>
 
-    <section class="section">
-      <div class="section-header"><div><div class="eyebrow">How it works</div><h2>Four steps to a real improvement plan.</h2></div></div>
+    <section class="section reveal">
+      <div class="section-header"><div><div class="eyebrow">${t('home_how_eyebrow')}</div><h2>${t('home_how_title')}</h2></div></div>
       <div class="feature-grid">
-        <article class="feature"><div class="feature-icon">①</div><h3>Take the mock test</h3><p>Real IELTS structure and timing across all four skills — no shortcuts.</p></article>
-        <article class="feature"><div class="feature-icon">②</div><h3>Get your band instantly</h3><p>Objective sections are scored on the official conversion table; Writing and Speaking are scored by an AI examiner using real band descriptors.</p></article>
-        <article class="feature"><div class="feature-icon">③</div><h3>See your exact mistakes</h3><p>Every wrong answer is saved with what you answered vs. the correct one, so you know precisely where points were lost.</p></article>
-        <article class="feature"><div class="feature-icon">④</div><h3>Ask your AI Coach</h3><p>Get a personalised study plan based on your actual weakest skill and repeated mistake patterns — not generic advice.</p></article>
+        <article class="feature"><div class="feature-icon">①</div><h3>${t('home_step1_t')}</h3><p>${t('home_step1_d')}</p></article>
+        <article class="feature"><div class="feature-icon">②</div><h3>${t('home_step2_t')}</h3><p>${t('home_step2_d')}</p></article>
+        <article class="feature"><div class="feature-icon">③</div><h3>${t('home_step3_t')}</h3><p>${t('home_step3_d')}</p></article>
+        <article class="feature"><div class="feature-icon">④</div><h3>${t('home_step4_t')}</h3><p>${t('home_step4_d')}</p></article>
       </div>
     </section>
 
-    <section class="section">
-      <div class="section-header"><div><div class="eyebrow">Full mock exam</div><h2>Choose a section.</h2></div><div class="test-switch">${testSwitch()}</div></div>
-      <div class="library">${cards.map(c => `
-        <article class="test-card">
-          <div class="test-meta"><span>${c.title}</span><span>${store.attempts.some(a => a.section === c.key) ? 'Done' : 'Not started'}</span></div>
-          <h3>${c.title}</h3>
-          <span class="pill">${c.meta}</span>
-          <div class="test-meta" style="margin-top:20px"><span></span><button class="btn btn-primary" style="padding:7px 14px;font-size:12.5px" data-go="${c.href}">Start ↗</button></div>
-        </article>`).join('')}</div>
+    <section class="section reveal">
+      <div class="section-header"><div><div class="eyebrow">${t('home_mock_eyebrow')}</div><h2>${t('home_mock_title')}</h2></div><div class="test-switch">${testSwitch()}</div></div>
+      <div class="library">${sectionCards()}</div>
     </section>
 
-    <section class="section">
-      <div class="section-header"><div><div class="eyebrow">Personalised learning</div><h2>More than a mock. A study system.</h2></div></div>
+    <section class="section reveal">
+      <div class="section-header"><div><div class="eyebrow">${t('home_learn_eyebrow')}</div><h2>${t('home_learn_title')}</h2></div></div>
       <div class="feature-grid">
-        <article class="feature"><div class="feature-icon">◆</div><h3>Explanations</h3><p>Every Listening and Reading answer comes with a short explanation, so a wrong answer becomes a lesson.</p></article>
-        <article class="feature"><div class="feature-icon">◈</div><h3>Mini lessons</h3><p>Bite-sized Writing, Reading, Listening and Speaking strategies you can apply immediately.</p></article>
-        <article class="feature"><div class="feature-icon">◉</div><h3>Vocabulary</h3><p>Topic-based IELTS word lists with meanings, examples and mastery tracking.</p></article>
-        <article class="feature"><div class="feature-icon">◎</div><h3>Quick quiz</h3><p>Short knowledge checks that keep the key exam rules fresh between full tests.</p></article>
+        <article class="feature"><div class="feature-icon">◆</div><h3>${t('home_feat_expl_t')}</h3><p>${t('home_feat_expl_d')}</p></article>
+        <article class="feature"><div class="feature-icon">◈</div><h3>${t('home_feat_lesson_t')}</h3><p>${t('home_feat_lesson_d')}</p></article>
+        <article class="feature"><div class="feature-icon">◉</div><h3>${t('home_feat_vocab_t')}</h3><p>${t('home_feat_vocab_d')}</p></article>
+        <article class="feature"><div class="feature-icon">◎</div><h3>${t('home_feat_quiz_t')}</h3><p>${t('home_feat_quiz_d')}</p></article>
       </div>
     </section>
 
-    <section class="section">
+    <section class="section reveal">
       <div class="plans">
         <article class="plan plan-free">
           <div class="test-meta"><span>${t('free_plan')}</span><span>£0</span></div>
-          <h3>Start free</h3>
+          <h3>${t('free_title')}</h3>
           <ul>
-            <li>Full Listening & Reading mock</li>
-            <li>Mistake notebook</li>
-            <li>Basic results & band estimate</li>
-            <li>First AI Coach conversation</li>
+            <li>${t('free_f1')}</li>
+            <li>${t('free_f2')}</li>
+            <li>${t('free_f3')}</li>
+            <li>${t('free_f4')}</li>
           </ul>
-          <button class="btn btn-primary" data-go="/mock">Start free ↗</button>
+          <button class="btn btn-primary" data-go="/mock">${t('free_cta')} ↗</button>
         </article>
         <article class="plan plan-premium">
           <div class="test-meta"><span>${t('premium_plan')}</span><span class="pill">${t('nav_coming_soon')}</span></div>
-          <h3>Everything + AI</h3>
+          <h3>${t('prem_title')}</h3>
           <ul>
-            <li>All practice tests, including Test 2</li>
-            <li>Explanations on every answer</li>
-            <li>Advanced AI feedback & coach</li>
-            <li>Dashboard, full mock, quiz, PWA</li>
+            <li>${t('prem_p1')}</li>
+            <li>${t('prem_p2')}</li>
+            <li>${t('prem_p3')}</li>
+            <li>${t('prem_p4')}</li>
           </ul>
           <p class="micro">${t('premium_note')}</p>
-          <button class="btn btn-ghost" data-go="/dashboard">Preview ↗</button>
+          <button class="btn btn-ghost" data-go="/dashboard">${t('prem_cta')} ↗</button>
         </article>
       </div>
     </section>
 
-    <section class="section">
-      <div class="glass" style="padding:32px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:20px">
+    <section class="section reveal">
+      <div class="glass next-step">
         <div>
-          <div class="eyebrow">Your next step</div>
-          <h2 style="font-family:var(--font-display);font-size:22px;margin:8px 0 6px">${weakest ? `Work on your ${weakest} with the AI Coach` : 'Finish a section to unlock coaching'}</h2>
-          <p style="color:var(--muted);font-size:14px;margin:0">${store.mistakes.length ? `You have ${store.mistakes.length} saved mistakes ready to review.` : 'Complete a section and your mistakes will show up here automatically.'}</p>
+          <div class="eyebrow">${t('home_next_eyebrow')}</div>
+          <h2>${weakest ? t2('home_next_a', { skill: weakest[0].toUpperCase() + weakest.slice(1) }) : t('home_next_b')}</h2>
+          <p>${store.mistakes.length ? t2('home_next_mistakes', { n: store.mistakes.length }) : t('home_next_empty')}</p>
         </div>
-        <button class="btn btn-primary" data-go="/coach">Talk to AI Coach ↗</button>
+        <button class="btn btn-primary" data-go="/coach">${t('home_talk_coach')} ↗</button>
       </div>
     </section>`, '');
 }
@@ -211,29 +306,17 @@ function testSwitch() {
   const meta = CONTENT.testMeta || { tests: [{ id: 'test1', label: 'Practice Test 1' }, { id: 'test2', label: 'Practice Test 2', premium: true }] };
   const labels = ['listening', 'reading', 'writing', 'speaking'].map(s => SERVICES.getSkillContent(s, store.selectedTest));
   return `<div class="seg" role="tablist">
-    ${meta.tests.map(tb => `<button class="seg-btn ${store.selectedTest === tb.id ? 'active' : ''}" data-test="${tb.id}" ${tb.premium ? 'title="Premium"' : ''}>${tb.premium ? '⭐ ' : ''}${tb.id === 'test2' ? t('test2') : t('test1')}</button>`).join('')}
+    ${meta.tests.map(tb => `<button class="seg-btn ${store.selectedTest === tb.id ? 'active' : ''}" data-test="${tb.id}" ${tb.premium ? `title="${t('test2_free')}"` : ''}>${tb.premium ? '⭐ ' : ''}${tb.id === 'test2' ? t('test2') : t('test1')}</button>`).join('')}
   </div>`;
 }
 
 function mockHub() {
-  const cards = [
-    { key: 'listening', title: 'Listening', meta: '4 parts · 40 questions · 30 min', href: '/listening' },
-    { key: 'reading', title: 'Reading', meta: '3 passages · 40 questions · 60 min', href: '/reading' },
-    { key: 'writing', title: 'Writing', meta: '2 tasks · 60 min', href: '/writing' },
-    { key: 'speaking', title: 'Speaking', meta: '3 parts · 11-14 min · voice recorded', href: '/speaking' }
-  ];
   const activeTest = SERVICES.getSkillContent('listening', store.selectedTest);
   return shell(`
     <section class="section">
-      <div class="section-header"><div><div class="eyebrow">Full mock exam</div><h1 style="font-family:var(--font-display);font-size:30px;margin:10px 0 0">Choose a section to practice.</h1></div><div class="test-switch">${testSwitch()}</div></div>
-      <p class="micro" style="margin:14px 0 20px">${SERVICES.testLabel(store.selectedTest, store.lang)} — ${activeTest && activeTest.difficulty ? activeTest.difficulty : ''}</p>
-      <div class="library">${cards.map(c => `
-        <article class="test-card">
-          <div class="test-meta"><span>${c.title}</span><span>${store.attempts.some(a => a.section === c.key) ? 'Done' : 'Not started'}</span></div>
-          <h3>${c.title}</h3>
-          <span class="pill">${c.meta}</span>
-          <div class="test-meta" style="margin-top:20px"><span></span><button class="btn btn-primary" style="padding:7px 14px;font-size:12.5px" data-go="${c.href}">Start ↗</button></div>
-        </article>`).join('')}</div>
+      <div class="section-header"><div><div class="eyebrow">${t('home_mock_eyebrow')}</div><h1 style="font-family:var(--font-display);font-size:30px;margin:10px 0 0">${t('home_mock_title')}</h1></div><div class="test-switch">${testSwitch()}</div></div>
+      <p class="micro" style="margin:14px 0 20px">${esc(SERVICES.testLabel(store.selectedTest, store.lang))} — ${activeTest && activeTest.difficulty ? esc(activeTest.difficulty) : ''}</p>
+      <div class="library">${sectionCards()}</div>
     </section>`, 'mock');
 }
 
@@ -247,11 +330,11 @@ function listening() {
   const played = listeningState.played[part.id];
   return shell(`
     <section class="section">
-      <div class="test-top"><span class="eyebrow">Listening · ${part.title}</span><span class="timer" data-timer>--:--</span></div>
+      <div class="test-top"><span class="eyebrow">Listening · ${esc(part.title)}</span><span class="timer" data-timer role="timer" aria-live="off">--:--</span></div>
       <h1 style="font-family:var(--font-display);font-size:28px;margin:10px 0 20px">Part ${part.partNumber} of 4</h1>
       <div class="glass" style="padding:24px;margin-bottom:20px">
-        <p style="color:var(--muted);font-size:14px;margin-bottom:14px">${part.instructions}</p>
-        <button class="btn ${played ? 'btn-ghost' : 'btn-primary'}" data-play-part ${played ? 'disabled' : ''}>${played ? '✓ Played' : '▶ Play recording'}</button>
+        <p style="color:var(--muted);font-size:14px;margin-bottom:14px">${esc(part.instructions)}</p>
+        <button class="btn ${played ? 'btn-ghost' : 'btn-primary'}" data-play-part ${played ? 'disabled' : ''}>${played ? '✓ ' + t('played') : '▶ ' + t('play_recording')}</button>
         <p class="micro">You can answer while listening or after — the recording plays once, like the real test.</p>
       </div>
       <div style="display:flex;flex-direction:column;gap:16px">${part.questions.map((q, i) => `
@@ -262,8 +345,8 @@ function listening() {
             : `<input class="btn btn-ghost" style="width:220px;text-align:left" data-l-text="${i}" value="${esc(listeningState.answers[(part.partNumber - 1) * 10 + i] || '')}" placeholder="Your answer">`}
         </div>`).join('')}</div>
       <div style="margin-top:24px;display:flex;gap:12px">
-        ${listeningState.partIndex > 0 ? '<button class="btn btn-ghost" data-l-prev>← Previous part</button>' : ''}
-        ${listeningState.partIndex < 3 ? '<button class="btn btn-primary" data-l-next>Next part ↗</button>' : '<button class="btn btn-primary" data-l-submit>Submit Listening ↗</button>'}
+        ${listeningState.partIndex > 0 ? `<button class="btn btn-ghost" data-l-prev>← ${t('prev_part')}</button>` : ''}
+        ${listeningState.partIndex < 3 ? `<button class="btn btn-primary" data-l-next>${t('next_part')} ↗</button>` : `<button class="btn btn-primary" data-l-submit>${t('submit_listening')} ↗</button>`}
       </div>
     </section>`, 'listening');
 }
@@ -276,7 +359,7 @@ function reading() {
   const passage = test.passages[readingState.passageIndex];
   return shell(`
     <section class="section">
-      <div class="test-top"><span class="eyebrow">Reading · Passage ${passage.passageNumber} of 3 · ${passage.difficulty}</span><span class="timer" data-timer>--:--</span></div>
+      <div class="test-top"><span class="eyebrow">Reading · Passage ${passage.passageNumber} of 3 · ${esc(passage.difficulty)}</span><span class="timer" data-timer role="timer" aria-live="off">--:--</span></div>
       <h1 style="font-family:var(--font-display);font-size:26px;margin:10px 0 20px">${passage.title}</h1>
       <div class="reading-grid" style="display:grid;grid-template-columns:1.1fr 0.9fr;gap:20px">
         <div class="glass" style="padding:22px;max-height:560px;overflow-y:auto;font-size:14px;line-height:1.7;white-space:pre-line">${passage.text}</div>
@@ -293,8 +376,8 @@ function reading() {
         </div>
       </div>
       <div style="margin-top:24px;display:flex;gap:12px">
-        ${readingState.passageIndex > 0 ? '<button class="btn btn-ghost" data-r-prev>← Previous passage</button>' : ''}
-        ${readingState.passageIndex < 2 ? '<button class="btn btn-primary" data-r-next>Next passage ↗</button>' : '<button class="btn btn-primary" data-r-submit>Submit Reading ↗</button>'}
+        ${readingState.passageIndex > 0 ? `<button class="btn btn-ghost" data-r-prev>← ${t('prev_passage')}</button>` : ''}
+        ${readingState.passageIndex < 2 ? `<button class="btn btn-primary" data-r-next>${t('next_passage')} ↗</button>` : `<button class="btn btn-primary" data-r-submit>${t('submit_reading')} ↗</button>`}
       </div>
     </section>`, 'reading');
 }/* ---------------- WRITING ---------------- */
@@ -304,17 +387,17 @@ function writing() {
   if (!writingState.deadline) writingState.deadline = loadDeadline('writing:' + store.selectedTest, 60);
   return shell(`
     <section class="section">
-      <div class="test-top"><span class="eyebrow">Writing · Task 1 & Task 2</span><span class="timer" data-timer>--:--</span></div>
+      <div class="test-top"><span class="eyebrow">Writing · Task 1 & Task 2</span><span class="timer" data-timer role="timer" aria-live="off">--:--</span></div>
       <h1 style="font-family:var(--font-display);font-size:28px;margin:10px 0 24px">60 minutes total</h1>
       ${test.tasks.map((t, i) => `
         <div class="glass" style="padding:22px;margin-bottom:18px">
-          <p class="eyebrow" style="margin-bottom:8px">${t.title} · ${t.minutes} min · min ${t.minWords} words</p>
-          <p style="font-size:14.5px;line-height:1.6">${t.prompt}</p>
+          <p class="eyebrow" style="margin-bottom:8px">${esc(t.title)} · ${t.minutes} min · min ${t.minWords} words</p>
+          <p style="font-size:14.5px;line-height:1.6">${esc(t.prompt)}</p>
           ${t.chartData ? `<pre style="white-space:pre-wrap;font-size:12.5px;color:var(--muted);background:rgba(255,255,255,0.03);padding:12px;border-radius:10px">${esc(t.chartData)}</pre>` : ''}
           <textarea data-w-text="${i}" placeholder="Write your response here..." style="width:100%;min-height:180px;margin-top:14px;background:rgba(255,255,255,0.03);border:1px solid var(--panel-border);border-radius:12px;color:var(--text);padding:14px;font-family:var(--font-body);font-size:14px">${esc(writingState.answers[i] || '')}</textarea>
-          <p class="micro word-count-${i}">${(writingState.answers[i] || '').trim() ? writingState.answers[i].trim().split(/\s+/).length : 0} words</p>
+          <p class="micro word-count-${i}">${t2('words', { n: (writingState.answers[i] || '').trim() ? writingState.answers[i].trim().split(/\s+/).length : 0 })}</p>
         </div>`).join('')}
-      <button class="btn btn-primary" data-w-submit>Submit for AI grading ↗</button>
+      <button class="btn btn-primary" data-w-submit>${t('submit_writing')} ↗</button>
       <div id="writing-result"></div>
     </section>`, 'writing');
 }
@@ -343,7 +426,7 @@ function speaking() {
         `}
       </div>
       <div style="margin-top:24px;display:flex;gap:12px">
-        ${speakingState.partIndex < 2 ? '<button class="btn btn-primary" data-sp-next>Next part ↗</button>' : '<button class="btn btn-primary" data-sp-submit>Finish & get AI score ↗</button>'}
+        ${speakingState.partIndex < 2 ? `<button class="btn btn-primary" data-sp-next>${t('next_part')} ↗</button>` : `<button class="btn btn-primary" data-sp-submit>${t('finish_speaking')} ↗</button>`}
       </div>
       <div id="speaking-result"></div>
     </section>`, 'speaking');
@@ -354,9 +437,9 @@ function resultsPage() {
   const attempts = [...store.attempts].sort((a, b) => b.date - a.date);
   return shell(`
     <section class="section">
-      <div class="eyebrow">Results & history</div>
-      <h1 style="font-family:var(--font-display);font-size:28px;margin:10px 0 10px">Every attempt, in one place.</h1>
-      <p style="color:var(--muted);font-size:14.5px;margin-bottom:26px">Band scores, saved mistakes and AI feedback for each section you have completed.</p>
+      <div class="eyebrow">${t('results_eyebrow')}</div>
+      <h1 style="font-family:var(--font-display);font-size:28px;margin:10px 0 10px">${t('results_title')}</h1>
+      <p style="color:var(--muted);font-size:14.5px;margin-bottom:26px">${t('results_sub')}</p>
       ${attempts.length ? `
         <div class="result-grid">
           ${attempts.map((a, i) => {
@@ -369,14 +452,14 @@ function resultsPage() {
               <div class="result-band">${a.band}<small> / 9 ${arrow}</small></div>
               ${icon}
               ${fb && fb.tasks ? `<div style="margin-top:10px;font-size:12.5px;color:var(--muted)">${fb.tasks.map(t => `${esc(t.title)}: <strong style="color:var(--cyan)">${t.band}</strong>`).join(' · ')}</div>` : ''}
-              <button class="btn btn-ghost" style="margin-top:14px;font-size:12.5px;padding:7px 12px" data-detail="${i}">View feedback ↗</button>
+              <button class="btn btn-ghost" style="margin-top:14px;font-size:12.5px;padding:7px 12px" data-detail="${i}">${t('view_feedback')} ↗</button>
             </article>`;
           }).join('')}
         </div>
         <div id="result-detail" style="margin-top:18px"></div>` : `
         <div class="glass" style="padding:30px;text-align:center">
-          <p style="color:var(--muted)">No attempts yet. Take your first mock section to see results here.</p>
-          <button class="btn btn-primary" style="margin-top:14px" data-go="/mock">Start a section ↗</button>
+          <p style="color:var(--muted)">${t('no_attempts')}</p>
+          <button class="btn btn-primary" style="margin-top:14px" data-go="/mock">${t('start')} ↗</button>
         </div>`}
     </section>`, 'results');
 }
@@ -388,20 +471,20 @@ function mistakes() {
   const sections = ['listening', 'reading'];
   return shell(`
     <section class="section">
-      <div class="eyebrow">Mistake Notebook</div>
-      <h1 style="font-family:var(--font-display);font-size:28px;margin:10px 0 10px">Your misses, made useful.</h1>
-      <p style="color:var(--muted);font-size:14.5px;margin-bottom:26px">Every question you got wrong on Listening or Reading is saved here with your answer and the correct one. Writing and Speaking feedback appears right after each AI grading.</p>
+      <div class="eyebrow">${t('mistakes_eyebrow')}</div>
+      <h1 style="font-family:var(--font-display);font-size:28px;margin:10px 0 10px">${t('mistakes_title')}</h1>
+      <p style="color:var(--muted);font-size:14.5px;margin-bottom:26px">${t('mistakes_sub')}</p>
       ${sections.every(s => groups[s].length === 0) ? `
         <div class="glass" style="padding:30px;text-align:center">
-          <p style="color:var(--muted)">No mistakes recorded yet. Complete a Listening or Reading section to see them here.</p>
+          <p style="color:var(--muted)">${t('no_mistakes')}</p>
         </div>` : sections.map(s => groups[s].length ? `
         <h2 style="font-family:var(--font-display);font-size:19px;margin:24px 0 12px;text-transform:capitalize">${s} (${groups[s].length})</h2>
         <div style="display:flex;flex-direction:column;gap:10px">${groups[s].map(m => `
           <div class="glass" style="padding:16px 18px">
             <p style="margin:0 0 8px;font-size:14px">${esc(m.prompt)}</p>
-            <p style="margin:0;font-size:13px;color:var(--muted)">Your answer: <span style="color:var(--coral)">${esc(m.given || '(no answer)')}</span> · Correct: <span style="color:var(--cyan)">${esc(m.correct)}</span></p>
+            <p style="margin:0;font-size:13px;color:var(--muted)">${t('your_answer')}: <span style="color:var(--coral)">${esc(m.given || '(no answer)')}</span> · ${t('correct_answer')}: <span style="color:var(--cyan)">${esc(m.correct)}</span></p>
             <p style="margin:8px 0 0;font-size:12.5px;color:var(--muted)">${new Date(m.date || Date.now()).toLocaleDateString()}</p>
-            <button class="btn btn-ghost" style="margin-top:10px;font-size:12px;padding:6px 10px" data-remove-mistake="${esc(m.sig)}">Remove</button>
+            <button class="btn btn-ghost" style="margin-top:10px;font-size:12px;padding:6px 10px" data-remove-mistake="${esc(m.sig)}">${t('remove_mistake')}</button>
           </div>`).join('')}</div>` : '').join('')}
     </section>`, 'mistakes');
 }
@@ -413,10 +496,10 @@ function coach() {
   const weakest = weakestSkill();
   return shell(`
     <section class="section">
-      <div class="eyebrow">AI Coach</div>
-      <h1 style="font-family:var(--font-display);font-size:28px;margin:10px 0 20px">A coach that knows your results.</h1>
+      <div class="eyebrow">${t('nav_coach')}</div>
+      <h1 style="font-family:var(--font-display);font-size:28px;margin:10px 0 20px">${t('coach_title')}</h1>
       <div class="glass" style="padding:10px 18px;margin-bottom:16px;font-size:13.5px;color:var(--muted)">
-        Overall band: <strong style="color:var(--text)">${overall ?? 'not assessed yet'}</strong> · Weakest skill: <strong style="color:var(--text);text-transform:capitalize">${weakest ?? 'complete a section first'}</strong> · Saved mistakes: <strong style="color:var(--text)">${store.mistakes.length}</strong>
+        ${t('coach_overall')}: <strong style="color:var(--text)">${overall ?? t('not_assessed')}</strong> · ${t('coach_weakest')}: <strong style="color:var(--text);text-transform:capitalize">${weakest ?? t('not_assessed')}</strong> · ${t('coach_mistakes')}: <strong style="color:var(--text)">${store.mistakes.length}</strong>
       </div>
       <div class="glass" style="padding:20px;display:flex;flex-direction:column;gap:14px;max-height:420px;overflow-y:auto" id="coach-messages">
         ${store.coachMessages.length ? store.coachMessages.map(m => `<div style="align-self:${m.role === 'user' ? 'flex-end' : 'flex-start'};max-width:80%;background:${m.role === 'user' ? 'var(--primary-soft)' : 'rgba(255,255,255,0.04)'};padding:12px 16px;border-radius:14px;font-size:14px;line-height:1.5">${esc(m.text)}</div>`).join('')
@@ -477,9 +560,11 @@ function startTimer(deadlineGetter, onExpire) {
   const tick = () => {
     const remaining = Math.floor((deadlineGetter() - Date.now()) / 1000);
     el.textContent = fmtTime(remaining);
+    /* warn (pulse) during the final 5 minutes */
+    if (remaining <= 300) el.classList.add('timer-danger');
     if (remaining <= 0) {
       clearInterval(timerInterval);
-      notify('Time is up. Submitting automatically.');
+      notify(t('time_up'));
       onExpire();
     }
   };
@@ -488,6 +573,9 @@ function startTimer(deadlineGetter, onExpire) {
 }
 /* ---------------- BIND ---------------- */
 function bind() {
+  /* Stop any timer left over from a previous page so it cannot
+     auto-submit in the background while the user is elsewhere. */
+  clearInterval(timerInterval);
   document.querySelectorAll('[data-go]').forEach(el => el.onclick = () => go(el.dataset.go));
 
   const r = route();
@@ -502,15 +590,16 @@ function bind() {
       const utter = new SpeechSynthesisUtterance(part.transcript);
       utter.rate = 0.95;
       playBtn.disabled = true; playBtn.textContent = 'Playing…';
-      utter.onend = () => { listeningState.played[part.id] = true; playBtn.textContent = '✓ Played'; };
-      utter.onerror = () => { playBtn.disabled = false; playBtn.textContent = '▶ Play recording'; notify('Playback issue — try again'); };
+      utter.onend = () => { listeningState.played[part.id] = true; playBtn.textContent = '✓ ' + t('played'); };
+      utter.onerror = () => { playBtn.disabled = false; playBtn.textContent = '▶ ' + t('play_recording'); notify('Playback issue — try again'); };
       window.speechSynthesis.speak(utter);
     };
     document.querySelectorAll('[data-l-answer]').forEach(el => el.onclick = () => {
       const part = currentTest('listening').parts[listeningState.partIndex];
       const globalIndex = (part.partNumber - 1) * 10 + Number(el.dataset.lAnswer);
       listeningState.answers[globalIndex] = el.dataset.value;
-      render();
+      /* select in place — no full re-render, scroll position and focus are kept */
+      el.parentElement.querySelectorAll('.opt-btn').forEach(b => b.classList.toggle('selected', b === el));
     });
     document.querySelectorAll('[data-l-text]').forEach(el => el.onchange = () => {
       const part = currentTest('listening').parts[listeningState.partIndex];
@@ -530,7 +619,7 @@ function bind() {
     document.querySelectorAll('[data-r-answer]').forEach(el => el.onclick = () => {
       const key = `${readingState.passageIndex}-${el.dataset.rAnswer}`;
       readingState.answers[key] = el.dataset.value;
-      render();
+      el.parentElement.querySelectorAll('.opt-btn').forEach(b => b.classList.toggle('selected', b === el));
     });
     document.querySelectorAll('[data-r-text]').forEach(el => el.onchange = () => {
       const key = `${readingState.passageIndex}-${el.dataset.rText}`;
@@ -550,13 +639,13 @@ function bind() {
       writingState.answers[el.dataset.wText] = el.value;
       const words = el.value.trim() ? el.value.trim().split(/\s+/).length : 0;
       const label = document.querySelector(`.word-count-${el.dataset.wText}`);
-      if (label) label.textContent = `${words} words`;
+      if (label) label.textContent = t2('words', { n: words });
     });
     const wSubmit = document.querySelector('[data-w-submit]');
     if (wSubmit) wSubmit.onclick = async () => {
       const tasks = currentTest('writing').tasks;
       const payload = { mode: 'writing', tasks: tasks.map((t, i) => ({ title: t.title, prompt: t.prompt, response: writingState.answers[i] || '' })) };
-      wSubmit.disabled = true; wSubmit.textContent = 'AI examiner is grading…';
+      wSubmit.disabled = true; wSubmit.textContent = t('grading');
       try {
         const res = await fetch('/api/grade', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -572,7 +661,7 @@ function bind() {
       } catch (err) {
         notify(`Error: ${err.message}`);
       } finally {
-        wSubmit.disabled = false; wSubmit.textContent = 'Submit for AI grading ↗';
+        wSubmit.disabled = false; wSubmit.textContent = t('submit_writing') + ' ↗';
       }
     };
   }
@@ -611,7 +700,7 @@ function bind() {
       }));
       const hasAny = parts.some(p => p.qa.some(x => x.a));
       if (!hasAny) return notify('Please record at least one answer first');
-      spSubmit.disabled = true; spSubmit.textContent = 'AI examiner is grading…';
+      spSubmit.disabled = true; spSubmit.textContent = t('grading');
       try {
         const res = await fetch('/api/grade', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -626,7 +715,7 @@ function bind() {
       } catch (err) {
         notify(`Error: ${err.message}`);
       } finally {
-        spSubmit.disabled = false; spSubmit.textContent = 'Finish & get AI score ↗';
+        spSubmit.disabled = false; spSubmit.textContent = t('finish_speaking') + ' ↗';
       }
     };
     const cueFlow = document.querySelector('#speaking-cue-flow');
@@ -651,34 +740,59 @@ function bind() {
       function startRecordingPart2() {
         const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
         if (!SR) { notify('Speech recognition not supported — try Chrome or Edge'); setSp2Phase('idle'); return; }
-        const recognition = new SR();
-        sp2Recognition = recognition;
-        recognition.lang = 'en-US'; recognition.continuous = true; recognition.interimResults = false;
-        recognition.onresult = (e) => {
-          /* use final results only — re-reading all results would duplicate text */
-          let text = '';
-          for (let i = 0; i < e.results.length; i++) if (e.results[i].isFinal) text += e.results[i][0].transcript + ' ';
-          speakingState.transcripts.sp2 = text.trim();
-        };
-        recognition.onend = () => {
-          if (sp2Phase === 'recording') { setSp2Phase('done'); status.textContent = '✓ Recorded. Click Next part when ready.'; }
-        };
-        recognition.onerror = () => {
-          if (sp2Phase === 'recording') { setSp2Phase('idle'); status.textContent = 'Recording stopped. Click to try again.'; }
-        };
-        recognition.start();
+        let talkLeft = 120;
+        let restarts = 0;
+        let prevSeg = ''; /* committed transcript of previous recognition sessions */
+        const DONE = '✓ Recorded. Click Next part when ready.';
+        function makeRecognition() {
+          const recognition = new SR();
+          sp2Recognition = recognition;
+          recognition.lang = 'en-US'; recognition.continuous = true; recognition.interimResults = false;
+          recognition.onresult = (e) => {
+            /* final results only; committed text grows monotonically within a session */
+            let committed = '';
+            for (let i = 0; i < e.results.length; i++) if (e.results[i].isFinal) committed += e.results[i][0].transcript + ' ';
+            speakingState.transcripts.sp2 = (prevSeg + ' ' + committed).trim();
+          };
+          recognition.onend = () => {
+            if (sp2Phase !== 'recording') return; /* user stopped or moved on */
+            let committed = '';
+            try {
+              for (let i = 0; i < recognition.results.length; i++) if (recognition.results[i].isFinal) committed += recognition.results[i][0].transcript + ' ';
+            } catch {}
+            prevSeg = (prevSeg + ' ' + committed).trim();
+            speakingState.transcripts.sp2 = prevSeg;
+            if (talkLeft > 2 && restarts < 5) {
+              /* Chrome stops continuous recognition after ~60s — restart it so the full
+                 2 minutes are captured, keeping the already-committed transcript. */
+              restarts++;
+              try { recognition.start(); status.textContent = `🔴 Recording… ${talkLeft}s left`; }
+              catch { setSp2Phase('done'); status.textContent = DONE; }
+            } else {
+              setSp2Phase('done'); status.textContent = DONE;
+            }
+          };
+          recognition.onerror = (e) => {
+            if (sp2Phase === 'recording' && e && e.error === 'not-allowed') {
+              setSp2Phase('idle');
+              status.textContent = 'Microphone access was denied — click to try again.';
+            }
+            /* other errors: onend fires next and handles the restart */
+          };
+          try { recognition.start(); } catch { setSp2Phase('idle'); }
+        }
+        makeRecognition();
         setSp2Phase('recording');
         status.textContent = '🔴 Recording… speak now (2 minutes)';
-        let talk = 120;
         sp2Timers.push(setInterval(() => {
-          talk--;
-          if (talk <= 0) {
+          talkLeft--;
+          if (talkLeft <= 0) {
             stopSp2Timers();
-            try { recognition.stop(); } catch {}
+            try { if (sp2Recognition) sp2Recognition.stop(); } catch {}
             setSp2Phase('done');
-            status.textContent = '✓ Recorded. Click Next part when ready.';
-          } else {
-            status.textContent = `🔴 Recording… ${talk}s left`;
+            status.textContent = DONE;
+          } else if (sp2Phase === 'recording') {
+            status.textContent = `🔴 Recording… ${talkLeft}s left`;
           }
         }, 1000));
       }
@@ -738,7 +852,7 @@ function bind() {
     const fb = store.feedback[attempt.section];
     box.innerHTML = fb
       ? aiFeedbackBlock(fb)
-      : `<div class="glass" style="padding:20px"><p class="micro" style="margin:0">No saved AI feedback for this attempt.</p></div>`;
+      : `<div class="glass" style="padding:20px"><p class="micro" style="margin:0">${t('no_feedback')}</p></div>`;
     box.scrollIntoView({ behavior: 'smooth', block: 'start' });
   });
 
@@ -795,9 +909,20 @@ function bindPremium() {
   });
   document.querySelectorAll('[data-lesson-open]').forEach(el => el.onclick = () => {
     const id = el.dataset.lessonOpen;
-    const l = (CONTENT.lessons || []).find(x => x.id === id);
-    if (!l) return;
-    notify(`${l.title} — ${l.bullets.length} key points.`);
+    if (!(CONTENT.lessons || []).some(x => x.id === id)) return;
+    lessonModalId = id;
+    render();
+  });
+  /* Lesson modal: close via button, backdrop click (or Escape in bindNavExtras). */
+  document.querySelectorAll('[data-lesson-close]').forEach(el => el.onclick = () => {
+    lessonModalId = null; render();
+  });
+  const lessonBackdrop = document.querySelector('#lessonBackdrop');
+  if (lessonBackdrop) lessonBackdrop.onclick = (e) => {
+    if (e.target === lessonBackdrop) { lessonModalId = null; render(); }
+  };
+  document.querySelectorAll('[data-lesson-goto-quiz]').forEach(el => el.onclick = () => {
+    lessonModalId = null; go('/quiz');
   });
 
   /* Vocabulary mastery toggle. */
@@ -854,21 +979,38 @@ function bindPremium() {
 }
 
 function bindNavExtras() {
-  const nav = document.querySelector('#mainNav');
-  if (nav) {
-    const onScroll = () => { if (window.scrollY > 40) nav.classList.add('nav-scrolled'); else nav.classList.remove('nav-scrolled'); };
-    window.addEventListener('scroll', onScroll);
-    onScroll();
-  }
-
   const hamburger = document.querySelector('#hamburgerBtn');
   const mobileMenu = document.querySelector('#mobileMenu');
   const closeMenu = document.querySelector('#closeMenuBtn');
-  if (hamburger && mobileMenu) {
-    hamburger.onclick = () => mobileMenu.classList.add('open');
-    if (closeMenu) closeMenu.onclick = () => mobileMenu.classList.remove('open');
-    mobileMenu.querySelectorAll('a').forEach(a => a.onclick = () => mobileMenu.classList.remove('open'));
+
+  const moreBtn = document.querySelector('#moreBtn');
+  const moreMenu = document.querySelector('#moreMenu');
+  if (moreBtn && moreMenu) {
+    moreBtn.onclick = (e) => {
+      e.stopPropagation();
+      setMenu(document.querySelector('#userMenu'), false, document.querySelector('#userChip'));
+      setMenu(moreMenu, !moreMenu.classList.contains('open'), moreBtn);
+    };
   }
+
+  const userChip = document.querySelector('#userChip');
+  const userMenu = document.querySelector('#userMenu');
+  if (userChip && userMenu) {
+    userChip.onclick = (e) => {
+      e.stopPropagation();
+      setMenu(document.querySelector('#moreMenu'), false, document.querySelector('#moreBtn'));
+      setMenu(userMenu, !userMenu.classList.contains('open'), userChip);
+    };
+  }
+
+  if (hamburger && mobileMenu) {
+    const close = () => { mobileMenu.classList.remove('open'); if (hamburger) hamburger.setAttribute('aria-expanded', 'false'); };
+    hamburger.onclick = () => { mobileMenu.classList.add('open'); hamburger.setAttribute('aria-expanded', 'true'); };
+    if (closeMenu) closeMenu.onclick = close;
+    mobileMenu.querySelectorAll('a').forEach(a => a.onclick = close);
+  }
+
+  bindDocOnce();
 
   const loginContainer = document.querySelector('#google-login-btn');
   if (loginContainer && window.google && GOOGLE_CLIENT_ID !== 'YOUR_CLIENT_ID_HERE') {
@@ -876,8 +1018,57 @@ function bindNavExtras() {
     window.google.accounts.id.renderButton(loginContainer, { theme: 'filled_black', size: 'medium', shape: 'pill' });
   }
 
-  document.querySelectorAll('[data-logout]').forEach(userChip => {
-    userChip.onclick = () => { if (confirm('Sign out?')) { store.user = null; save(); render(); } };
+  /* Explicit sign-out from the user menu / mobile menu — no native confirm(). */
+  document.querySelectorAll('[data-logout]').forEach(el => {
+    el.onclick = () => { store.user = null; save(); render(); };
+  });
+}
+
+function setMenu(menu, open, trigger) {
+  if (!menu || !menu.classList || !menu.classList.toggle) return;
+  menu.classList.toggle('open', open);
+  if (trigger && trigger.setAttribute) trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+
+/* Document-level listeners bound exactly once (elements are queried per event,
+   so they stay valid across re-renders). */
+let docListenersBound = false;
+function bindDocOnce() {
+  if (docListenersBound || typeof document === 'undefined' || !document.addEventListener) return;
+  docListenersBound = true;
+
+  /* sticky header shadow on scroll */
+  if (typeof window !== 'undefined' && window.addEventListener) {
+    const onScroll = () => {
+      const header = document.querySelector('#siteHeader');
+      if (header && header.classList && header.classList.toggle) {
+        header.classList.toggle('scrolled', window.scrollY > 8);
+      }
+    };
+    window.addEventListener('scroll', onScroll, { passive: true });
+    onScroll();
+  }
+
+  /* close open dropdowns when clicking anywhere outside them */
+  document.addEventListener('click', (e) => {
+    const moreMenu = document.querySelector('#moreMenu');
+    if (moreMenu && moreMenu.classList.contains('open') && !e.target.closest('.nav-more')) {
+      setMenu(moreMenu, false, document.querySelector('#moreBtn'));
+    }
+    const userMenu = document.querySelector('#userMenu');
+    if (userMenu && userMenu.classList.contains('open') && !e.target.closest('.nav-user')) {
+      setMenu(userMenu, false, document.querySelector('#userChip'));
+    }
+  });
+
+  /* Escape closes menus and the lesson modal */
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    const mm = document.querySelector('#mobileMenu');
+    if (mm) mm.classList.remove('open');
+    const hb = document.querySelector('#hamburgerBtn');
+    if (hb) hb.setAttribute('aria-expanded', 'false');
+    if (lessonModalId) { lessonModalId = null; render(); }
   });
 }
 
@@ -904,7 +1095,7 @@ function submitListening() {
   store.attempts.push({ section: 'listening', band, raw: correct, total: allQuestions.length, date: Date.now() });
   save();
   clearTimerAndDeadline('listening');
-  notify(`Listening complete: Band ${band} (${correct}/${allQuestions.length})`);
+  notify(t2('complete_listening', { band, raw: correct, total: allQuestions.length }));
   listeningState = { partIndex: 0, answers: {}, played: {}, deadline: null };
   go('/results');
 }
@@ -919,7 +1110,7 @@ function submitReading() {
   store.attempts.push({ section: 'reading', band, raw: correct, total, date: Date.now() });
   save();
   clearTimerAndDeadline('reading');
-  notify(`Reading complete: Band ${band} (${correct}/${total})`);
+  notify(t2('complete_reading', { band, raw: correct, total }));
   readingState = { passageIndex: 0, answers: {}, deadline: null };
   go('/results');
 }
@@ -959,7 +1150,7 @@ function dashboard() {
         <div class="stat"><span>${t('overall_band')}</span><strong>${overall ?? '—'}<small> /9</small></strong></div>
         <div class="stat"><span>${t('weakest_skill')}</span><strong class="cap">${weakest || '—'}</strong></div>
         <div class="stat"><span>${t('study_minutes')}</span><strong>${minutes}<small> min</small></strong></div>
-        <div class="stat"><span>Attempts</span><strong>${store.attempts.length}</strong></div>
+        <div class="stat"><span>${t('attempts_stat')}</span><strong>${store.attempts.length}</strong></div>
       </div>
       <div class="dash-grid">
         <div class="glass dash-panel">
@@ -984,6 +1175,24 @@ function dashboard() {
 }
 
 /* ---------------- LESSONS ---------------- */
+let lessonModalId = null;
+function lessonModalHtml() {
+  const l = (CONTENT.lessons || []).find(x => x.id === lessonModalId);
+  if (!l) return '';
+  return `
+  <div class="modal-backdrop" id="lessonBackdrop">
+    <div class="modal glass" role="dialog" aria-modal="true" aria-labelledby="lessonModalTitle">
+      <button class="modal-close" data-lesson-close aria-label="${t('modal_close')}">×</button>
+      <div class="test-meta"><span>${esc(l.category)}</span><span>${esc(l.level)}</span><span>${l.minutes} min</span></div>
+      <h2 id="lessonModalTitle" style="font-family:var(--font-display);font-size:22px;margin:12px 0 14px">${esc(l.title)}</h2>
+      <ul class="lesson-bullets" style="margin-top:0">${l.bullets.map(b => `<li>${esc(b)}</li>`).join('')}</ul>
+      <div style="display:flex;gap:10px;margin-top:22px;flex-wrap:wrap">
+        <button class="btn btn-primary" data-lesson-goto-quiz>${t('lesson_practice')} ↗</button>
+        <button class="btn btn-ghost" data-lesson-close>${t('modal_close')}</button>
+      </div>
+    </div>
+  </div>`;
+}
 function lessons() {
   const list = CONTENT.lessons || [];
   const cats = [...new Set(list.map(l => l.category))];
@@ -1117,27 +1326,45 @@ function authPage(mode) {
 function render() {
   applyPrefs();
   const r = route();
-  if (r === '/') app.innerHTML = home();
-  else if (r === '/mock') app.innerHTML = mockHub();
-  else if (r === '/listening') app.innerHTML = listening();
-  else if (r === '/reading') app.innerHTML = reading();
-  else if (r === '/writing') app.innerHTML = writing();
-  else if (r === '/speaking') app.innerHTML = speaking();
-  else if (r === '/results') app.innerHTML = resultsPage();
-  else if (r === '/mistakes') app.innerHTML = mistakes();
-  else if (r === '/coach') app.innerHTML = coach();
-  else if (r === '/dashboard') app.innerHTML = dashboard();
-  else if (r === '/lessons') app.innerHTML = lessons();
-  else if (r === '/vocabulary') app.innerHTML = vocabulary();
-  else if (r === '/quiz') app.innerHTML = quizPage();
-  else if (r === '/fullmock') app.innerHTML = fullmock();
-  else if (r === '/settings') app.innerHTML = settings();
-  else if (r === '/login') app.innerHTML = authPage('login');
-  else if (r === '/signup') app.innerHTML = authPage('signup');
-  else app.innerHTML = home();
+  let html;
+  if (r === '/') html = home();
+  else if (r === '/mock') html = mockHub();
+  else if (r === '/listening') html = listening();
+  else if (r === '/reading') html = reading();
+  else if (r === '/writing') html = writing();
+  else if (r === '/speaking') html = speaking();
+  else if (r === '/results') html = resultsPage();
+  else if (r === '/mistakes') html = mistakes();
+  else if (r === '/coach') html = coach();
+  else if (r === '/dashboard') html = dashboard();
+  else if (r === '/lessons') html = lessons();
+  else if (r === '/vocabulary') html = vocabulary();
+  else if (r === '/quiz') html = quizPage();
+  else if (r === '/fullmock') html = fullmock();
+  else if (r === '/settings') html = settings();
+  else if (r === '/login') html = authPage('login');
+  else if (r === '/signup') html = authPage('signup');
+  else html = home();
+  if (lessonModalId) html += lessonModalHtml();
+  app.innerHTML = html;
   bind();
+  initReveal();
   const msgBox = document.querySelector('#coach-messages');
   if (msgBox) msgBox.scrollTop = msgBox.scrollHeight;
+}
+
+/* Scroll-reveal for .reveal sections — subtle, and disabled for reduced motion. */
+function initReveal() {
+  if (typeof window === 'undefined' || !('IntersectionObserver' in window)) return;
+  const els = document.querySelectorAll('.reveal');
+  if (!els.length) return;
+  let reduce = false;
+  try { reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch {}
+  if (reduce) { els.forEach(el => el.classList.add('in')); return; }
+  const io = new IntersectionObserver((entries) => {
+    entries.forEach(en => { if (en.isIntersecting) { en.target.classList.add('in'); io.unobserve(en.target); } });
+  }, { threshold: 0.08 });
+  els.forEach(el => io.observe(el));
 }
 
 /* ---------------- BOOT ---------------- */
