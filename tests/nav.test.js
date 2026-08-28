@@ -1,10 +1,10 @@
 /* Navigation regression test.
  *
- * Verifies the premium nav structure:
- *  - exactly 5 primary links in the top bar (Dashboard, Mock, Full Mock, Results, AI Coach)
- *  - secondary pages live in the "More" dropdown, not the top bar
+ * Verifies the focused nav structure:
+ *  - exactly 3 primary links centred in the top bar (Mock Test, Results, AI Coach)
+ *  - the remaining features live behind the hamburger menu, not the top bar
  *  - user chip (with sign-out button) renders when logged in
- *  - hamburger + full mobile menu always present
+ *  - hamburger + menu always present; desktop menu hides the 3 primaries
  *  - footer is translated and carries the year + disclaimer
  *  - lesson modal can be opened/closed
  */
@@ -17,7 +17,7 @@ function makeEl() {
     style: {}, dataset: {}, onclick: null, onchange: null, oninput: null, onsubmit: null,
     classList: { _s: new Set(), add(c) { this._s.add(c); }, remove(c) { this._s.delete(c); }, contains(c) { return this._s.has(c); }, toggle(c, f) { if (f === undefined) { this._s.has(c) ? this._s.delete(c) : this._s.add(c); } else if (f) this._s.add(c); else this._s.delete(c); } },
     addEventListener() {}, appendChild() {}, querySelector: () => null, querySelectorAll: () => [],
-    scrollIntoView() {}, scrollTo() {}, focus() {},
+    scrollIntoView() {}, scrollTo() {}, focus: {},
     setAttribute() {}, getAttribute: () => null, closest: () => null
   };
 }
@@ -69,17 +69,20 @@ try {
   render();
   const html = document.querySelector('#app').innerHTML;
 
-  const navLinksBlock = (html.match(/<div class="nav-links">([\s\S]*?)<div class="nav-more">/) || [])[1] || '';
-  check('nav: exactly 5 primary links in the top bar', (navLinksBlock.match(/<a /g) || []).length === 5
-    && !navLinksBlock.includes('#/settings') && !navLinksBlock.includes('#/vocabulary')
-    && !navLinksBlock.includes('#/quiz') && navLinksBlock.includes('#/fullmock'));
-  check('nav: "More" dropdown present with secondary pages', html.includes('id="moreMenu"')
-    && html.includes('nav-more-btn')
-    && /#\/settings/.test(html) && /#\/vocabulary/.test(html) && /#\/quiz/.test(html));
+  const navLinksBlock = (html.match(/<div class="nav-links">([\s\S]*?)<\/div>\s*<div class="nav-actions">/) || [])[1] || '';
+  check('nav: exactly 3 primary links in the top bar (Mock/Results/Coach)',
+    (navLinksBlock.match(/<a /g) || []).length === 3
+    && navLinksBlock.includes('#/mock') && navLinksBlock.includes('#/results') && navLinksBlock.includes('#/coach')
+    && !navLinksBlock.includes('#/dashboard') && !navLinksBlock.includes('#/fullmock')
+    && !navLinksBlock.includes('#/settings') && !navLinksBlock.includes('#/vocabulary'));
+  check('nav: no "More" dropdown in the top bar', !html.includes('id="moreMenu"') && !html.includes('nav-more-btn'));
+  check('nav: hamburger present with remaining features in menu', html.includes('id="hamburgerBtn"')
+    && html.includes('id="mobileMenu"') && html.includes('mm-rest')
+    && /mm-rest[\s\S]*#\/settings/.test(html) && /mm-rest[\s\S]*#\/vocabulary/.test(html) && /mm-rest[\s\S]*#\/quiz/.test(html)
+    && /mm-rest[\s\S]*#\/dashboard/.test(html) && /mm-rest[\s\S]*#\/mistakes/.test(html) && /mm-rest[\s\S]*#\/lessons/.test(html));
   check('nav: user chip with dropdown sign-out (no confirm dialog)', html.includes('id="userChip"')
     && html.includes('user-menu') && html.includes('Aziz') && !html.includes('confirm('));
   check('nav: user picture escaped (XSS-safe)', !html.includes('src="https://example.com/a"b.png"'));
-  check('nav: hamburger + full mobile menu', html.includes('id="hamburgerBtn"') && html.includes('id="mobileMenu"') && html.includes('mm-links'));
   check('nav: theme + language toggles in header', html.includes('data-toggle-theme') && html.includes('data-toggle-lang'));
   check('footer: translated + year + disclaimer', html.includes('Bandly AI tomonidan')
     && html.includes(String(new Date().getFullYear())) && html.includes('IELTS, British Council, IDP'));
@@ -106,11 +109,13 @@ try {
   render();
   const en = document.querySelector('#app').innerHTML;
   check('en: sign-in CTA shown when logged out', en.includes('nav-login') && en.includes('Sign in'));
+  check('mock hub: unified page with guided steps + combined result', en.includes('mock-flow')
+    && en.includes('mock-step') && !en.includes('nav_fullmock'));
 
   console.log(failed === 0 ? 'NAV TESTS OK ✓' : `NAV TESTS FAILED: ${failed}`);
 } catch (e) {
   console.log('NAV TEST CRASH:', e.message);
-  console.log(e.stack.split('\n').slice(0, 4).join('\n'));
-  process.exit(1);
+  console.log(e.stack.split('\n').slice(0, 4).join('\n'))
+  ;process.exit(1);
 }
 process.exit(failed === 0 ? 0 : 1);
