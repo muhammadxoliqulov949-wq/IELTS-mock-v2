@@ -1,3 +1,4 @@
+require('dotenv').config({ quiet: true });
 /* Local preview server (no Vercel needed).
  *
  * - Serves the static site (index.html, styles.css, script.js, data.js, services.js)
@@ -14,6 +15,9 @@ const path = require('path');
 const gradeHandler = require('./api/grade.js');
 const coachHandler = require('./api/coach.js');
 const quizHandler = require('./api/quiz.js');
+
+const configHandler = require('./api/config.js');
+const { staticFiles } = require('./scripts/build.js');
 
 const PORT = process.env.PORT || 3000;
 const MIME = {
@@ -71,11 +75,23 @@ async function handleApi(handler, req, res) {
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
 
+  if (url.pathname === '/api/config') {
+    res.status = (code) => { res.statusCode = code; return res; };
+    res.json = (body) => { res.setHeader('Content-Type', 'application/json; charset=utf-8'); res.end(JSON.stringify(body)); };
+    return configHandler(req, res);
+  }
+
   if (url.pathname.startsWith('/api/grade')) return handleApi(gradeHandler, req, res);
   if (url.pathname.startsWith('/api/coach')) return handleApi(coachHandler, req, res);
   if (url.pathname.startsWith('/api/quiz')) return handleApi(quizHandler, req, res);
 
-  let filePath = url.pathname === '/' ? '/index.html' : decodeURIComponent(url.pathname);
+  let filePath;
+  try { filePath = url.pathname === '/' ? '/index.html' : decodeURIComponent(url.pathname); }
+  catch { res.writeHead(400); res.end('Bad request'); return; }
+  // Only public assets are served: .env, .git, server code and dependencies are private.
+  if (!staticFiles.includes(filePath.slice(1)) && !/^\/icons\/[a-zA-Z0-9_-]+\.(svg|png|jpg|ico)$/.test(filePath)) {
+    res.writeHead(404); res.end('Not found'); return;
+  }
   const abs = path.normalize(path.join(__dirname, filePath));
   if (!abs.startsWith(__dirname)) {
     res.writeHead(403); res.end('Forbidden'); return;
@@ -93,6 +109,9 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`IELTS Mock preview server → http://localhost:${PORT}`);
+  console.log(process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY
+    ? 'Supabase settings found — apply the SQL migration and configure Auth (see SUPABASE.md).'
+    : 'Supabase not configured — sign-in and mock tests are disabled. See SUPABASE.md.');
   if (!process.env.GEMINI_API_KEY) {
     console.log('Note: GEMINI_API_KEY is not set — AI grading/coach will show a setup message.');
     console.log('Set it (e.g. GEMINI_API_KEY=... npm run preview) to enable real AI.');

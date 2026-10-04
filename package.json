@@ -2,9 +2,9 @@
   "name": "ielts-mock-v2",
   "version": "2.0.0",
   "private": true,
-  "description": "IELTS mock exam web app — timed Listening/Reading/Writing/Speaking tests, instant band scores, mistake notebook, AI-scored Writing & Speaking feedback and an AI Coach.",
+  "description": "IELTS mock exam web app \u2014 timed Listening/Reading/Writing/Speaking tests, instant band scores, mistake notebook, AI-scored Writing & Speaking feedback and an AI Coach.",
   "scripts": {
-    "test": "node tests/api.test.js && node tests/boot.test.js && node tests/premium.test.js && node tests/quiz.test.js && node tests/nav.test.js && node tests/flow.test.js && node tests/test3.test.js && node tests/test4.test.js",
+    "test": "node tests/api.test.js && node tests/boot.test.js && node tests/premium.test.js && node tests/quiz.test.js && node tests/nav.test.js && node tests/flow.test.js && node tests/test3.test.js && node tests/test4.test.js && node tests/supabase.test.js && node tests/auth.test.js",
     "test:flow": "node tests/flow.test.js",
     "test:api": "node tests/api.test.js",
     "test:boot": "node tests/boot.test.js",
@@ -14,9 +14,22 @@
     "test:test4": "node tests/test4.test.js",
     "dev": "vercel dev",
     "preview": "node server.js",
-    "deploy": "vercel --prod"
+    "deploy": "vercel --prod",
+    "build": "node scripts/build.js",
+    "prepreview": "node scripts/build.js --bundle-only",
+    "predev": "node scripts/build.js",
+    "test:supabase": "node tests/supabase.test.js",
+    "test:auth": "node tests/auth.test.js"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.117.2",
+    "dotenv": "^18.0.5"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
+    "esbuild": "^0.28.2"
   }
 }

@@ -5,7 +5,7 @@
  *  - signed-in users see the "timer cannot be stopped" warning before start
  *  - the timer only runs after an explicit start (deadline persisted)
  *  - a completed section is locked: results-only view, no retake
- *  - data is stored per email: invisible to guests and other accounts
+ *  - data is stored per Supabase user ID: invisible to guests and other accounts
  *  - #/fullmock aliases the unified Mock Test page
  */
 const fs = require('fs');
@@ -36,7 +36,8 @@ global.localStorage = {
   setItem: (k, v) => storage.set(k, String(v)),
   removeItem: (k) => storage.delete(k)
 };
-global.window = { addEventListener() {}, scrollY: 0, speechSynthesis: null };
+const authState = { status: 'ready', user: null };
+global.window = { IELTS_CLOUD: { getState: () => authState, ready: new Promise(() => {}) }, addEventListener() {}, scrollY: 0, speechSynthesis: null };
 global.confirm = () => true;
 global.fetch = () => Promise.reject(new Error('network disabled in tests'));
 
@@ -65,12 +66,13 @@ try {
     && app().includes('#/login') && !app().includes('data-l-submit') && !app().includes('warnBackdrop'));
 
   /* 2 — signed in: warning modal before the timer starts */
-  signIn({ name: 'Aziz', email: 'aziz@example.com', picture: '' });
+  authState.user = { id: 'aziz-uuid', email: 'aziz@example.com' };
+  signIn({ id: 'aziz-uuid', auth: 'supabase', name: 'Aziz', email: 'aziz@example.com', picture: '' });
   global.location.hash = '#/listening';
   render();
   check('signed-in: warning modal before start', app().includes('warnBackdrop')
     && app().includes('Before you start') && app().includes('data-warn-start="listening:30"'));
-  check('signed-in: timer not running before start', !storage.has('ielts-v2-store:aziz@example.com:deadline:listening:test1'));
+  check('signed-in: timer not running before start', !storage.has('ielts-v2-store:supabase:aziz-uuid:deadline:listening:test1'));
 
   /* 3 — explicit start persists the deadline and removes the modal
      (the fake DOM does not parse attributes, so set dataset like the markup would) */
@@ -78,7 +80,7 @@ try {
   warnBtn.dataset.warnStart = 'listening:30';
   warnBtn.onclick();
   check('start: modal gone, timer element updated', !app().includes('warnBackdrop'));
-  const dl = Number(storage.get('ielts-v2-store:aziz@example.com:deadline:listening:test1'));
+  const dl = Number(storage.get('ielts-v2-store:supabase:aziz-uuid:deadline:listening:test1'));
   check('start: deadline persisted ~30 min ahead', dl > Date.now() + 29 * 60000 && dl < Date.now() + 31 * 60000);
 
   /* 4 — completed section is locked to a results-only view */
@@ -90,14 +92,16 @@ try {
     && !app().includes('data-l-submit') && !app().includes('warnBackdrop') && !app().includes('data-l-text'));
   check('completed: shows the band of that attempt', app().includes('result-band'));
 
-  /* 5 — per-email isolation */
+  /* 5 — per-user-ID isolation */
+  authState.user = null;
   signOut();
   const guestRaw = JSON.parse(storage.get('ielts-v2-store') || '{}');
   check('sign-out: guest store has no account attempts', !(guestRaw.attempts || []).length);
   global.location.hash = '#/listening';
   render();
   check('sign-out: gate again for guests', app().includes('Sign in to start this test'));
-  signIn({ name: 'Other', email: 'other@example.com', picture: '' });
+  authState.user = { id: 'other-uuid', email: 'other@example.com' };
+  signIn({ id: 'other-uuid', auth: 'supabase', name: 'Other', email: 'other@example.com', picture: '' });
   check('other account: starts clean', store().attempts.length === 0);
   global.location.hash = '#/listening';
   render();

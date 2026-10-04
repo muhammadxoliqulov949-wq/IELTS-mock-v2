@@ -4,20 +4,17 @@ const CONTENT = window.IELTS_CONTENT;
 const SERVICES = window.IELTS_SERVICES;
 const I18N = window.IELTS_I18N || { t: (k) => k, current: () => 'en', setLang() {} };
 const t = (k) => I18N.t(k);
+const CLOUD = window.IELTS_CLOUD || null;
 const STORAGE = 'ielts-v2-store';
-/* Session identity lives under its own key so the account store
-   (ielts-v2-store:<email>) can be picked up on boot. Results saved for one
-   email are invisible to guests and to any other account on this device. */
-const SESSION_KEY = 'ielts-v2-user';
-const GOOGLE_CLIENT_ID = '644107198192-45nq6hr0g5qp0ubjr795uu07s0oi9ij6.apps.googleusercontent.com';
+/* Local storage is a results cache, never an authentication authority.
+   Only Supabase's restored/verified session can activate an account. */
+let activeUser = null;
+localStorage.removeItem('ielts-v2-user'); // retire the old demo identity
 const BAND_LABEL = { listening: 'Listening', reading: 'Reading', writing: 'Writing', speaking: 'Speaking' };
 
-function sessionUser() {
-  try { return JSON.parse(localStorage.getItem(SESSION_KEY)) || null; } catch { return null; }
-}
+function sessionUser() { return activeUser; }
 function storageKey() {
-  const u = sessionUser();
-  return u && u.email ? `${STORAGE}:${String(u.email).toLowerCase()}` : STORAGE;
+  return activeUser ? `${STORAGE}:supabase:${activeUser.id}` : STORAGE;
 }
 let store = load();
 function storeDefaults() {
@@ -31,9 +28,10 @@ function load() {
     return { ...storeDefaults(), user: sessionUser() };
   }
 }
-function save() {
+function save(skipCloud = false) {
   const { user, ...data } = store;
   localStorage.setItem(storageKey(), JSON.stringify(data));
+  if (!skipCloud && CLOUD) scheduleCloudSync();
 }
 /* Switch account: persist the current scope, swap the session, reload data. */
 function resetSectionStates() {
@@ -43,37 +41,23 @@ function resetSectionStates() {
   speakingState = { partIndex: 0, transcripts: { sp1: [], sp2: '', sp3: [] } };
 }
 function signIn(user) {
-  save(); /* keep whatever the current scope has */
-  localStorage.setItem(SESSION_KEY, JSON.stringify(user));
+  const state = CLOUD && CLOUD.getState();
+  if (!state || state.status !== 'ready' || !state.user || state.user.id !== user.id || user.auth !== 'supabase') {
+    throw new Error('A valid Supabase session is required.');
+  }
+  save();
+  activeUser = user;
   store = load();
   save();
   resetSectionStates();
 }
 function signOut() {
   save();
-  localStorage.removeItem(SESSION_KEY);
+  activeUser = null;
   store = load();
   resetSectionStates();
 }
 let pendingRoute = null; /* where to return after a successful sign-in */
-/* One-time migration for sessions created before per-account storage:
-   move the legacy inline user (and their data) into the account store so
-   nobody gets signed out or loses results on upgrade. */
-function migrateLegacySession() {
-  if (sessionUser()) return;
-  try {
-    const raw = JSON.parse(localStorage.getItem(STORAGE));
-    if (!raw || !raw.user || !raw.user.email) return;
-    const user = raw.user;
-    const data = { ...storeDefaults(), ...raw };
-    delete data.user;
-    localStorage.setItem(`${STORAGE}:${String(user.email).toLowerCase()}`, JSON.stringify(data));
-    localStorage.setItem(SESSION_KEY, JSON.stringify(user));
-    localStorage.setItem(STORAGE, JSON.stringify(storeDefaults()));
-  } catch { /* corrupted legacy store — start clean */ }
-}
-migrateLegacySession();
-store = load();
 function go(path) { location.hash = path; }
 function route() { return location.hash.slice(1) || '/'; }
 /* Apply persisted preferences on every render so the whole app reflects them. */
@@ -523,10 +507,11 @@ function resultsPage() {
       <div class="eyebrow">${t('results_eyebrow')}</div>
       <h1 style="font-family:var(--font-display);font-size:28px;margin:10px 0 10px">${t('results_title')}</h1>
       <p style="color:var(--muted);font-size:14.5px;margin-bottom:26px">${t('results_sub')}</p>
+      ${cloudResultsPanel()}
       ${attempts.length ? `
         <div class="result-grid">
           ${attempts.map((a, i) => {
-            const fb = store.feedback[a.section];
+            const fb = a.feedback || store.feedback[a.section];
             const icon = a.raw !== undefined ? `<span class="result-raw">${a.raw}/${a.total} correct</span>` : '';
             const arrow = i > 0 ? `<span class="result-arrow">${a.band > attempts[i - 1].band ? '▲' : a.band < attempts[i - 1].band ? '▼' : '—'}</span>` : '';
             return `
@@ -739,6 +724,8 @@ function bind() {
     });
     const wSubmit = document.querySelector('[data-w-submit]');
     if (wSubmit) wSubmit.onclick = async () => {
+      const submissionScope = storageKey();
+      const submissionTest = store.selectedTest;
       const tasks = currentTest('writing').tasks;
       const payload = { mode: 'writing', tasks: tasks.map((t, i) => ({ title: t.title, prompt: t.prompt, response: writingState.answers[i] || '' })) };
       wSubmit.disabled = true; wSubmit.textContent = t('grading');
@@ -749,12 +736,14 @@ function bind() {
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Grading failed');
-        store.attempts.push({ section: 'writing', test: store.selectedTest, band: data.band, date: Date.now() });
+        if (storageKey() !== submissionScope || store.selectedTest !== submissionTest) return;
+        store.attempts.push({ section: 'writing', test: submissionTest, band: data.band, date: Date.now(), feedback: data });
         store.feedback.writing = data;
         save();
         clearTimerAndDeadline('writing');
         resetSectionStates();
-        document.querySelector('#writing-result').innerHTML = aiFeedbackBlock(data);
+        const resultBox = document.querySelector('#writing-result');
+        if (resultBox) resultBox.innerHTML = aiFeedbackBlock(data);
         wSubmit.disabled = true; wSubmit.textContent = '✓ ' + t('test_done');
       } catch (err) {
         notify(`Error: ${err.message}`);
@@ -786,6 +775,8 @@ function bind() {
     if (spNext) spNext.onclick = () => { speakingState.partIndex++; render(); };
     const spSubmit = document.querySelector('[data-sp-submit]');
     if (spSubmit) spSubmit.onclick = async () => {
+      const submissionScope = storageKey();
+      const submissionTest = store.selectedTest;
       const test = currentTest('speaking');
       const parts = test.parts.map((p) => ({
         title: p.title,
@@ -805,11 +796,14 @@ function bind() {
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Grading failed');
-        store.attempts.push({ section: 'speaking', test: store.selectedTest, band: data.band, date: Date.now() });
+        if (storageKey() !== submissionScope || store.selectedTest !== submissionTest) return;
+        store.attempts.push({ section: 'speaking', test: submissionTest, band: data.band, date: Date.now(), feedback: data });
         store.feedback.speaking = data;
         save();
+        clearTimerAndDeadline('speaking');
         resetSectionStates();
-        document.querySelector('#speaking-result').innerHTML = aiFeedbackBlock(data);
+        const resultBox = document.querySelector('#speaking-result');
+        if (resultBox) resultBox.innerHTML = aiFeedbackBlock(data);
         spSubmit.disabled = true; spSubmit.textContent = '✓ ' + t('test_done');
       } catch (err) {
         notify(`Error: ${err.message}`);
@@ -947,7 +941,7 @@ function bind() {
     const attempt = [...store.attempts].sort((a, b) => b.date - a.date)[i];
     const box = document.querySelector('#result-detail');
     if (!attempt || !box) return;
-    const fb = store.feedback[attempt.section];
+    const fb = attempt.feedback || store.feedback[attempt.section];
     box.innerHTML = fb
       ? aiFeedbackBlock(fb)
       : `<div class="glass" style="padding:20px"><p class="micro" style="margin:0">${t('no_feedback')}</p></div>`;
@@ -961,6 +955,8 @@ function bind() {
     if (idx >= 0) { store.mistakes.splice(idx, 1); save(); render(); }
   });
 
+  const cloudRefresh = document.querySelector('[data-cloud-refresh]');
+  if (cloudRefresh) cloudRefresh.onclick = () => syncCloudResults(true);
   bindNavExtras();
   bindPremium();
 }
@@ -1055,25 +1051,55 @@ function bindPremium() {
     render();
   };
 
-  /* Auth form (demo auth stored locally; swap to Supabase/Firebase in prod). */
+  /* All authentication goes through Supabase — never a local/demo fallback. */
   const authForm = document.querySelector('#auth-form');
-  if (authForm) authForm.onsubmit = (e) => {
+  if (authForm) authForm.onsubmit = async (e) => {
     e.preventDefault();
+    if (authBusy) return;
+    if (!CLOUD || CLOUD.getState().status !== 'ready') {
+      setAuthNotice('error', t('auth_unavailable'));
+      return;
+    }
     const fd = new FormData(authForm);
+    const mode = authForm.dataset.authMode;
     const email = String(fd.get('email') || '').trim();
     const password = String(fd.get('password') || '');
     const name = String(fd.get('name') || '').trim() || email.split('@')[0] || 'User';
-    if (!email || password.length < 4) return notify('Enter a valid email and a password (4+ chars).');
-    const target = pendingRoute; pendingRoute = null;
-    signIn({ name, email, picture: '', auth: 'demo' });
-    notify(`Welcome, ${name.split(' ')[0]}!`);
-    go(target || '/dashboard');
+    const sourceRoute = route();
+    authBusy = true;
+    setAuthNotice('loading', t('auth_wait'));
+    updateAuthControls();
+    try {
+      const data = await CLOUD.authenticate({ mode, email, password, name });
+      if (route() !== sourceRoute) return;
+      if (mode === 'signup' && !data.session) {
+        setAuthNotice('success', t('auth_confirm_sent'));
+        const passwordInput = authForm.querySelector('[name="password"]');
+        if (passwordInput) passwordInput.value = '';
+      } else if (data.session && data.user) {
+        const target = pendingRoute; pendingRoute = null;
+        applyCloudUser(data.user);
+        // If Confirm Email is off in Supabase, don't claim an email was sent.
+        if (mode === 'signup') setAuthNotice('success', t('auth_created'));
+        else { authNotice = null; go(target || '/dashboard'); }
+      }
+    } catch (error) {
+      if (route() === sourceRoute) setAuthNotice('error', error.message || t('auth_request_failed'));
+    } finally {
+      authBusy = false;
+      updateAuthControls();
+    }
   };
   const googleBtn = document.querySelector('[data-google-auth]');
-  if (googleBtn) googleBtn.onclick = () => {
-    const g = window.google && window.google.accounts && window.google.accounts.id;
-    if (g) g.prompt(); else notify('Google sign-in available in Chrome/Edge.');
+  if (googleBtn) googleBtn.onclick = async () => {
+    if (authBusy) return;
+    if (!CLOUD || CLOUD.getState().status !== 'ready') return setAuthNotice('error', t('auth_unavailable'));
+    authBusy = true; updateAuthControls();
+    try { await CLOUD.googleSignIn(); }
+    catch (error) { setAuthNotice('error', error.message || t('auth_request_failed')); }
+    finally { authBusy = false; updateAuthControls(); }
   };
+
 }
 
 function bindNavExtras() {
@@ -1099,15 +1125,21 @@ function bindNavExtras() {
 
   bindDocOnce();
 
-  const loginContainer = document.querySelector('#google-login-btn');
-  if (loginContainer && window.google && GOOGLE_CLIENT_ID !== 'YOUR_CLIENT_ID_HERE') {
-    window.google.accounts.id.initialize({ client_id: GOOGLE_CLIENT_ID, callback: handleGoogleLogin });
-    window.google.accounts.id.renderButton(loginContainer, { theme: 'filled_black', size: 'medium', shape: 'pill' });
-  }
-
   /* Explicit sign-out from the user menu / mobile menu — no native confirm(). */
   document.querySelectorAll('[data-logout]').forEach(el => {
-    el.onclick = () => { pendingRoute = null; signOut(); render(); };
+    el.onclick = async () => {
+      pendingRoute = null;
+      if (!CLOUD || logoutBusy) return;
+      logoutBusy = true; el.disabled = true;
+      try {
+        await CLOUD.logout();
+        applyCloudUser(null);
+        authNotice = null;
+        go('/login');
+        notify(t('auth_signed_out'));
+      } catch (error) { notify(error.message || t('auth_request_failed')); }
+      finally { logoutBusy = false; el.disabled = false; }
+    };
   });
 }
 
@@ -1154,15 +1186,6 @@ function bindDocOnce() {
     if (lessonModalId) { lessonModalId = null; render(); }
   });
 }
-
-function handleGoogleLogin(response) {
-  const payload = JSON.parse(atob(response.credential.split('.')[1]));
-  const target = pendingRoute; pendingRoute = null;
-  signIn({ name: payload.name, email: payload.email, picture: payload.picture });
-  notify(`Welcome, ${payload.name.split(' ')[0]}!`);
-  if (target) go(target); else render();
-}
-window.handleGoogleLogin = handleGoogleLogin;
 
 /* ---------------- SUBMIT HANDLERS ---------------- */
 function clearTimerAndDeadline(section) {
@@ -1282,12 +1305,14 @@ function finalizeTimeout(section) {
   else if (section === 'writing') {
     attempt = { section: 'writing', test: store.selectedTest, band: null, date: Date.now(), timedOut: true };
     const tasks = currentTest('writing').tasks;
+    const submissionScope = storageKey();
     const payload = { mode: 'writing', tasks: tasks.map((tk, i) => ({ title: tk.title, prompt: tk.prompt, response: writingState.answers[i] || '' })) };
     fetch('/api/grade', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
       .then(res => res.json().then(data => ({ ok: res.ok, data })))
       .then(({ ok, data }) => {
-        if (!ok || !data) return;
+        if (!ok || !data || storageKey() !== submissionScope) return;
         attempt.band = data.band;
+        attempt.feedback = data;
         store.feedback.writing = data;
         save();
         if (route() === '/writing') render();
@@ -1302,9 +1327,12 @@ function finalizeTimeout(section) {
 }
 
 function testGate(section, minutes, pageFn) {
+  if (!CLOUD || CLOUD.getState().status !== 'ready') {
+    return shell(`<section class="section"><div class="glass auth-notice auth-notice--error" role="status">${esc(CLOUD && CLOUD.getState().status === 'loading' ? t('auth_connecting') : t('auth_unavailable'))}</div></section>`, section);
+  }
+  if (!cloudUserActive()) { pendingRoute = '/' + section; return gateView(); }
   const done = attemptFor(section, store.selectedTest);
   if (done) return completedView(section, done);
-  if (!store.user) { pendingRoute = '/' + section; return gateView(); }
   const raw = rawDeadline(section);
   if (raw) return raw > Date.now() ? pageFn() : finalizeTimeout(section);
   return pageFn() + warningModal(section, minutes);
@@ -1466,6 +1494,36 @@ function settings() {
     </section>`, 'settings');
 }
 
+/* Auth notices stay visible instead of disappearing with a short toast. */
+let authNotice = null;
+let authBusy = false;
+let logoutBusy = false;
+function authControlsDisabled() { return authBusy || !CLOUD || CLOUD.getState().status !== 'ready'; }
+function authNoticeHtml() {
+  const state = CLOUD && CLOUD.getState();
+  const notice = !state || state.status !== 'ready'
+    ? { type: state && state.status === 'loading' ? 'loading' : 'error', message: t(state && state.status === 'loading' ? 'auth_connecting' : 'auth_unavailable') }
+    : authNotice && authNotice.route === route() ? authNotice : null;
+  if (!notice) return '';
+  const label = notice.type === 'error' ? t('auth_error_title') : notice.type === 'success' ? t('auth_success_title') : t('auth_wait');
+  return `<div class="auth-notice auth-notice--${notice.type}" role="${notice.type === 'error' ? 'alert' : 'status'}" aria-live="polite"><strong>${esc(label)}</strong><p>${esc(notice.message)}</p></div>`;
+}
+function setAuthNotice(type, message) {
+  authNotice = { type, message, route: route() };
+  const box = document.querySelector('#auth-feedback');
+  if (box) box.innerHTML = authNoticeHtml();
+}
+function updateAuthControls() {
+  const form = document.querySelector('#auth-form');
+  if (form) {
+    form.setAttribute('aria-busy', String(authBusy));
+    const submit = form.querySelector('[type="submit"]');
+    if (submit) { submit.disabled = authControlsDisabled(); submit.textContent = t(authBusy ? 'auth_wait' : 'auth_submit'); }
+  }
+  const google = document.querySelector('[data-google-auth]');
+  if (google) google.disabled = authControlsDisabled();
+}
+
 /* ---------------- AUTH ---------------- */
 function authPage(mode) {
   const isSignup = mode === 'signup';
@@ -1473,15 +1531,15 @@ function authPage(mode) {
     <section class="section auth-wrap">
       <div class="glass auth-card center-card">
         <h1 style="margin:0 0 6px">${isSignup ? t('auth_signup_title') : t('auth_title')}</h1>
-        <p class="micro">${t('auth_demo_note')}</p>
+        <p class="micro">${t('auth_secure_note')}</p>
+        <div id="auth-feedback">${authNoticeHtml()}</div>
         <form id="auth-form" data-auth-mode="${isSignup ? 'signup' : 'login'}">
-          ${isSignup ? `<label class="field"><span>${t('auth_name')}</span><input name="name" class="btn btn-ghost" required placeholder="Aziz"/></label>` : ''}
-          <label class="field"><span>${t('auth_email')}</span><input name="email" type="email" class="btn btn-ghost" required placeholder="you@example.com"/></label>
-          <label class="field"><span>${t('auth_password')}</span><input name="password" type="password" class="btn btn-ghost" required placeholder="••••••••"/></label>
-          <button class="btn btn-primary" type="submit" style="width:100%">${t('auth_submit')} ↗</button>
+          ${isSignup ? `<label class="field"><span>${t('auth_name')}</span><input name="name" class="btn btn-ghost" autocomplete="name" maxlength="200" required placeholder="Aziz"/></label>` : ''}
+          <label class="field"><span>${t('auth_email')}</span><input name="email" type="email" class="btn btn-ghost" autocomplete="email" required placeholder="you@gmail.com"/></label>
+          <label class="field"><span>${t('auth_password')}</span><input name="password" type="password" class="btn btn-ghost" autocomplete="${isSignup ? 'new-password' : 'current-password'}" ${isSignup ? 'minlength="6"' : ''} required placeholder="••••••••"/></label>
+          <button class="btn btn-primary" type="submit" ${authControlsDisabled() ? 'disabled' : ''} style="width:100%">${t(authBusy ? 'auth_wait' : 'auth_submit')} ↗</button>
         </form>
-        <button class="btn btn-ghost google-btn" data-google-auth style="width:100%;margin-top:12px">${t('auth_google')}</button>
-        <div id="google-login-btn" style="margin-top:12px"></div>
+        <button class="btn btn-ghost google-btn" data-google-auth ${authControlsDisabled() ? 'disabled' : ''} style="width:100%;margin-top:12px">${t('auth_google')}</button>
         <p class="micro">${isSignup ? `<a href="#/login">${t('auth_switch')}</a>` : `<a href="#/signup">${t('auth_switch_signup')}</a>`}</p>
       </div>
     </section>`, 'auth');
@@ -1514,6 +1572,7 @@ function render() {
   app.innerHTML = html;
   bind();
   initReveal();
+  if (r === '/results' && CLOUD) scheduleCloudSync();
   const msgBox = document.querySelector('#coach-messages');
   if (msgBox) msgBox.scrollTop = msgBox.scrollHeight;
 }
@@ -1532,6 +1591,117 @@ function initReveal() {
   els.forEach(el => io.observe(el));
 }
 
+/* ---------------- SUPABASE RESULTS / AUTH ---------------- */
+let cloudSyncTask = null;
+let cloudSyncTimer = null;
+let cloudSyncAgain = false;
+let cloudLastLoad = 0;
+let cloudRows = [];
+let cloudStatus = 'idle';
+let cloudError = '';
+
+function cloudText(key) {
+  const messages = {
+    en: { title: 'Supabase mock results', loading: 'Connecting to Supabase…', auth: 'Secure account with Supabase. Your results are private.', confirm: 'Check your email to confirm your account, then sign in.', disabled: 'Supabase is not configured. Sign-in and tests are unavailable.', configError: 'Supabase is unavailable or misconfigured. Reload after checking the server settings.', login: 'Sign in to your Supabase account to save and load cloud results.', syncing: 'Synchronizing results…', synced: 'Results synchronized with Supabase.', error: 'Cloud sync failed. Local results are kept; use Retry after checking your connection and database setup.', refresh: 'Refresh / Retry', empty: 'No cloud results yet. Finish a test section to save your progress.', pending: 'Incomplete / awaiting grading', name: 'Name', overall: 'Overall band' },
+    uz: { title: 'Supabase’dagi mock natijalari', loading: 'Supabase’ga ulanmoqda…', auth: 'Supabase orqali xavfsiz akkaunt. Natijalaringiz faqat sizga ko‘rinadi.', confirm: 'Emailingizdagi tasdiqlash havolasini oching, keyin akkauntga kiring.', disabled: 'Supabase sozlanmagan. Tizimga kirish va testlar vaqtincha mavjud emas.', configError: 'Supabase ulanmagan yoki sozlamalarda xato bor. Server sozlamalarini tekshirib, sahifani yangilang.', login: 'Natijalarni bulutda saqlash va ko‘rish uchun Supabase akkauntingizga kiring.', syncing: 'Natijalar sinxronlanmoqda…', synced: 'Natijalar Supabase bilan sinxronlandi.', error: 'Bulutga ulanishda xato. Local natijalar saqlangan; internet va baza sozlamalarini tekshirib, qayta urining.', refresh: 'Yangilash / Qayta urinish', empty: 'Hozircha bulutda natijalar yo‘q. Saqlash uchun test bo‘limini yakunlang.', pending: 'Tugallanmagan / baholash kutilmoqda', name: 'Ism', overall: 'Umumiy band' },
+    ru: { title: 'Результаты mock в Supabase', loading: 'Подключение к Supabase…', auth: 'Защищённый аккаунт Supabase. Результаты доступны только вам.', confirm: 'Подтвердите адрес по ссылке в письме, затем войдите.', disabled: 'Supabase не настроен. Вход и тесты временно недоступны.', configError: 'Supabase недоступен или настроен неверно. Проверьте настройки сервера и обновите страницу.', login: 'Войдите в аккаунт Supabase для сохранения и загрузки результатов.', syncing: 'Синхронизация результатов…', synced: 'Результаты синхронизированы с Supabase.', error: 'Ошибка синхронизации. Локальные результаты сохранены; проверьте подключение и базу, затем повторите.', refresh: 'Обновить / Повторить', empty: 'Облачных результатов пока нет. Завершите раздел теста.', pending: 'Не завершён / ожидает оценки', name: 'Имя', overall: 'Общий балл' }
+  };
+  return (messages[store.lang] || messages.en)[key] || messages.en[key] || key;
+}
+
+function cloudUserActive() {
+  const state = CLOUD && CLOUD.getState();
+  return state && state.status === 'ready' && state.user && store.user &&
+    store.user.auth === 'supabase' && store.user.id === state.user.id;
+}
+function applyCloudUser(user) {
+  const previous = store.user && store.user.auth === 'supabase' ? store.user.id : null;
+  if (user && previous === user.id) { if (!cloudLastLoad) syncCloudResults(true); return; }
+  if (!user && !store.user) return;
+  cloudRows = []; cloudLastLoad = 0; cloudStatus = 'idle'; cloudError = '';
+  if (user) {
+    const metadata = user.user_metadata || {};
+    signIn({ id: user.id, email: user.email || '', name: metadata.name || metadata.full_name || user.email?.split('@')[0] || 'User', picture: metadata.avatar_url || '', auth: 'supabase' });
+  } else signOut();
+  render();
+  if (user) syncCloudResults(true);
+}
+function scheduleCloudSync() {
+  clearTimeout(cloudSyncTimer);
+  cloudSyncTimer = setTimeout(() => syncCloudResults(), 150);
+}
+function cloudResultsPanel() {
+  if (!CLOUD) return '';
+  const state = CLOUD.getState();
+  let message = state.status === 'disabled' ? 'disabled' : state.status === 'error' ? 'configError' : state.status === 'loading' ? 'loading' : !cloudUserActive() ? 'login' : cloudStatus === 'idle' ? 'loading' : cloudStatus;
+  return `<div class="glass" style="padding:22px;margin-bottom:24px">
+    <h2 style="font-size:19px">${esc(cloudText('title'))}</h2>
+    <p class="micro" role="status">${esc(cloudText(message))}</p>
+    ${cloudError ? `<p class="micro">${esc(cloudError)}</p>` : ''}
+    ${cloudUserActive() ? `<button class="btn btn-ghost" data-cloud-refresh ${cloudStatus === 'syncing' ? 'disabled' : ''}>${esc(cloudText('refresh'))}</button>
+      ${cloudRows.length ? `<div class="result-grid" style="margin-top:16px">${cloudRows.map(row => `<article class="test-card">
+        <strong>${esc(SERVICES.testLabel(row.test_id, store.lang))}</strong>
+        <p class="micro">${esc(cloudText('name'))}: ${esc(row.name)} · ${esc(new Date(row.updated_at).toLocaleDateString())}</p>
+        <p>${['listening','reading','writing','speaking'].map(skill => `${BAND_LABEL[skill]}: <strong>${esc(row[skill] ?? '—')}</strong>`).join(' · ')}</p>
+        <p>${esc(cloudText('overall'))}: <strong>${esc(row.overall_band ?? '—')}</strong></p>
+        ${row.overall_band === null ? `<p class="micro">${esc(cloudText('pending'))}</p>` : ''}
+      </article>`).join('')}</div>` : `<p class="micro">${esc(cloudText('empty'))}</p>`}` : ''}
+  </div>`;
+}
+async function syncCloudResults(force = false) {
+  if (!cloudUserActive()) return;
+  if (cloudSyncTask) { cloudSyncAgain = true; return cloudSyncTask; }
+  if (!force && cloudStatus === 'error' && Date.now() - cloudLastLoad < 60000) return;
+  const owner = store.user.id;
+  const localStore = store;
+  const stillCurrent = () => cloudUserActive() && store.user.id === owner;
+  const latest = new Map(localStore.attempts.map(a => [CLOUD.sectionKey(a), a]));
+  const synced = localStore.cloudSynced || {};
+  const pending = [...latest.values()].filter(a => synced[CLOUD.sectionKey(a)] !== CLOUD.fingerprint(a));
+  if (!force && !pending.length && Date.now() - cloudLastLoad < 60000) return;
+  cloudLastLoad = Date.now();
+  cloudStatus = 'syncing'; cloudError = '';
+  cloudSyncTask = (async () => {
+    try {
+      for (const attempt of pending) {
+        if (!stillCurrent()) return;
+        const version = CLOUD.fingerprint(attempt);
+        await CLOUD.saveMockSection(CLOUD.sectionPayload(attempt, localStore.user.name), owner);
+        if (!stillCurrent()) return;
+        store.cloudSynced = { ...store.cloudSynced, [CLOUD.sectionKey(attempt)]: version };
+        save(true);
+      }
+      if (!stillCurrent()) return;
+      const rows = await CLOUD.loadMockResults();
+      if (!stillCurrent()) return;
+      cloudRows = rows;
+      const merged = new Map(store.attempts.map(a => [CLOUD.sectionKey(a), a]));
+      for (const remote of CLOUD.rowsToAttempts(rows)) {
+        const key = CLOUD.sectionKey(remote);
+        const local = merged.get(key);
+        // Never replace an unsent local change with a stale remote copy.
+        const dirty = local && (store.cloudSynced || {})[key] !== CLOUD.fingerprint(local);
+        if (!dirty && (!local || remote.date >= local.date)) {
+          merged.set(key, remote);
+          store.cloudSynced = { ...store.cloudSynced, [key]: CLOUD.fingerprint(remote) };
+          if (remote.feedback) store.feedback[remote.section] = remote.feedback;
+        }
+      }
+      store.attempts = [...merged.values()].sort((a, b) => a.date - b.date);
+      save(true);
+      cloudStatus = 'synced';
+    } catch (error) {
+      if (stillCurrent()) { cloudStatus = 'error'; cloudError = String(error.message || error); }
+    } finally {
+      cloudSyncTask = null;
+      if (stillCurrent() && ['/results', '/dashboard', '/mock', '/fullmock'].includes(route())) render();
+      if (cloudSyncAgain) { cloudSyncAgain = false; scheduleCloudSync(); }
+    }
+  })();
+  if (route() === '/results') render();
+  return cloudSyncTask;
+}
+
 /* ---------------- BOOT ---------------- */
 function registerPWA() {
   if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
@@ -1546,3 +1716,12 @@ applyPrefs();
 registerPWA();
 window.addEventListener('hashchange', render);
 render();
+if (CLOUD) {
+  CLOUD.ready.then(() => {
+    CLOUD.subscribe(state => { if (state.status === 'ready') applyCloudUser(state.user); });
+    const state = CLOUD.getState();
+    if (state.status === 'ready') applyCloudUser(state.user);
+    render();
+  });
+  window.addEventListener('online', () => syncCloudResults(true));
+}

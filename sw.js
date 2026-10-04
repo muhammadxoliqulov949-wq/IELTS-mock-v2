@@ -1,5 +1,5 @@
 /* Bandly AI — service worker */
-const CACHE = 'bandly-v7';
+const CACHE = 'bandly-v9';
 const PRECACHE = [
   '/',
   '/index.html',
@@ -11,6 +11,7 @@ const PRECACHE = [
   '/i18n.js',
   '/services.js',
   '/script.js',
+  '/supabase.bundle.js',
   '/manifest.webmanifest',
   '/icons/icon.svg'
 ];
@@ -33,7 +34,7 @@ self.addEventListener('fetch', (event) => {
   const req = event.request;
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
-  if (url.origin !== self.location.origin) return;
+  if (url.origin !== self.location.origin || url.pathname.startsWith('/api/')) return;
 
   event.respondWith(
     fetch(req).then((res) => {
