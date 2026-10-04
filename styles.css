@@ -922,3 +922,12 @@ body[data-theme="light"] .seg { background: rgba(17,21,43,0.03); }
   .mock-flow { grid-template-columns: 1fr 1fr; }
   .section-header { align-items: flex-start; flex-direction: column; }
 }
+
+/* Persistent, accessible Supabase auth feedback. */
+.auth-notice { padding: 15px 17px; margin: 16px 0; border-radius: 12px; border: 1px solid var(--panel-border); text-align: left; overflow-wrap: anywhere; }
+.auth-notice strong { font-size: 14px; }
+.auth-notice p { margin: 6px 0 0; font-size: 13px; line-height: 1.6; color: var(--text); }
+.auth-notice--error { border-left: 4px solid var(--coral); background: color-mix(in srgb, var(--coral) 9%, var(--panel)); }
+.auth-notice--success { border-left: 4px solid var(--cyan); background: color-mix(in srgb, var(--cyan) 9%, var(--panel)); }
+.auth-notice--loading { border-left: 4px solid var(--muted); }
+.auth-card button:disabled { opacity: .55; cursor: not-allowed; }

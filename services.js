@@ -78,7 +78,7 @@ window.IELTS_SERVICES = {
     const sections = ['listening', 'reading', 'writing', 'speaking'];
     const latest = {};
     attempts.forEach(a => { latest[a.section] = a; });
-    const bands = sections.map(s => latest[s] ? Number(latest[s].band) : null).filter(b => b !== null && Number.isFinite(b));
+    const bands = sections.map(s => latest[s] && latest[s].band != null ? Number(latest[s].band) : null).filter(b => b !== null && Number.isFinite(b));
     if (!bands.length) return null;
     return Math.round((bands.reduce((s, b) => s + b, 0) / bands.length) * 2) / 2;
   },
@@ -106,7 +106,7 @@ window.IELTS_SERVICES = {
     const sections = ['listening', 'reading', 'writing', 'speaking'];
     const latest = {};
     attempts.forEach(a => { latest[a.section] = a; });
-    const scored = sections.map(s => ({ s, band: latest[s] ? Number(latest[s].band) : null })).filter(x => x.band !== null);
+    const scored = sections.map(s => ({ s, band: latest[s] && latest[s].band != null ? Number(latest[s].band) : null })).filter(x => x.band !== null);
     if (!scored.length) return [];
     const sorted = [...scored].sort((a, b) => a.band - b.band);
     const weakest = sorted[0].s;

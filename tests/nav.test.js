@@ -36,7 +36,7 @@ global.localStorage = {
   setItem: (k, v) => storage.set(k, String(v)),
   removeItem: (k) => storage.delete(k)
 };
-global.window = { addEventListener() {}, scrollY: 0, speechSynthesis: null };
+global.window = { IELTS_CLOUD: { getState: () => ({ status: 'ready', user: { id: 'nav-user' } }), ready: new Promise(() => {}) }, addEventListener() {}, scrollY: 0, speechSynthesis: null };
 global.confirm = () => true;
 
 storage.set('ielts-v2-store', JSON.stringify({
@@ -46,11 +46,13 @@ storage.set('ielts-v2-store', JSON.stringify({
   selectedTest: 'test1', theme: 'dark', lang: 'uz', vocabKnown: {}, fullMock: null, quizzes: []
 }));
 
+storage.set('ielts-v2-store:supabase:nav-user', storage.get('ielts-v2-store'));
+
 const src = fs.readFileSync(path + '/script.js', 'utf8');
 const fn = new Function('document', 'localStorage', 'location', 'window', 'confirm',
-  src + '\n;globalThis.__render = render;'
+  src + `\n;signIn({ id: 'nav-user', auth: 'supabase', name: 'Aziz Karimov', email: 'aziz@example.com', picture: 'https://example.com/a\"b.png' }); globalThis.__render = render;`
   + ' globalThis.__lesson = (id) => { lessonModalId = id; };'
-  + ' globalThis.__setLang = (l) => { store.lang = l; store.user = null; save(); };');
+  + ' globalThis.__setLang = (l) => { signOut(); store.lang = l; save(); };');
 let failed = 0;
 function check(name, cond) {
   console.log((cond ? '✓' : '✗ FAIL') + ' ' + name);

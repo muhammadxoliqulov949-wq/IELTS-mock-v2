@@ -22,7 +22,7 @@ IELTS imtihoniga tayyorlanish uchun to'liq mock test platformasi: **Listening, R
 - **Quiz** — tezkor IELTS viktorina, javob va tushuntirish bilan; server-side `/api/quiz` AI endpoint
 - **i18n** — English, O'zbek, Russian (nav settings orqali)
 - **PWA** — `manifest.webmanifest` + `sw.js` (offline cache, install qilish mumkin)
-- **Auth** — Email/password (demo, localStorage) + Google login kaliti
+- **Auth / Database** — Supabase Email/password + ixtiyoriy Google OAuth; `mock_results` natijalari va RLS. Demo login olib tashlangan; Supabase sozlanmasa kirish va mock testlar bloklanadi.
 - **AI Coach** — natijalarga moslashgan suhbatdosh
 
 ## 🚀 O'rnatish va ishga tushirish (lokal)
@@ -32,14 +32,17 @@ git clone <repo-url>
 cd IELTS-mock-v2
 
 # API kalitini sozlang (majburiy emas — local fallback bor)
-cp api/.env.example api/.env
-# api/.env faylini ochib, GEMINI_API_KEY ni yozing
+npm ci
+cp .env.example .env
+# .env ga SUPABASE_URL, SUPABASE_ANON_KEY va ixtiyoriy GEMINI_API_KEY kiriting
 
 npm run preview
 # → http://localhost:3000
 ```
 
-Yoki Vercel CLI bilan: `npm run dev`.
+Yoki Vercel CLI bilan: `npm run dev`. Node.js 22+ kerak.
+
+**Supabase sozlash:** SQL jadval/RLS, Auth, environment va deploy bo'yicha to'liq yo'riqnoma: [SUPABASE.md](SUPABASE.md). SQL faylni Supabase'da qo'llamasdan cloud saqlash ishlamaydi.
 
 **Muhim:** AI baholash va AI Coach uchun `GEMINI_API_KEY` kerak. Kubernetes/`/api/quiz` esa kalit yo'q bo'lsa ham local savol bankidan ishlaydi.
 
