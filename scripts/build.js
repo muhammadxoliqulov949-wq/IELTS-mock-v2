@@ -19,5 +19,6 @@ if (require.main === module) {
     fs.mkdirSync(output, { recursive: true });
     for (const file of staticFiles) fs.copyFileSync(path.join(root, file), path.join(output, file));
     fs.cpSync(path.join(root, 'icons'), path.join(output, 'icons'), { recursive: true });
+    fs.cpSync(path.join(root, 'assets'), path.join(output, 'assets'), { recursive: true });
   }
 }

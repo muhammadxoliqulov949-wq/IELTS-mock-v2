@@ -12,13 +12,94 @@ let activeUser = null;
 localStorage.removeItem('ielts-v2-user'); // retire the old demo identity
 const BAND_LABEL = { listening: 'Listening', reading: 'Reading', writing: 'Writing', speaking: 'Speaking' };
 
+/* ---------------- MASCOT — "Bandly" ----------------
+ * Bandly is the single face of the brand and of the AI that guides every
+ * learner: he is the logo, he greets on the home page, he explains each
+ * section before it starts, he sits next to every AI reply and he rides
+ * along as a floating companion with a contextual tip for each page.
+ * Every appearance renders from the same three assets, so the mascot is
+ * always recognisably the same character.
+ */
+const MASCOT = {
+  full: 'assets/mascot.png',       /* transparent, full body — hero & empty states */
+  head: 'assets/mascot-head.png',  /* transparent head — logos, chat avatar, FAB   */
+  badge: 'icons/mascot-192.png'    /* circular badge on the brand gradient         */
+};
+const MASCOT_NAME = 'Bandly';
+/* Which tip Bandly shows on which route (route -> i18n key). */
+const MASCOT_TIPS = {
+  '/': 'mascot_tip_home',
+  '/mock': 'mascot_tip_mock',
+  '/fullmock': 'mascot_tip_mock',
+  '/listening': 'mascot_tip_listening',
+  '/reading': 'mascot_tip_reading',
+  '/writing': 'mascot_tip_writing',
+  '/speaking': 'mascot_tip_speaking',
+  '/results': 'mascot_tip_results',
+  '/mistakes': 'mascot_tip_mistakes',
+  '/coach': 'mascot_tip_coach',
+  '/dashboard': 'mascot_tip_dashboard',
+  '/lessons': 'mascot_tip_lessons',
+  '/vocabulary': 'mascot_tip_vocabulary',
+  '/quiz': 'mascot_tip_quiz',
+  '/settings': 'mascot_tip_settings',
+  '/login': 'mascot_tip_login',
+  '/signup': 'mascot_tip_signup'
+};
+/* WebP with a PNG fallback: the mascot is on every page, so the two-line
+   <picture> is worth it (the hero mascot drops from 575 KB to ~62 KB).
+   `picture { display: contents }` in the stylesheet keeps every img rule
+   below working exactly as if the wrapper were not there. */
+function mascotPicture(src, cls, alt, eager) {
+  const load = eager ? ' fetchpriority="high"' : ' loading="lazy"';
+  return `<picture><source srcset="${src.replace(/\.png$/, '.webp')}" type="image/webp">`
+    + `<img class="${cls}" src="${src}" alt="${esc(alt)}"${load} decoding="async"></picture>`;
+}
+function mascotImg(kind, cls, eager) {
+  return mascotPicture(MASCOT[kind] || MASCOT.head,
+    `mascot mascot--${kind}${cls ? ' ' + cls : ''}`, MASCOT_NAME, eager);
+}
+/* Round avatar that sits next to anything Bandly "says". */
+function mascotAvatar(cls) {
+  return `<span class="mascot-avatar${cls ? ' ' + cls : ''}" aria-hidden="true">`
+    + mascotPicture(MASCOT.head, '', '', true) + `</span>`;
+}
+/* A speech bubble with an optional action button. */
+function mascotBubble(text, opts) {
+  const o = opts || {};
+  return `<div class="mascot-say${o.cls ? ' ' + o.cls : ''}">
+      ${mascotAvatar('mascot-avatar--say')}
+      <div class="mascot-bubble">
+        ${o.title ? `<strong>${esc(o.title)}</strong>` : ''}
+        <p>${esc(text)}</p>
+        ${o.action ? `<button class="btn btn-primary btn-sm" data-go="${esc(o.action)}">${esc(o.label || t('mascot_ask'))} ↗</button>` : ''}
+      </div>
+    </div>`;
+}
+/* The persistent floating companion: a tip bubble plus a button to the coach. */
+function mascotCompanion() {
+  if (store.mascotMuted) return '';
+  const key = MASCOT_TIPS[route()] || MASCOT_TIPS['/'];
+  const seen = store.mascotSeen && store.mascotSeen[key];
+  return `<div class="mascot-dock">
+    ${seen ? '' : `<div class="mascot-tip" id="mascotTip" role="status">
+      <button class="mascot-tip-close" data-mascot-dismiss="${esc(key)}" aria-label="${esc(t('mascot_hide_tip'))}">×</button>
+      <p>${esc(t(key))}</p>
+      <button class="mascot-tip-cta" data-go="/coach">${esc(t('mascot_ask'))} ↗</button>
+    </div>`}
+    <button class="mascot-fab" id="mascotFab" data-go="/coach" aria-label="${esc(t('mascot_ask'))}" title="${esc(t('mascot_ask'))}">
+      ${mascotPicture(MASCOT.head, '', '', true)}
+    </button>
+  </div>`;
+}
+
 function sessionUser() { return activeUser; }
 function storageKey() {
   return activeUser ? `${STORAGE}:supabase:${activeUser.id}` : STORAGE;
 }
 let store = load();
 function storeDefaults() {
-  return { attempts: [], mistakes: [], feedback: {}, coachMessages: [], selectedTest: 'test1', theme: 'dark', lang: 'en', vocabKnown: {}, fullMock: null, quizzes: [] };
+  return { attempts: [], mistakes: [], feedback: {}, coachMessages: [], selectedTest: 'test1', theme: 'dark', lang: 'en', vocabKnown: {}, fullMock: null, quizzes: [], mascotMuted: false, mascotSeen: {} };
 }
 function load() {
   try {
@@ -144,7 +225,7 @@ function shell(body, active) {
   const firstName = displayName.split(' ')[0];
   return `<header class="site-header" id="siteHeader">
   <nav class="nav" id="mainNav" aria-label="Main navigation">
-    <a class="brand" href="#/"><span class="brand-mark">B</span><span class="brand-name">IELTS Mock</span></a>
+    <a class="brand" href="#/" aria-label="IELTS Mock — ${esc(MASCOT_NAME)}"><span class="brand-mark brand-mark--mascot">${mascotPicture(MASCOT.head, '', '', true)}</span><span class="brand-name">IELTS Mock</span></a>
     <div class="nav-links">
       ${primary.map(l => `<a class="${l.active ? 'active' : ''}" href="#/${l.key}" ${l.active ? 'aria-current="page"' : ''}>${l.label}</a>`).join('')}
     </div>
@@ -170,7 +251,7 @@ function shell(body, active) {
 <div class="shell"><div class="page-fade">${body}</div></div>
 <div class="mobile-menu" id="mobileMenu">
   <button class="close-menu" id="closeMenuBtn" aria-label="${t('modal_close')}">×</button>
-  <div class="mm-brand"><span class="brand-mark">B</span> IELTS Mock</div>
+  <div class="mm-brand"><span class="brand-mark brand-mark--mascot lg">${mascotPicture(MASCOT.head, '', '', true)}</span> IELTS Mock</div>
   <div class="mm-links mm-primaries">
     ${primary.map(l => `<a class="${l.active ? 'active' : ''}" href="#/${l.key}">${l.label}</a>`).join('')}
   </div>
@@ -185,7 +266,7 @@ function shell(body, active) {
 </div>
 <footer class="footer">
   <div class="footer-inner">
-    <div class="footer-brand"><span class="brand-mark sm">B</span><span>IELTS Mock <em>${t('footer_by')}</em></span></div>
+    <div class="footer-brand"><span class="brand-mark brand-mark--mascot sm">${mascotPicture(MASCOT.head, '', '', false)}</span><span>IELTS Mock <em>${t('footer_by')}</em></span></div>
     <nav class="footer-links" aria-label="Footer">
       <a href="#/">${t('nav_home')}</a>
       <a href="#/dashboard">${t('nav_dashboard')}</a>
@@ -196,7 +277,8 @@ function shell(body, active) {
     </nav>
     <p class="footer-legal"><span>© ${new Date().getFullYear()} Bandly AI</span><span>${t('disclaimer')}</span></p>
   </div>
-</footer>`;
+</footer>
+${mascotCompanion()}`;
 }
 
 /* ---------------- HOME ---------------- */
@@ -259,6 +341,14 @@ function home() {
         </div>
       </div>
       <div class="preview-wrap">
+        <div class="hero-guide">
+          <div class="hero-guide-bubble">
+            <strong>${esc(MASCOT_NAME)}</strong>
+            <p>${esc(t('mascot_hero_greet'))} ${esc(t('mascot_hero_greet2'))}</p>
+            <button class="btn btn-primary btn-sm" data-go="/coach">${esc(t('mascot_ask'))} ↗</button>
+          </div>
+          ${mascotImg('full', 'mascot--hero', true)}
+        </div>
         <div class="glass score-card">
           <div class="score-label"><span>${t('overall_band')}</span><span>${doneCount}/4</span></div>
           ${bandRing(overall, overall ? (overall / 9) * 100 : 0)}
@@ -525,8 +615,9 @@ function resultsPage() {
           }).join('')}
         </div>
         <div id="result-detail" style="margin-top:18px"></div>` : `
-        <div class="glass" style="padding:30px;text-align:center">
-          <p style="color:var(--muted)">${t('no_attempts')}</p>
+        <div class="glass empty-state">
+          ${mascotImg('full', 'mascot--empty')}
+          <p>${esc(t('mascot_empty_results'))}</p>
           <button class="btn btn-primary" style="margin-top:14px" data-go="/mock">${t('start')} ↗</button>
         </div>`}
     </section>`, 'results');
@@ -543,8 +634,10 @@ function mistakes() {
       <h1 style="font-family:var(--font-display);font-size:28px;margin:10px 0 10px">${t('mistakes_title')}</h1>
       <p style="color:var(--muted);font-size:14.5px;margin-bottom:26px">${t('mistakes_sub')}</p>
       ${sections.every(s => groups[s].length === 0) ? `
-        <div class="glass" style="padding:30px;text-align:center">
-          <p style="color:var(--muted)">${t('no_mistakes')}</p>
+        <div class="glass empty-state">
+          ${mascotImg('full', 'mascot--empty')}
+          <p>${esc(t('mascot_empty_mistakes'))}</p>
+          <button class="btn btn-primary" style="margin-top:14px" data-go="/mock">${t('start')} ↗</button>
         </div>` : sections.map(s => groups[s].length ? `
         <h2 style="font-family:var(--font-display);font-size:19px;margin:24px 0 12px;text-transform:capitalize">${s} (${groups[s].length})</h2>
         <div style="display:flex;flex-direction:column;gap:10px">${groups[s].map(m => `
@@ -564,14 +657,26 @@ function coach() {
   const weakest = weakestSkill();
   return shell(`
     <section class="section">
-      <div class="eyebrow">${t('nav_coach')}</div>
-      <h1 style="font-family:var(--font-display);font-size:28px;margin:10px 0 20px">${t('coach_title')}</h1>
+      <div class="coach-head">
+        ${mascotAvatar('mascot-avatar--xl')}
+        <div>
+          <div class="eyebrow">${t('nav_coach')} · ${esc(MASCOT_NAME)}</div>
+          <h1 style="font-family:var(--font-display);font-size:28px;margin:10px 0 20px">${t('coach_title')}</h1>
+        </div>
+      </div>
       <div class="glass" style="padding:10px 18px;margin-bottom:16px;font-size:13.5px;color:var(--muted)">
         ${t('coach_overall')}: <strong style="color:var(--text)">${overall ?? t('not_assessed')}</strong> · ${t('coach_weakest')}: <strong style="color:var(--text);text-transform:capitalize">${weakest ?? t('not_assessed')}</strong> · ${t('coach_mistakes')}: <strong style="color:var(--text)">${store.mistakes.length}</strong>
       </div>
       <div class="glass" style="padding:20px;display:flex;flex-direction:column;gap:14px;max-height:420px;overflow-y:auto" id="coach-messages">
-        ${store.coachMessages.length ? store.coachMessages.map(m => `<div style="align-self:${m.role === 'user' ? 'flex-end' : 'flex-start'};max-width:80%;background:${m.role === 'user' ? 'var(--primary-soft)' : 'rgba(255,255,255,0.04)'};padding:12px 16px;border-radius:14px;font-size:14px;line-height:1.5">${esc(m.text)}</div>`).join('')
-        : `<div style="color:var(--muted);font-size:14px">Ask me anything — "Why am I stuck at this band?", "Give me a 30-minute study session", or "Create a 7-day plan".</div>`}
+        ${store.coachMessages.length ? store.coachMessages.map(m => `
+          <div class="coach-msg ${m.role === 'user' ? 'coach-msg--user' : 'coach-msg--ai'}">
+            ${m.role === 'ai' ? mascotAvatar('mascot-avatar--msg') : ''}
+            <div class="coach-msg-body">${esc(m.text)}</div>
+          </div>`).join('')
+        : `<div class="coach-empty">
+             ${mascotImg('full', 'mascot--empty')}
+             <p>${esc(t('mascot_coach_hi'))}</p>
+           </div>`}
       </div>
       <form id="coach-form" style="display:flex;gap:10px;margin-top:14px">
         <input id="coach-input" class="btn btn-ghost" style="flex:1;text-align:left" placeholder="Ask about your IELTS practice..." />
@@ -992,6 +1097,14 @@ function bindPremium() {
   document.querySelectorAll('[data-set-theme]').forEach(el => el.onclick = () => {
     store.theme = el.dataset.setTheme; save(); applyPrefs(); render();
   });
+  /* Bandly: hide/show the floating companion, and dismiss a single tip. */
+  document.querySelectorAll('[data-set-mascot]').forEach(el => el.onclick = () => {
+    store.mascotMuted = el.dataset.setMascot === 'off'; save(); render();
+  });
+  document.querySelectorAll('[data-mascot-dismiss]').forEach(el => el.onclick = () => {
+    store.mascotSeen = store.mascotSeen || {};
+    store.mascotSeen[el.dataset.mascotDismiss] = true; save(); render();
+  });
 
   /* Lessons filters. */
   document.querySelectorAll('[data-filter-lesson]').forEach(el => el.onclick = () => {
@@ -1245,6 +1358,7 @@ function warningModal(section, minutes) {
   return `
   <div class="modal-backdrop" id="warnBackdrop">
     <div class="modal glass" role="dialog" aria-modal="true" aria-labelledby="warnTitle">
+      ${mascotBubble(t('mascot_tip_' + section), { cls: 'mascot-say--warn', title: MASCOT_NAME })}
       <div class="warn-icon"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></div>
       <h2 id="warnTitle" style="font-family:var(--font-display);font-size:22px;margin:12px 0 10px">${t('warn_title')}</h2>
       <p style="color:var(--muted);font-size:14.5px;line-height:1.7;margin:0 0 22px">${t2('warn_body', { minutes, start: t('warn_start') })}</p>
@@ -1260,6 +1374,7 @@ function gateView() {
   return shell(`
     <section class="section auth-wrap">
       <div class="glass auth-card center-card">
+        ${mascotImg('head', 'mascot--gate')}
         <div class="warn-icon"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg></div>
         <h1 style="font-family:var(--font-display);font-size:22px;margin:12px 0 8px">${t('gate_title')}</h1>
         <p class="micro" style="margin-bottom:20px">${t('gate_body')}</p>
@@ -1281,6 +1396,7 @@ function completedView(section, attempt) {
         <h1 style="font-family:var(--font-display);font-size:26px;margin:14px 0 6px">${t('done_title')}</h1>
         <p class="micro" style="margin-bottom:18px">${t('done_body')}</p>
         <div class="result-band">${a.band != null ? a.band : '—'}<small> / 9</small></div>
+        ${mascotBubble(t('mascot_done'), { cls: 'mascot-say--done' })}
         ${a.raw !== undefined ? `<p class="micro" style="margin-top:6px">${a.raw}/${a.total} · ${new Date(a.date).toLocaleDateString()}</p>` : `<p class="micro" style="margin-top:6px">${new Date(a.date || Date.now()).toLocaleDateString()}</p>`}
         <p class="micro">${BAND_LABEL[section] || section} · ${esc(SERVICES.testLabel(a.test || store.selectedTest, store.lang))}</p>
         <div style="text-align:left">${aiFeedbackBlock(fb)}</div>
@@ -1378,7 +1494,7 @@ function dashboard() {
       <div class="dash-grid">
         <div class="glass dash-panel">
           <div class="panel-title">${t('band_trend')}</div>
-          ${trend.length ? bandSvg(trend) : `<p class="micro">Complete a section to see your band trend.</p>`}
+          ${trend.length ? bandSvg(trend) : `<div class="panel-empty">${mascotImg('head', 'mascot--mini')}<p class="micro">${esc(t('mascot_empty_trend'))}</p></div>`}
         </div>
         <div class="glass dash-panel">
           <div class="panel-title">${t('weekly_activity')}</div>
@@ -1489,6 +1605,7 @@ function settings() {
         <div class="setting-row"><span>${t('language')}</span><div class="seg">${['en', 'uz', 'ru'].map(l => `<button class="seg-btn ${(store.lang || 'en') === l ? 'active' : ''}" data-set-lang="${l}">${l.toUpperCase()}</button>`).join('')}</div></div>
         <div class="setting-row"><span>Theme</span><div class="seg">${['dark', 'light'].map(th => `<button class="seg-btn ${store.theme === th ? 'active' : ''}" data-set-theme="${th}">${th === 'light' ? t('theme_light') : t('theme_dark')}</button>`).join('')}</div></div>
         <div class="setting-row"><span>Practice test</span><div class="test-switch">${testSwitch()}</div></div>
+        <div class="setting-row"><span>${esc(t('mascot_setting'))}</span><div class="seg"><button class="seg-btn ${!store.mascotMuted ? 'active' : ''}" data-set-mascot="on">${esc(t('mascot_unmute'))}</button><button class="seg-btn ${store.mascotMuted ? 'active' : ''}" data-set-mascot="off">${esc(t('mascot_mute'))}</button></div></div>
         <div class="setting-row"><span>Account</span>${user ? `<button class="btn btn-ghost btn-sm" data-logout>${t('nav_logout')}</button>` : `<button class="btn btn-ghost btn-sm" data-go="/login">${t('nav_login')}</button>`}</div>
       </div>
     </section>`, 'settings');
@@ -1530,6 +1647,10 @@ function authPage(mode) {
   return shell(`
     <section class="section auth-wrap">
       <div class="glass auth-card center-card">
+        <div class="auth-mascot">
+          ${mascotImg('full', 'mascot--auth')}
+          <p>${esc(t('mascot_auth_hi'))}</p>
+        </div>
         <h1 style="margin:0 0 6px">${isSignup ? t('auth_signup_title') : t('auth_title')}</h1>
         <p class="micro">${t('auth_secure_note')}</p>
         <div id="auth-feedback">${authNoticeHtml()}</div>

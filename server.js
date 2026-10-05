@@ -21,6 +21,7 @@ const { staticFiles } = require('./scripts/build.js');
 
 const PORT = process.env.PORT || 3000;
 const MIME = {
+  '.webp': 'image/webp',
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
@@ -37,6 +38,7 @@ const MIME = {
 const CACHE = {
   '.svg': 'public, max-age=86400',
   '.png': 'public, max-age=604800',
+  '.webp': 'public, max-age=604800',
   '.jpg': 'public, max-age=604800',
   '.ico': 'public, max-age=604800'
 };
@@ -89,7 +91,9 @@ const server = http.createServer(async (req, res) => {
   try { filePath = url.pathname === '/' ? '/index.html' : decodeURIComponent(url.pathname); }
   catch { res.writeHead(400); res.end('Bad request'); return; }
   // Only public assets are served: .env, .git, server code and dependencies are private.
-  if (!staticFiles.includes(filePath.slice(1)) && !/^\/icons\/[a-zA-Z0-9_-]+\.(svg|png|jpg|ico)$/.test(filePath)) {
+  const isPublicAsset = staticFiles.includes(filePath.slice(1)) ||
+    /^\/(icons|assets)\/[a-zA-Z0-9_-]+\.(svg|png|jpg|jpeg|ico|webp)$/.test(filePath);
+  if (!isPublicAsset) {
     res.writeHead(404); res.end('Not found'); return;
   }
   const abs = path.normalize(path.join(__dirname, filePath));
