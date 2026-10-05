@@ -22,6 +22,12 @@ Bandly'ni **Settings → Bandly companion** orqali o'chirish mumkin (faqat suzuv
 
 Assetlar: `assets/mascot.png` (to'liq, shaffof fon), `assets/mascot-head.png` (avatar), `assets/favicon.png`, `assets/og-mascot.png` (ulashish rasmi), `icons/mascot-{180,192,512}.png` (PWA).
 
+## 🛠 Admin panel
+
+To'liq admin panel (`#/admin`): statistika, foydalanuvchilar boshqaruvi (rol/o'chirish), mock testlar CRUD (vizual konstruktor + JSON rejimi) va barcha natijalar jadvali. Supabase `profiles.role` + RLS asosida; oddiy foydalanuvchi avtomatik `#/dashboard` ga yo'naltiriladi.
+
+O'rnatish va to'liq yo'riqnoma: [ADMIN.md](ADMIN.md) — SQL migratsiya, birinchi admin, xavfsizlik modeli, kontent shakli.
+
 ## ✨ Imkoniyatlar
 
 ### Test va baholash
@@ -76,6 +82,7 @@ Nimalar tekshiriladi:
 - `tests/premium.test.js` — Test 2 kontenti, explanations, services (dashboard/quiz), i18n
 - `tests/quiz.test.js` — `/api/quiz` endpoint
 - `tests/mascot.test.js` — Bandly: logo, hero, coach, bo'sh holatlar, suzuvchi hamroh, assetlar va tarjimalar
+- `tests/admin.test.js` — admin: guard/redirect, nav ko'rinishi, RLS va SQL invariantlari, muharrir validatsiyasi, XSS
 
 ## ☁️ Deploy (Vercel)
 
@@ -102,6 +109,8 @@ styles.css       → premium UI (dark/light, responsive)
 manifest.webmanifest + sw.js  → PWA
 assets/          → Bandly maskot assetlari (mascot, mascot-head, favicon, og-mascot)
 icons/           → PWA ikonkalari (mascot-180/192/512, icon.svg)
+admin.js         → Admin panel: mantiqiy qatlam, view, test muharriri (vizual + JSON)
+supabase/migrations/  → SQL: mock_results, admin/RBAC, RLS
 ```
 
 ## ⚠️ Eslatma

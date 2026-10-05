@@ -204,6 +204,62 @@ function weakestSkill() {
    (Mock Test, Results, AI Coach). Everything else — Dashboard, Mistakes,
    Lessons, Vocabulary, Quiz, Settings — lives behind the hamburger menu,
    so the top bar stays calm on desktop and mobile alike. */
+/* True only when the signed-in account carries role='admin' in Postgres.
+   Used purely to decide what to show — access itself is enforced by row
+   level security, never by this flag.
+   It reads the session rather than window.IELTS_ADMIN because script.js
+   renders once before admin.js has executed (script tags run in order): a
+   deep link to #/admin must not be bounced to the dashboard on that first
+   paint just because the panel file has not arrived yet. */
+function isAdminUser() {
+  const state = CLOUD && CLOUD.getState ? CLOUD.getState() : null;
+  if (state && state.user) return !!state.isAdmin;
+  return !!(window.IELTS_ADMIN && window.IELTS_ADMIN.isAdmin());
+}
+
+/* Admin-authored tests live in Supabase. They are registered into
+   IELTS_CONTENT under the same testN ids the router already understands, so a
+   published test simply appears in the switcher with no other changes. */
+function clearDynamicTests() {
+  const c = window.IELTS_CONTENT;
+  if (!c) return;
+  (c._dynamicKeys || []).forEach(k => { delete c[k]; });
+  c._dynamicKeys = [];
+  if (c._builtInTestIds && c.testMeta && Array.isArray(c.testMeta.tests)) {
+    c.testMeta.tests = c.testMeta.tests.filter(x => c._builtInTestIds.includes(x.id));
+  }
+}
+async function loadDynamicTests() {
+  const state = CLOUD && CLOUD.getState ? CLOUD.getState() : null;
+  if (!CLOUD || typeof CLOUD.loadPublishedTests !== 'function' || !state || state.status !== 'ready' || !state.user) {
+    clearDynamicTests();
+    return;
+  }
+  let res;
+  try { res = await CLOUD.loadPublishedTests(); } catch { return; }
+  const c = window.IELTS_CONTENT;
+  if (!c) return;
+  if (!c._builtInTestIds) {
+    c._builtInTestIds = ((c.testMeta && c.testMeta.tests) || []).map(x => x.id);
+  }
+  clearDynamicTests();
+  (res.meta || []).forEach(m => {
+    c.testMeta = c.testMeta || { tests: [] };
+    if (!c.testMeta.tests.some(x => x.id === m.test_id)) {
+      c.testMeta.tests.push({ id: m.test_id, label: m.label, labelUz: m.label_uz || m.label });
+    }
+  });
+  (res.rows || []).forEach(row => {
+    const n = /^test(\d+)$/.exec(String(row.test_id || ''));
+    if (!n || !row.payload) return;
+    const suffix = n[1] === '1' ? '' : n[1];
+    const key = row.skill + suffix;
+    c[key] = row.payload;
+    c._dynamicKeys.push(key);
+  });
+  render();
+}
+
 function navLinks(active) {
   const isMock = ['mock', 'fullmock', 'listening', 'reading', 'writing', 'speaking'].includes(active);
   return {
@@ -213,6 +269,7 @@ function navLinks(active) {
       { key: 'coach', label: t('nav_coach'), active: active === 'coach' }
     ],
     rest: [
+      ...(isAdminUser() ? [{ key: 'admin', label: '⚙ ' + t('admin_title'), active: active === 'admin' }] : []),
       { key: 'dashboard', label: t('nav_dashboard'), active: active === 'dashboard' },
       { key: 'mistakes', label: t('nav_mistakes'), active: active === 'mistakes' },
       { key: 'lessons', label: t('nav_lessons'), active: active === 'lessons' },
@@ -236,6 +293,7 @@ function shell(body, active) {
       ${primary.map(l => `<a class="${l.active ? 'active' : ''}" href="#/${l.key}" ${l.active ? 'aria-current="page"' : ''}>${l.label}</a>`).join('')}
     </div>
     <div class="nav-actions">
+      ${isAdminUser() ? `<a class="admin-chip" href="#/admin">⚙ ${t('admin_title')}</a>` : ''}
       <button class="icon-btn" data-toggle-theme aria-label="Toggle theme" title="${store.theme === 'light' ? t('theme_dark') : t('theme_light')}">${store.theme === 'light' ? '☀' : '☾'}</button>
       <button class="icon-btn lang-btn" data-toggle-lang aria-label="Switch language" title="EN / UZ / RU">${langShort}</button>
       ${user ? `<div class="nav-user">
@@ -245,6 +303,7 @@ function shell(body, active) {
         </button>
         <div class="dropdown-menu user-menu" id="userMenu">
           <div class="user-menu-head"><strong>${esc(user.name || 'User')}</strong><span>${esc(user.email || '')}</span></div>
+          ${isAdminUser() ? `<a href="#/admin">⚙ ${t('admin_title')}</a>` : ''}
           <a href="#/dashboard">${t('nav_dashboard')}</a>
           <a href="#/settings">${t('nav_settings')}</a>
           <button class="user-logout" data-logout>${t('nav_logout')}</button>
@@ -771,6 +830,9 @@ function bind() {
   if (warnCancel) warnCancel.onclick = () => go('/mock');
 
   const r = route();
+
+  /* The admin panel binds its own handlers for #/admin. */
+  if (window.IELTS_ADMIN && typeof window.IELTS_ADMIN.bind === 'function') window.IELTS_ADMIN.bind();
 
   if (r === '/listening') {
     if (listeningState.deadline) startTimer(() => listeningState.deadline, submitListening);
@@ -1673,6 +1735,28 @@ function authPage(mode) {
 }
 
 /* ---------------- RENDER / ROUTER ---------------- */
+/* Admin area. Anyone who is not an admin is redirected to the dashboard —
+   the hash changes too, so a refresh or a shared link cannot bounce them
+   back into the panel. The real check is row level security in Postgres. */
+function adminPage() {
+  if (!isAdminUser()) {
+    if (location.hash !== '#/dashboard') location.hash = '#/dashboard';
+    return dashboard();
+  }
+  const A = window.IELTS_ADMIN;
+  /* Signed in as an admin but admin.js has not executed yet — show a shell
+     rather than bouncing, so a refresh on #/admin stays where it is. */
+  if (!A) {
+    return shell(`<section class="section">
+      <div class="glass" style="padding:30px;text-align:center">
+        <p style="color:var(--muted);margin:0">${esc(t('admin_loading'))}</p>
+      </div>
+    </section>`, 'admin');
+  }
+  A.ensure(A.state.tab);
+  return shell(A.body(), 'admin');
+}
+
 function render() {
   applyPrefs();
   const r = route();
@@ -1692,10 +1776,13 @@ function render() {
   else if (r === '/quiz') html = quizPage();
   else if (r === '/fullmock') html = fullmock();
   else if (r === '/settings') html = settings();
+  else if (r === '/admin') html = adminPage();
   else if (r === '/login') html = authPage('login');
   else if (r === '/signup') html = authPage('signup');
   else html = home();
   if (lessonModalId) html += lessonModalHtml();
+  const adminModal = window.IELTS_ADMIN && window.IELTS_ADMIN.modalHtml ? window.IELTS_ADMIN.modalHtml() : '';
+  if (adminModal) html += adminModal;
   app.innerHTML = html;
   bind();
   initReveal();
@@ -1839,6 +1926,12 @@ function registerPWA() {
   else if (window && typeof window.addEventListener === 'function') window.addEventListener('load', done);
 }
 
+/* What the admin panel needs from the app: re-render itself, show a toast,
+   and republish test content after an admin saves a change. */
+if (typeof window !== 'undefined') {
+  window.IELTS_ADMIN_HOOKS = { render, notify, go, reloadTests: loadDynamicTests };
+}
+
 applyPrefs();
 registerPWA();
 window.addEventListener('hashchange', render);
@@ -1869,9 +1962,14 @@ if (CLOUD) {
       if (state.status !== 'ready') return;
       applyCloudUser(state.user);
       afterOAuthReturn();
+      /* The admin role is read here rather than from the auth listener so a
+         profile request is never left in flight while the page is closing. */
+      if (CLOUD.loadProfile) CLOUD.loadProfile();
+      loadDynamicTests();
     });
     const state = CLOUD.getState();
     if (state.status === 'ready') { applyCloudUser(state.user); afterOAuthReturn(); }
+    loadDynamicTests();
     render();
   });
   window.addEventListener('online', () => syncCloudResults(true));

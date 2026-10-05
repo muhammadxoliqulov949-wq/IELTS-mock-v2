@@ -11,6 +11,7 @@ const PRECACHE = [
   '/i18n.js',
   '/services.js',
   '/script.js',
+  '/admin.js',
   '/supabase.bundle.js',
   '/manifest.webmanifest',
   '/icons/icon.svg',
