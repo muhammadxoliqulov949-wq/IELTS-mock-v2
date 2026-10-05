@@ -50,19 +50,25 @@ const MASCOT_TIPS = {
    <picture> is worth it (the hero mascot drops from 575 KB to ~62 KB).
    `picture { display: contents }` in the stylesheet keeps every img rule
    below working exactly as if the wrapper were not there. */
-function mascotPicture(src, cls, alt, eager) {
-  const load = eager ? ' fetchpriority="high"' : ' loading="lazy"';
+/* `load`: 'high' = above the fold and top priority (the hero, only),
+   'eager' = visible immediately but not competing with the hero,
+   anything else = lazy. Three images marked "high" would cancel each other
+   out, so only the hero gets it. */
+function mascotPicture(src, cls, alt, load) {
+  const attrs = load === 'high' ? ' fetchpriority="high"'
+    : load === 'eager' ? ''
+    : ' loading="lazy"';
   return `<picture><source srcset="${src.replace(/\.png$/, '.webp')}" type="image/webp">`
-    + `<img class="${cls}" src="${src}" alt="${esc(alt)}"${load} decoding="async"></picture>`;
+    + `<img class="${cls}" src="${src}" alt="${esc(alt)}"${attrs} decoding="async"></picture>`;
 }
-function mascotImg(kind, cls, eager) {
+function mascotImg(kind, cls, load) {
   return mascotPicture(MASCOT[kind] || MASCOT.head,
-    `mascot mascot--${kind}${cls ? ' ' + cls : ''}`, MASCOT_NAME, eager);
+    `mascot mascot--${kind}${cls ? ' ' + cls : ''}`, MASCOT_NAME, load);
 }
 /* Round avatar that sits next to anything Bandly "says". */
 function mascotAvatar(cls) {
   return `<span class="mascot-avatar${cls ? ' ' + cls : ''}" aria-hidden="true">`
-    + mascotPicture(MASCOT.head, '', '', true) + `</span>`;
+    + mascotPicture(MASCOT.head, '', '', 'eager') + `</span>`;
 }
 /* A speech bubble with an optional action button. */
 function mascotBubble(text, opts) {
@@ -88,7 +94,7 @@ function mascotCompanion() {
       <button class="mascot-tip-cta" data-go="/coach">${esc(t('mascot_ask'))} ↗</button>
     </div>`}
     <button class="mascot-fab" id="mascotFab" data-go="/coach" aria-label="${esc(t('mascot_ask'))}" title="${esc(t('mascot_ask'))}">
-      ${mascotPicture(MASCOT.head, '', '', true)}
+      ${mascotPicture(MASCOT.head, '', '', 'eager')}
     </button>
   </div>`;
 }
@@ -225,7 +231,7 @@ function shell(body, active) {
   const firstName = displayName.split(' ')[0];
   return `<header class="site-header" id="siteHeader">
   <nav class="nav" id="mainNav" aria-label="Main navigation">
-    <a class="brand" href="#/" aria-label="IELTS Mock — ${esc(MASCOT_NAME)}"><span class="brand-mark brand-mark--mascot">${mascotPicture(MASCOT.head, '', '', true)}</span><span class="brand-name">IELTS Mock</span></a>
+    <a class="brand" href="#/" aria-label="IELTS Mock — ${esc(MASCOT_NAME)}"><span class="brand-mark brand-mark--mascot">${mascotPicture(MASCOT.head, '', '', 'eager')}</span><span class="brand-name">IELTS Mock</span></a>
     <div class="nav-links">
       ${primary.map(l => `<a class="${l.active ? 'active' : ''}" href="#/${l.key}" ${l.active ? 'aria-current="page"' : ''}>${l.label}</a>`).join('')}
     </div>
@@ -251,7 +257,7 @@ function shell(body, active) {
 <div class="shell"><div class="page-fade">${body}</div></div>
 <div class="mobile-menu" id="mobileMenu">
   <button class="close-menu" id="closeMenuBtn" aria-label="${t('modal_close')}">×</button>
-  <div class="mm-brand"><span class="brand-mark brand-mark--mascot lg">${mascotPicture(MASCOT.head, '', '', true)}</span> IELTS Mock</div>
+  <div class="mm-brand"><span class="brand-mark brand-mark--mascot lg">${mascotPicture(MASCOT.head, '', '', 'eager')}</span> IELTS Mock</div>
   <div class="mm-links mm-primaries">
     ${primary.map(l => `<a class="${l.active ? 'active' : ''}" href="#/${l.key}">${l.label}</a>`).join('')}
   </div>
@@ -347,7 +353,7 @@ function home() {
             <p>${esc(t('mascot_hero_greet'))} ${esc(t('mascot_hero_greet2'))}</p>
             <button class="btn btn-primary btn-sm" data-go="/coach">${esc(t('mascot_ask'))} ↗</button>
           </div>
-          ${mascotImg('full', 'mascot--hero', true)}
+          ${mascotImg('full', 'mascot--hero', 'high')}
         </div>
         <div class="glass score-card">
           <div class="score-label"><span>${t('overall_band')}</span><span>${doneCount}/4</span></div>
@@ -1648,7 +1654,7 @@ function authPage(mode) {
     <section class="section auth-wrap">
       <div class="glass auth-card center-card">
         <div class="auth-mascot">
-          ${mascotImg('full', 'mascot--auth')}
+          ${mascotImg('full', 'mascot--auth', 'eager')}
           <p>${esc(t('mascot_auth_hi'))}</p>
         </div>
         <h1 style="margin:0 0 6px">${isSignup ? t('auth_signup_title') : t('auth_title')}</h1>

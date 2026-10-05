@@ -147,6 +147,11 @@ try {
     /<picture><source srcset="assets\/mascot\.webp" type="image\/webp"><img class="mascot mascot--full mascot--hero" src="assets\/mascot\.png"/.test(html()));
   check('hero: the above-the-fold mascot is not lazy-loaded',
     /mascot--hero[^>]*fetchpriority="high"/.test(html()) && !/mascot--hero[^>]*loading="lazy"/.test(html()));
+  /* only the hero may claim top priority — three "high" images cancel out */
+  check('loading: exactly one mascot image claims top priority',
+    (html().match(/fetchpriority="high"/g) || []).length === 1);
+  check('loading: the logo and companion load eagerly but not at top priority',
+    /brand-mark--mascot[\s\S]{0,220}<img class="" src="assets\/mascot-head\.png" alt="" decoding="async">/.test(html()));
 
   /* ---------- 4. the tip is contextual, not a static line ---------- */
   const tips = {};
