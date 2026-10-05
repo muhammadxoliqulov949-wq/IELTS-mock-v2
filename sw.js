@@ -1,5 +1,5 @@
 /* Bandly AI — service worker */
-const CACHE = 'bandly-v9';
+const CACHE = 'bandly-v10';
 const PRECACHE = [
   '/',
   '/index.html',
@@ -11,9 +11,17 @@ const PRECACHE = [
   '/i18n.js',
   '/services.js',
   '/script.js',
+  '/admin.js',
   '/supabase.bundle.js',
   '/manifest.webmanifest',
-  '/icons/icon.svg'
+  '/icons/icon.svg',
+  '/icons/mascot-192.png',
+  '/icons/mascot-512.png',
+  '/assets/mascot.png',
+  '/assets/mascot.webp',
+  '/assets/mascot-head.png',
+  '/assets/mascot-head.webp',
+  '/assets/favicon.png'
 ];
 
 self.addEventListener('install', (event) => {

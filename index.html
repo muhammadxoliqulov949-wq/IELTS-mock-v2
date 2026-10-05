@@ -10,8 +10,6 @@
     <meta name="author" content="Bandly AI" />
     <link rel="canonical" href="https://ielts-mock.vercel.app/" />
     <link rel="manifest" href="manifest.webmanifest" />
-    <link rel="apple-touch-icon" href="icons/icon.svg" />
-
     <!-- Open Graph / social sharing -->
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="IELTS Mock | Bandly AI" />
@@ -19,12 +17,21 @@
     <meta property="og:description" content="Full-length IELTS mock exams, explanations, dashboard, full mock, quiz and AI-scored feedback." />
     <meta property="og:url" content="https://ielts-mock.vercel.app/" />
     <meta property="og:locale" content="en_US" />
-    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content="IELTS Mock | Bandly AI" />
     <meta name="twitter:description" content="Premium IELTS practice with AI scoring, explanations and a personal study plan." />
+    <meta name="twitter:image" content="https://ielts-mock.vercel.app/assets/og-mascot.jpg" />
+    <meta name="twitter:image:alt" content="Bandly — the AI guide behind IELTS Mock" />
+    <meta property="og:image" content="https://ielts-mock.vercel.app/assets/og-mascot.jpg" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="Bandly — the AI guide behind IELTS Mock" />
 
-    <!-- Favicon (inline SVG, no extra request) -->
-    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%236d5bff'/%3E%3Ctext x='32' y='45' font-size='38' font-family='Arial' font-weight='bold' fill='white' text-anchor='middle'%3EB%3C/text%3E%3C/svg%3E" />
+    <!-- Favicon & app icons: Bandly, the AI guide that is the brand -->
+    <link rel="icon" type="image/png" href="assets/favicon.png" />
+    <link rel="icon" type="image/png" sizes="192x192" href="icons/mascot-192.png" />
+    <link rel="apple-touch-icon" href="icons/mascot-180.png" />
+    <link rel="mask-icon" href="icons/icon.svg" color="#6d5bff" />
 
     <!-- Structured data -->
     <script type="application/ld+json">
@@ -34,6 +41,7 @@
       "name": "IELTS Mock",
       "alternateName": "IELTS Mock | Bandly AI",
       "description": "Full-length IELTS mock exam practice with instant band scores, mistake review and AI-scored Writing & Speaking feedback.",
+      "mascot": { "@type": "Thing", "name": "Bandly", "description": "The AI guide that accompanies every learner through the mock exam, the review and the study plan." },
       "applicationCategory": "EducationalApplication",
       "operatingSystem": "Any",
       "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
@@ -44,7 +52,9 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="styles.css?v=6" />
+    <link rel="preload" as="image" href="assets/mascot-head.webp" type="image/webp" />
+    <link rel="preload" as="image" href="assets/mascot.webp" type="image/webp" />
+    <link rel="stylesheet" href="styles.css?v=7" />
   </head>
   <body>
     <div class="scene" aria-hidden="true">
@@ -64,9 +74,10 @@
     <script src="content2.js?v=5"></script>
     <script src="content3.js?v=5"></script>
     <script src="content4.js?v=5"></script>
-    <script src="i18n.js?v=6"></script>
+    <script src="i18n.js?v=7"></script>
     <script src="services.js?v=5"></script>
     <script src="supabase.bundle.js?v=2"></script>
-    <script src="script.js?v=7"></script>
+    <script src="script.js?v=8"></script>
+    <script src="admin.js?v=1"></script>
   </body>
 </html>

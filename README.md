@@ -4,6 +4,30 @@ IELTS imtihoniga tayyorlanish uchun to'liq mock test platformasi: **Listening, R
 
 > **Premium (payments) hozircha yoqilgan emas** — Stripe/Payme keyinroq qo'shiladi. Hozirgi bosqich test uchun hamma funksiya ochiq.
 
+## 🦉 Bandly — brend ramzi va sun'iy intellekt yo'lboshchi
+
+**Bandly** — platformaning yagona vizual ramzi va o'quvchiga yo'l ko'rsatuvchi AI persona. U hamma joyda bir xil ko'rinadi, chunki barcha chiqishlar bitta asset to'plamidan render qilinadi:
+
+| Joy | Nima qiladi |
+| --- | --- |
+| Logo (header, mobil menyu, footer) + favicon + PWA ikonkasi | brend yuzi |
+| Bosh sahifa hero | salomlashuv pufakchasi bilan kutib oladi |
+| Har bir sahifadagi suzuvchi hamroh | shu sahifaga mos maslahat beradi, AI Coach'ga olib boradi |
+| Bo'lim boshlanishidagi brief modal | aynan shu bo'lim qoidasini tushuntiradi |
+| AI Coach chat | har bir AI javobi yonida — gapirayotgan u |
+| Bo'sh holatlar (results, mistakes, band trend) | o'lik tugun emas, keyingi qadam ko'rsatadi |
+| Kirish / ro'yxatdan o'tish va "bo'lim tugadi" | kutib oladi va natijani tahlil qiladi |
+
+Bandly'ni **Settings → Bandly companion** orqali o'chirish mumkin (faqat suzuvchi hamroh o'chadi, logo qoladi). Har bir maslahat `×` bilan yopiladi va qayta ko'rsatilmaydi.
+
+Assetlar: `assets/mascot.png` (to'liq, shaffof fon), `assets/mascot-head.png` (avatar), `assets/favicon.png`, `assets/og-mascot.png` (ulashish rasmi), `icons/mascot-{180,192,512}.png` (PWA).
+
+## 🛠 Admin panel
+
+To'liq admin panel (`#/admin`): statistika, foydalanuvchilar boshqaruvi (rol/o'chirish), mock testlar CRUD (vizual konstruktor + JSON rejimi) va barcha natijalar jadvali. Supabase `profiles.role` + RLS asosida; oddiy foydalanuvchi avtomatik `#/dashboard` ga yo'naltiriladi.
+
+O'rnatish va to'liq yo'riqnoma: [ADMIN.md](ADMIN.md) — SQL migratsiya, birinchi admin, xavfsizlik modeli, kontent shakli.
+
 ## ✨ Imkoniyatlar
 
 ### Test va baholash
@@ -57,6 +81,8 @@ Nimalar tekshiriladi:
 - `tests/boot.test.js` — script.js yuklanishi va barcha route render
 - `tests/premium.test.js` — Test 2 kontenti, explanations, services (dashboard/quiz), i18n
 - `tests/quiz.test.js` — `/api/quiz` endpoint
+- `tests/mascot.test.js` — Bandly: logo, hero, coach, bo'sh holatlar, suzuvchi hamroh, assetlar va tarjimalar
+- `tests/admin.test.js` — admin: guard/redirect, nav ko'rinishi, RLS va SQL invariantlari, muharrir validatsiyasi, XSS
 
 ## ☁️ Deploy (Vercel)
 
@@ -81,7 +107,10 @@ script.js        → frontend router, dashboard, quiz, full mock, auth
 services.js      → band konversiya, explanations, dashboard/quiz helpers
 styles.css       → premium UI (dark/light, responsive)
 manifest.webmanifest + sw.js  → PWA
-icons/icon.svg   → PWA icon
+assets/          → Bandly maskot assetlari (mascot, mascot-head, favicon, og-mascot)
+icons/           → PWA ikonkalari (mascot-180/192/512, icon.svg)
+admin.js         → Admin panel: mantiqiy qatlam, view, test muharriri (vizual + JSON)
+supabase/migrations/  → SQL: mock_results, admin/RBAC, RLS
 ```
 
 ## ⚠️ Eslatma
