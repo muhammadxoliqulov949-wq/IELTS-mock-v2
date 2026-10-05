@@ -383,6 +383,7 @@
           </div>
           <div class="admin-toolbar-actions">
             <button class="btn btn-primary btn-sm" data-admin-new-test>＋ ${esc(t('admin_tests_new'))}</button>
+            <button class="btn btn-ai btn-sm" data-admin-ai-generate title="${esc(t('admin_ai_button_hint'))}">✨ ${esc(t('admin_ai_generate'))}</button>
             <button class="btn btn-ghost btn-sm" data-admin-refresh>${esc(t('admin_refresh'))}</button>
           </div>
         </div>
@@ -1339,6 +1340,25 @@
     on('[data-admin-new-test]', el => { el.onclick = () => openMetaEditor(nextTestId()); });
     on('[data-admin-edit-meta]', el => { el.onclick = () => openMetaEditor(el.dataset.adminEditMeta); });
 
+    /* --- AI generator (mockGenerator.js) --- */
+    on('[data-admin-ai-generate]', el => {
+      el.onclick = () => {
+        const generator = typeof window !== 'undefined' ? window.IELTS_GENERATOR : null;
+        if (!generator || typeof generator.open !== 'function') {
+          state.error = t('admin_ai_missing_module');
+          rerender();
+          return;
+        }
+        generator.open({
+          testId: nextTestId(),
+          label: '',
+          difficulty: 'standard',
+          topic: '',
+          onDone: () => { refresh('tests'); }
+        });
+      };
+    });
+
     on('[data-admin-toggle-publish]', el => {
       el.onclick = async () => {
         const testId = el.dataset.adminTogglePublish;
@@ -1620,6 +1640,9 @@
     SKILLS, Q_TYPES, SKILL_LABEL,
     state, loaded,
     isAdmin, body, modalHtml, bind, ensure, refresh, esc, t,
+    /* also used by the AI generator modal (mockGenerator.js) to hand the
+       freshly created test straight to the normal editor */
+    openSkillEditor, openMetaEditor,
     /* used by tests and by the router guard */
     _internal: {
       nextTestId, validatePayload, normalizePayload, testsByUser, countQuestions, emptyPayload,

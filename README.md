@@ -28,6 +28,20 @@ To'liq admin panel (`#/admin`): statistika, foydalanuvchilar boshqaruvi (rol/o'c
 
 O'rnatish va to'liq yo'riqnoma: [ADMIN.md](ADMIN.md) — SQL migratsiya, birinchi admin, xavfsizlik modeli, kontent shakli.
 
+## ✨ 1-Click AI Mock Generator (admin)
+
+`#/admin` → **Mock tests** → **✨ AI orqali yangi Mock yaratish (1-Click IELTS Generator)** — bir tugma bilan
+to'liq IELTS mock test: Listening (4 part, 40 savol, MP3), Reading (3 passage, 40 savol), Writing (Task 1 grafik +
+Task 2 insho), Speaking (Part 1–3 + cue card).
+
+- **48 mavzuli ombor** (`lib/topicPool.js`) + har safar boshqacha savol turi kombinatsiyasi, `temperature: 0.85`
+- **Audio:** Edge TTS (bepul, MP3) → Gemini TTS (WAV) fallback, Supabase Storage `ielts-media` bucket'iga yoziladi
+- **Writing Task 1:** `chartSpec` canvas'da chiziladi va PNG sifatida yuklanadi
+- Natija to'g'ridan-to'g'ri `mock_tests` + `mock_test_meta` ga yoziladi va darhol tahrirlashga ochiladi
+- `GEMINI_API_KEY` bo'lmasa admin aniq xabar ko'radi: *"Iltimos, avval GEMINI_API_KEY sozlang"*
+
+To'liq yo'riqnoma: [ADMIN.md](ADMIN.md) → “4.5 AI Generator”.
+
 ## 🧭 Self-study Roadmap + gamification
 
 `#/roadmap` sahifasida A1→A2 dan B2→C1 gacha to‘rt bosqich, har birida uchta tayyor ingliz tili/IELTS mavzusi, qisqa konspekt, ChatGPT/Claude promptini nusxalash va serverda baholanadigan 5 savolli quiz mavjud. 80%+ natija mavzuni tugatadi va daraja mukofotini bir martagina beradi (10/20/35/50 coins). Mock Listening/Reading bandlari ham 30/60/100 coins tier'lari bilan wallet'ga qo‘shiladi. Header'da coin balansi, `#/leaderboard` da rank, avatar, A1–C1 daraja badge'lari va top-3 medallari ko‘rinadi.
@@ -90,13 +104,15 @@ Nimalar tekshiriladi:
 - `tests/quiz.test.js` — `/api/quiz` endpoint
 - `tests/mascot.test.js` — Bandly: logo, hero, coach, bo'sh holatlar, suzuvchi hamroh, assetlar va tarjimalar
 - `tests/admin.test.js` — admin: guard/redirect, nav ko'rinishi, RLS va SQL invariantlari, muharrir validatsiyasi, XSS
+- `tests/generator.test.js` — AI generator: mavzu ombori, endpoint (har bir skill, kalit xabari, audio), TTS, i18n, wiring
+- `tests/generatorClient.test.js` — generator modal oqimi: generatsiya → media upload → Supabase saqlash → xulosa
 - `tests/roadmap.test.js` — Roadmap SQL/RLS, quiz threshold, duplicate coin rewards, mock reward tiers va leaderboard maxfiyligi
 
 ## ☁️ Deploy (Vercel)
 
 1. Reponi GitHub'ga push qiling
 2. [vercel.com](https://vercel.com) → **New Project** → reponi tanlang
-3. Environment Variables: `GEMINI_API_KEY`
+3. Environment Variables: `GEMINI_API_KEY` (AI baholash, AI Coach va 1-Click AI Mock Generator uchun)
 4. **Deploy** — `vercel.json` SPA routingni boshqaradi
 
 ## 🧩 Loyiha tuzilishi
