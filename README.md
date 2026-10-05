@@ -24,9 +24,15 @@ Assetlar: `assets/mascot.png` (to'liq, shaffof fon), `assets/mascot-head.png` (a
 
 ## 🛠 Admin panel
 
-To'liq admin panel (`#/admin`): statistika, foydalanuvchilar boshqaruvi (rol/o'chirish), mock testlar CRUD (vizual konstruktor + JSON rejimi) va barcha natijalar jadvali. Supabase `profiles.role` + RLS asosida; oddiy foydalanuvchi avtomatik `#/dashboard` ga yo'naltiriladi.
+To'liq admin panel (`#/admin`): statistika, foydalanuvchilar boshqaruvi (rol/o'chirish), mock testlar CRUD va natijalar jadvali. IELTS-format konstruktorida Listening (4 part + Supabase MP3), Reading (3 passage + paragraph/headings), Writing (2 task + Task 1 image upload), Speaking (3 part + cue-card timers) uchun alohida Visual/JSON rejimlari bor. Supabase `profiles.role` + RLS va `ielts-media` Storage siyosatlari asosida; oddiy foydalanuvchi avtomatik `#/dashboard` ga yo'naltiriladi.
 
 O'rnatish va to'liq yo'riqnoma: [ADMIN.md](ADMIN.md) — SQL migratsiya, birinchi admin, xavfsizlik modeli, kontent shakli.
+
+## 🧭 Self-study Roadmap + gamification
+
+`#/roadmap` sahifasida A1→A2 dan B2→C1 gacha to‘rt bosqich, har birida uchta tayyor ingliz tili/IELTS mavzusi, qisqa konspekt, ChatGPT/Claude promptini nusxalash va serverda baholanadigan 5 savolli quiz mavjud. 80%+ natija mavzuni tugatadi va daraja mukofotini bir martagina beradi (10/20/35/50 coins). Mock Listening/Reading bandlari ham 30/60/100 coins tier'lari bilan wallet'ga qo‘shiladi. Header'da coin balansi, `#/leaderboard` da rank, avatar, A1–C1 daraja badge'lari va top-3 medallari ko‘rinadi.
+
+Rewards Supabase RPC va idempotent ledger orqali beriladi; brauzer coin miqdorini o‘zi tanlay olmaydi. O‘rnatish tartibi, RLS va leaderboard maxfiylik tafsilotlari: [SUPABASE.md](SUPABASE.md) → “Roadmap, tangalar va leaderboard”.
 
 ## ✨ Imkoniyatlar
 
@@ -39,6 +45,7 @@ O'rnatish va to'liq yo'riqnoma: [ADMIN.md](ADMIN.md) — SQL migratsiya, birinch
 - **Mistake notebook** — har bir xato javob saqlanadi (sizning javobingiz vs to'g'ri javob)
 
 ### Premium/talim
+- **Roadmap + gamification** — A1–C1 bosqichlari, mavzu konspektlari va AI promptlari, serverda baholanadigan quizlar, tangalar hamda global leaderboard.
 - **Dashboard** — overall band, band trend (SVG grafik), haftalik faollik, shaxsiy 6 kunlik reja
 - **Full mock** — Listening → Reading → Writing → Speaking bitta sessiyada, combined result
 - **Mini lessons** — Writing/Reading/Listening/Speaking/Vocabulary uchun 6 ta qisqa dars
@@ -83,6 +90,7 @@ Nimalar tekshiriladi:
 - `tests/quiz.test.js` — `/api/quiz` endpoint
 - `tests/mascot.test.js` — Bandly: logo, hero, coach, bo'sh holatlar, suzuvchi hamroh, assetlar va tarjimalar
 - `tests/admin.test.js` — admin: guard/redirect, nav ko'rinishi, RLS va SQL invariantlari, muharrir validatsiyasi, XSS
+- `tests/roadmap.test.js` — Roadmap SQL/RLS, quiz threshold, duplicate coin rewards, mock reward tiers va leaderboard maxfiyligi
 
 ## ☁️ Deploy (Vercel)
 
@@ -110,7 +118,7 @@ manifest.webmanifest + sw.js  → PWA
 assets/          → Bandly maskot assetlari (mascot, mascot-head, favicon, og-mascot)
 icons/           → PWA ikonkalari (mascot-180/192/512, icon.svg)
 admin.js         → Admin panel: mantiqiy qatlam, view, test muharriri (vizual + JSON)
-supabase/migrations/  → SQL: mock_results, admin/RBAC, RLS
+supabase/migrations/  → SQL: mock_results, admin/RBAC, media Storage, Roadmap/coins/leaderboard va RLS
 ```
 
 ## ⚠️ Eslatma

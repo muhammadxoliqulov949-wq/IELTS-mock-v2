@@ -42,6 +42,8 @@ const MASCOT_TIPS = {
   '/lessons': 'mascot_tip_lessons',
   '/vocabulary': 'mascot_tip_vocabulary',
   '/quiz': 'mascot_tip_quiz',
+  '/roadmap': 'mascot_tip_roadmap',
+  '/leaderboard': 'mascot_tip_leaderboard',
   '/settings': 'mascot_tip_settings',
   '/login': 'mascot_tip_login',
   '/signup': 'mascot_tip_signup'
@@ -120,9 +122,22 @@ function save(skipCloud = false) {
   localStorage.setItem(storageKey(), JSON.stringify(data));
   if (!skipCloud && CLOUD) scheduleCloudSync();
 }
+/* Stop any in-flight recording when leaving a Listening page, changing test,
+   submitting, or switching accounts. */
+function stopListeningAudio() {
+  const audio = listeningState && listeningState.audio;
+  if (audio) {
+    try { audio.pause(); audio.currentTime = 0; } catch {}
+    listeningState.audio = null;
+  }
+  if (window.speechSynthesis) {
+    try { window.speechSynthesis.cancel(); } catch {}
+  }
+}
 /* Switch account: persist the current scope, swap the session, reload data. */
 function resetSectionStates() {
-  listeningState = { partIndex: 0, answers: {}, played: {}, deadline: null };
+  stopListeningAudio();
+  listeningState = { partIndex: 0, answers: {}, played: {}, deadline: null, audio: null };
   readingState = { passageIndex: 0, answers: {}, deadline: null };
   writingState = { answers: {}, deadline: null };
   speakingState = { partIndex: 0, transcripts: { sp1: [], sp2: '', sp3: [] } };
@@ -147,6 +162,30 @@ function signOut() {
 let pendingRoute = null; /* where to return after a successful sign-in */
 function go(path) { location.hash = path; }
 function route() { return location.hash.slice(1) || '/'; }
+
+const ROADMAP_STAGES = [
+  { id: 'A1-A2', title: 'roadmap_stage_a1a2', name: 'roadmap_stage_a1a2_name', hint: 'roadmap_stage_a1a2_hint' },
+  { id: 'A2-B1', title: 'roadmap_stage_a2b1', name: 'roadmap_stage_a2b1_name', hint: 'roadmap_stage_a2b1_hint' },
+  { id: 'B1-B2', title: 'roadmap_stage_b1b2', name: 'roadmap_stage_b1b2_name', hint: 'roadmap_stage_b1b2_hint' },
+  { id: 'B2-C1', title: 'roadmap_stage_b2c1', name: 'roadmap_stage_b2c1_name', hint: 'roadmap_stage_b2c1_hint' }
+];
+let roadmapState = {
+  topics: [], progress: {}, activeStage: 'A1-A2', loadedUser: null,
+  loading: false, error: '', submitError: '', topicId: null, answers: [], result: null, saving: false
+};
+let leaderboardState = { rows: [], loading: false, error: '', loadedUser: null };
+function currentCoins() {
+  const state = CLOUD && CLOUD.getState ? CLOUD.getState() : null;
+  const profile = state && state.profile;
+  if (store.user && Number.isFinite(Number(store.user.coins))) return Math.max(0, Number(store.user.coins) || 0);
+  if (profile && store.user && profile.id === store.user.id) return Math.max(0, Number(profile.coins) || 0);
+  return 0;
+}
+function formatCoins(value) {
+  const count = Math.max(0, Number(value) || 0);
+  try { return count.toLocaleString(store.lang === 'uz' ? 'uz-UZ' : store.lang === 'ru' ? 'ru-RU' : 'en-US'); }
+  catch { return String(count); }
+}
 /* Apply persisted preferences on every render so the whole app reflects them. */
 function applyPrefs() {
   const lang = store.lang || 'en';
@@ -220,6 +259,7 @@ function isAdminUser() {
 /* Admin-authored tests live in Supabase. They are registered into
    IELTS_CONTENT under the same testN ids the router already understands, so a
    published test simply appears in the switcher with no other changes. */
+let dynamicTestsRevision = 0;
 function clearDynamicTests() {
   const c = window.IELTS_CONTENT;
   if (!c) return;
@@ -230,33 +270,54 @@ function clearDynamicTests() {
   }
 }
 async function loadDynamicTests() {
+  const revision = ++dynamicTestsRevision;
   const state = CLOUD && CLOUD.getState ? CLOUD.getState() : null;
   if (!CLOUD || typeof CLOUD.loadPublishedTests !== 'function' || !state || state.status !== 'ready' || !state.user) {
     clearDynamicTests();
     return;
   }
+  /* A user change/reload must never keep another account's dynamic payloads
+     visible if the network request fails. A custom selected test stays
+     selected temporarily but resolves to "unavailable", never Test 1. */
+  clearDynamicTests();
   let res;
   try { res = await CLOUD.loadPublishedTests(); } catch { return; }
+  const latest = CLOUD && CLOUD.getState ? CLOUD.getState() : null;
+  if (revision !== dynamicTestsRevision || !latest || !latest.user || latest.user.id !== state.user.id) return;
   const c = window.IELTS_CONTENT;
   if (!c) return;
   if (!c._builtInTestIds) {
     c._builtInTestIds = ((c.testMeta && c.testMeta.tests) || []).map(x => x.id);
   }
   clearDynamicTests();
-  (res.meta || []).forEach(m => {
+  /* Do not expose a partially-authored custom test: otherwise the legacy
+     skill fallback could accidentally show Test 1 content under Test 5.
+     A published admin test becomes selectable only once all four skills are
+     present and published. */
+  const rows = res.rows || [];
+  const completeMeta = (res.meta || []).filter(m => {
+    const available = new Set(rows.filter(row => row.test_id === m.test_id && row.payload).map(row => row.skill));
+    return SKILLS.every(skill => available.has(skill));
+  });
+  const readyIds = new Set(completeMeta.map(m => m.test_id));
+  completeMeta.forEach(m => {
     c.testMeta = c.testMeta || { tests: [] };
     if (!c.testMeta.tests.some(x => x.id === m.test_id)) {
       c.testMeta.tests.push({ id: m.test_id, label: m.label, labelUz: m.label_uz || m.label });
     }
   });
-  (res.rows || []).forEach(row => {
+  rows.forEach(row => {
     const n = /^test(\d+)$/.exec(String(row.test_id || ''));
-    if (!n || !row.payload) return;
+    if (!n || !row.payload || !readyIds.has(row.test_id) || !SKILLS.includes(row.skill)) return;
     const suffix = n[1] === '1' ? '' : n[1];
     const key = row.skill + suffix;
     c[key] = row.payload;
     c._dynamicKeys.push(key);
   });
+  if (!c.testMeta.tests.some(test => test.id === store.selectedTest)) {
+    store.selectedTest = 'test1';
+    save(true);
+  }
   render();
 }
 
@@ -271,6 +332,8 @@ function navLinks(active) {
     rest: [
       ...(isAdminUser() ? [{ key: 'admin', label: '⚙ ' + t('admin_title'), active: active === 'admin' }] : []),
       { key: 'dashboard', label: t('nav_dashboard'), active: active === 'dashboard' },
+      { key: 'roadmap', label: t('nav_roadmap'), active: active === 'roadmap' },
+      { key: 'leaderboard', label: t('nav_leaderboard'), active: active === 'leaderboard' },
       { key: 'mistakes', label: t('nav_mistakes'), active: active === 'mistakes' },
       { key: 'lessons', label: t('nav_lessons'), active: active === 'lessons' },
       { key: 'vocabulary', label: t('nav_vocabulary'), active: active === 'vocabulary' },
@@ -297,6 +360,7 @@ function shell(body, active) {
       <button class="icon-btn" data-toggle-theme aria-label="Toggle theme" title="${store.theme === 'light' ? t('theme_dark') : t('theme_light')}">${store.theme === 'light' ? '☀' : '☾'}</button>
       <button class="icon-btn lang-btn" data-toggle-lang aria-label="Switch language" title="EN / UZ / RU">${langShort}</button>
       ${user ? `<div class="nav-user">
+        <span class="coin-wallet" data-coin-wallet role="status" aria-live="polite" aria-label="${esc(t('coins_balance_label'))}: ${esc(formatCoins(currentCoins()))}" title="${esc(t('coins_balance_label'))}"><span aria-hidden="true">🪙</span><strong>${esc(formatCoins(currentCoins()))}</strong></span>
         <button class="user-chip" id="userChip" aria-expanded="false" aria-haspopup="true">
           ${user.picture ? `<img src="${esc(user.picture)}" alt=""/>` : `<span class="avatar">${esc(firstName[0].toUpperCase())}</span>`}
           <span class="user-name">${esc(firstName)}</span><span class="caret">▾</span>
@@ -305,6 +369,8 @@ function shell(body, active) {
           <div class="user-menu-head"><strong>${esc(user.name || 'User')}</strong><span>${esc(user.email || '')}</span></div>
           ${isAdminUser() ? `<a href="#/admin">⚙ ${t('admin_title')}</a>` : ''}
           <a href="#/dashboard">${t('nav_dashboard')}</a>
+          <a href="#/roadmap">${t('nav_roadmap')}</a>
+          <a href="#/leaderboard">${t('nav_leaderboard')}</a>
           <a href="#/settings">${t('nav_settings')}</a>
           <button class="user-logout" data-logout>${t('nav_logout')}</button>
         </div>
@@ -335,6 +401,8 @@ function shell(body, active) {
     <nav class="footer-links" aria-label="Footer">
       <a href="#/">${t('nav_home')}</a>
       <a href="#/dashboard">${t('nav_dashboard')}</a>
+      <a href="#/roadmap">${t('nav_roadmap')}</a>
+      <a href="#/leaderboard">${t('nav_leaderboard')}</a>
       <a href="#/mock">${t('nav_mock')}</a>
       <a href="#/results">${t('nav_results')}</a>
       <a href="#/mistakes">${t('nav_mistakes')}</a>
@@ -541,38 +609,92 @@ function mockHub() {
 
 /* ---------------- LISTENING ---------------- */
 function currentTest(skill) { return SERVICES.getSkillContent(skill, store.selectedTest); }
-let listeningState = { partIndex: 0, answers: {}, played: {}, deadline: null };
+function unavailableTestContent(skill) {
+  return shell(`<section class="section"><div class="glass center-card test-unavailable">
+    <div class="warn-icon">◷</div><h1>${esc(t('test_content_unavailable'))}</h1>
+    <p class="micro">${esc(t('test_content_unavailable_hint'))}</p>
+    <button class="btn btn-primary" data-go="/mock">${esc(t('test_back_to_mock'))} ↗</button>
+  </div></section>`, skill);
+}
+let listeningState = { partIndex: 0, answers: {}, played: {}, deadline: null, audio: null };
+/* Flat index of the first question of the current part. Real IELTS numbers
+   questions 1–40 across the four parts; a legacy part may hold a different
+   count, so the offset is computed from the data, never assumed. */
+function listeningOffset() {
+  const test = currentTest('listening');
+  return (test.parts || []).slice(0, listeningState.partIndex)
+    .reduce((sum, p) => sum + ((p && p.questions ? p.questions.length : 0)), 0);
+}
+/* Shared question body for the Listening and Reading runners.
+   Index-answer types (multiple choice, matching, map/plan labelling,
+   matching headings) render lettered option buttons; multi-answer MC lets
+   several stay selected; TRUE/FALSE/NOT GIVEN (and its YES/NO variant)
+   renders the fixed three; everything else is a text gap with the IELTS
+   word limit shown above it. */
+function questionInputHtml(q, current, attrs, small) {
+  const type = q.type || 'sentence-completion';
+  if (type === 'true-false-not-given' || type === 'yes-no-not-given') {
+    const set = (q.answerSet === 'yes-no' || type === 'yes-no-not-given') ? ['YES', 'NO', 'NOT GIVEN'] : ['TRUE', 'FALSE', 'NOT GIVEN'];
+    return `<div class="opt-row${small ? ' opt-row--small' : ''}">${set.map(v =>
+      `<button class="btn btn-ghost opt-btn ${String(current == null ? '' : current).trim().toUpperCase() === v ? 'selected' : ''}" ${attrs.answer} data-value="${v}">${v}</button>`).join('')}</div>`;
+  }
+  if (SERVICES.isIndexType(type) || type === 'multiple-choice-multi') {
+    const multi = type === 'multiple-choice-multi';
+    const picked = multi ? SERVICES.toIndexList(current) : [];
+    const letterOnly = type === 'multiple-choice' && !!small; /* compact legacy reading layout */
+    return `<div class="opt-row${small ? ' opt-row--small' : ''}">${(q.options || []).map((opt, oi) => {
+      const isSel = multi ? picked.includes(oi) : (current != null && current !== '' && String(current) === String(oi));
+      return `<button class="btn btn-ghost opt-btn ${isSel ? 'selected' : ''}" ${attrs.answer} data-value="${oi}"${multi ? ' data-multi="1"' : ''}>${String.fromCharCode(65 + oi)}${letterOnly ? '' : '. ' + esc(opt)}</button>`;
+    }).join('')}</div>`;
+  }
+  return `${q.wordLimit ? `<p class="word-limit-chip">${esc(q.wordLimit)}</p>` : ''}
+    <input class="btn btn-ghost q-text" style="text-align:left" ${attrs.text} value="${esc(current == null ? '' : current)}" placeholder="Your answer">`;
+}
 function listening() {
   const test = currentTest('listening');
   const lDl = rawDeadline('listening');
   listeningState.deadline = lDl > Date.now() ? lDl : null; /* timer only after an explicit start */
   const part = test.parts[listeningState.partIndex];
   const played = listeningState.played[part.id];
+  const offset = listeningOffset();
+  const hasAudio = !!part.audioUrl;
   return shell(`
     <section class="section">
       <div class="test-top"><span class="eyebrow">Listening · ${esc(part.title)}</span><span class="timer" data-timer role="timer" aria-live="off">--:--</span></div>
-      <h1 style="font-family:var(--font-display);font-size:28px;margin:10px 0 20px">Part ${part.partNumber} of 4</h1>
+      <h1 style="font-family:var(--font-display);font-size:28px;margin:10px 0 20px">Part ${part.partNumber} of ${test.parts.length}</h1>
       <div class="glass" style="padding:24px;margin-bottom:20px">
         <p style="color:var(--muted);font-size:14px;margin-bottom:14px">${esc(part.instructions)}</p>
-        <button class="btn ${played ? 'btn-ghost' : 'btn-primary'}" data-play-part ${played ? 'disabled' : ''}>${played ? '✓ ' + t('played') : '▶ ' + t('play_recording')}</button>
-        <p class="micro">You can answer while listening or after — the recording plays once, like the real test.</p>
+        <button class="btn ${played ? 'btn-ghost' : 'btn-primary'}" data-play-part ${played ? 'disabled' : ''}>${played ? '✓ ' + t('played') : (hasAudio ? '▶ ' + t('play_mp3') : '▶ ' + t('play_recording'))}</button>
+        <p class="micro">${hasAudio ? esc(t('audio_once_hint')) : 'You can answer while listening or after — the recording plays once, like the real test.'}</p>
       </div>
-      <div style="display:flex;flex-direction:column;gap:16px">${part.questions.map((q, i) => `
-        <div class="glass" style="padding:18px 20px">
-          <p style="margin:0 0 10px;font-size:14.5px">Q${i + 1 + (part.partNumber - 1) * 10}. ${q.prompt}</p>
-          ${q.type === 'multiple-choice'
-            ? `<div style="display:flex;gap:8px;flex-wrap:wrap">${q.options.map((opt, oi) => `<button class="btn btn-ghost opt-btn ${String(listeningState.answers[(part.partNumber - 1) * 10 + i]) === String(oi) ? 'selected' : ''}" style="font-size:13px" data-l-answer="${i}" data-value="${oi}">${String.fromCharCode(65 + oi)}. ${opt}</button>`).join('')}</div>`
-            : `<input class="btn btn-ghost" style="width:220px;text-align:left" data-l-text="${i}" value="${esc(listeningState.answers[(part.partNumber - 1) * 10 + i] || '')}" placeholder="Your answer">`}
+      <div style="display:flex;flex-direction:column;gap:16px">${(part.questions || []).map((q, i) => `
+        <div class="glass q-card">
+          ${q.group ? `<p class="q-group">${esc(q.group)}</p>` : ''}
+          ${q.imageUrl ? `<img class="q-image" src="${esc(q.imageUrl)}" alt="${esc(q.group || 'Map or plan')}" loading="lazy">` : ''}
+          <p class="q-prompt">Q${offset + i + 1}. ${esc(q.prompt)}</p>
+          ${questionInputHtml(q, listeningState.answers[offset + i], { answer: `data-l-answer="${i}"`, text: `data-l-text="${i}"` })}
         </div>`).join('')}</div>
       <div style="margin-top:24px;display:flex;gap:12px">
         ${listeningState.partIndex > 0 ? `<button class="btn btn-ghost" data-l-prev>← ${t('prev_part')}</button>` : ''}
-        ${listeningState.partIndex < 3 ? `<button class="btn btn-primary" data-l-next>${t('next_part')} ↗</button>` : `<button class="btn btn-primary" data-l-submit>${t('submit_listening')} ↗</button>`}
+        ${listeningState.partIndex < test.parts.length - 1 ? `<button class="btn btn-primary" data-l-next>${t('next_part')} ↗</button>` : `<button class="btn btn-primary" data-l-submit>${t('submit_listening')} ↗</button>`}
       </div>
     </section>`, 'listening');
 }
 
 /* ---------------- READING ---------------- */
 let readingState = { passageIndex: 0, answers: {}, deadline: null };
+/* Passage body: labelled paragraphs (A, B, C …) when the content has them —
+   required for matching-headings questions — otherwise the raw text. */
+function passageTextHtml(passage) {
+  const paras = (passage.paragraphs || []).filter(p => p && String(p.text || '').trim());
+  if (paras.length) {
+    return paras.map(p => `<div class="reading-paragraph"${p.label ? ` id="para-${esc(String(p.label).toLowerCase())}"` : ''}>
+      ${p.label ? `<span class="paragraph-label">${esc(p.label)}</span>` : ''}
+      <p>${esc(p.text)}</p>
+    </div>`).join('');
+  }
+  return esc(passage.text || '');
+}
 function reading() {
   const test = currentTest('reading');
   const rDl = rawDeadline('reading');
@@ -580,25 +702,22 @@ function reading() {
   const passage = test.passages[readingState.passageIndex];
   return shell(`
     <section class="section">
-      <div class="test-top"><span class="eyebrow">Reading · Passage ${passage.passageNumber} of 3 · ${esc(passage.difficulty)}</span><span class="timer" data-timer role="timer" aria-live="off">--:--</span></div>
-      <h1 style="font-family:var(--font-display);font-size:26px;margin:10px 0 20px">${passage.title}</h1>
+      <div class="test-top"><span class="eyebrow">Reading · Passage ${passage.passageNumber} of ${test.passages.length} · ${esc(passage.difficulty || '')}</span><span class="timer" data-timer role="timer" aria-live="off">--:--</span></div>
+      <h1 style="font-family:var(--font-display);font-size:26px;margin:10px 0 20px">${esc(passage.title)}</h1>
       <div class="reading-grid" style="display:grid;grid-template-columns:1.1fr 0.9fr;gap:20px">
-        <div class="glass" style="padding:22px;max-height:560px;overflow-y:auto;font-size:14px;line-height:1.7;white-space:pre-line">${passage.text}</div>
+        <div class="glass reading-text" style="padding:22px;max-height:560px;overflow-y:auto;font-size:14px;line-height:1.7;white-space:pre-line">${passageTextHtml(passage)}</div>
         <div style="display:flex;flex-direction:column;gap:12px;max-height:560px;overflow-y:auto">
-          ${passage.questions.map((q, i) => `
-            <div class="glass" style="padding:14px 16px">
-              <p style="margin:0 0 8px;font-size:13.5px">${q.prompt}</p>
-              ${q.type === 'true-false-not-given'
-                ? `<div style="display:flex;gap:6px">${['TRUE', 'FALSE', 'NOT GIVEN'].map(v => `<button class="btn btn-ghost opt-btn ${readingState.answers[`${readingState.passageIndex}-${i}`] === v ? 'selected' : ''}" style="font-size:11.5px;padding:6px 10px" data-r-answer="${i}" data-value="${v}">${v}</button>`).join('')}</div>`
-                : q.type === 'multiple-choice'
-                ? `<div style="display:flex;gap:6px;flex-wrap:wrap">${q.options.map((opt, oi) => `<button class="btn btn-ghost opt-btn ${String(readingState.answers[`${readingState.passageIndex}-${i}`]) === String(oi) ? 'selected' : ''}" style="font-size:11.5px" data-r-answer="${i}" data-value="${oi}">${String.fromCharCode(65 + oi)}</button>`).join('')}</div>`
-                : `<input class="btn btn-ghost" style="width:100%;text-align:left" data-r-text="${i}" value="${esc(readingState.answers[`${readingState.passageIndex}-${i}`] || '')}" placeholder="Your answer">`}
+          ${(passage.questions || []).map((q, i) => `
+            <div class="glass q-card q-card--reading">
+              ${q.group ? `<p class="q-group">${esc(q.group)}</p>` : ''}
+              <p class="q-prompt q-prompt--reading">${esc(q.prompt)}</p>
+              ${questionInputHtml(q, readingState.answers[`${readingState.passageIndex}-${i}`], { answer: `data-r-answer="${i}"`, text: `data-r-text="${i}"` }, true)}
             </div>`).join('')}
         </div>
       </div>
       <div style="margin-top:24px;display:flex;gap:12px">
         ${readingState.passageIndex > 0 ? `<button class="btn btn-ghost" data-r-prev>← ${t('prev_passage')}</button>` : ''}
-        ${readingState.passageIndex < 2 ? `<button class="btn btn-primary" data-r-next>${t('next_passage')} ↗</button>` : `<button class="btn btn-primary" data-r-submit>${t('submit_reading')} ↗</button>`}
+        ${readingState.passageIndex < test.passages.length - 1 ? `<button class="btn btn-primary" data-r-next>${t('next_passage')} ↗</button>` : `<button class="btn btn-primary" data-r-submit>${t('submit_reading')} ↗</button>`}
       </div>
     </section>`, 'reading');
 }/* ---------------- WRITING ---------------- */
@@ -611,14 +730,19 @@ function writing() {
     <section class="section">
       <div class="test-top"><span class="eyebrow">Writing · Task 1 & Task 2</span><span class="timer" data-timer role="timer" aria-live="off">--:--</span></div>
       <h1 style="font-family:var(--font-display);font-size:28px;margin:10px 0 24px">60 minutes total</h1>
-      ${test.tasks.map((t, i) => `
-        <div class="glass" style="padding:22px;margin-bottom:18px">
-          <p class="eyebrow" style="margin-bottom:8px">${esc(t.title)} · ${t.minutes} min · min ${t.minWords} words</p>
-          <p style="font-size:14.5px;line-height:1.6">${esc(t.prompt)}</p>
-          ${t.chartData ? `<pre style="white-space:pre-wrap;font-size:12.5px;color:var(--muted);background:rgba(255,255,255,0.03);padding:12px;border-radius:10px">${esc(t.chartData)}</pre>` : ''}
-          <textarea data-w-text="${i}" placeholder="Write your response here..." style="width:100%;min-height:180px;margin-top:14px;background:rgba(255,255,255,0.03);border:1px solid var(--panel-border);border-radius:12px;color:var(--text);padding:14px;font-family:var(--font-body);font-size:14px">${esc(writingState.answers[i] || '')}</textarea>
-          <p class="micro word-count-${i}">${t2('words', { n: (writingState.answers[i] || '').trim() ? writingState.answers[i].trim().split(/\s+/).length : 0 })}</p>
-        </div>`).join('')}
+      ${test.tasks.map((task, i) => {
+        const words = (writingState.answers[i] || '').trim() ? (writingState.answers[i] || '').trim().split(/\s+/).length : 0;
+        return `
+        <div class="glass writing-task" style="padding:22px;margin-bottom:18px">
+          <p class="eyebrow" style="margin-bottom:8px">${esc(task.title)} · ${task.minutes} min · min ${task.minWords} words</p>
+          <p style="font-size:14.5px;line-height:1.6">${esc(task.prompt)}</p>
+          ${task.imageUrl ? `<figure class="task-image"><img src="${esc(task.imageUrl)}" alt="${esc(task.visualType ? task.visualType + ' for Task ' + task.taskNumber : 'Writing task visual')}" loading="lazy">${task.visualType ? `<figcaption class="micro">${esc(task.visualType)}</figcaption>` : ''}</figure>` : ''}
+          ${task.chartData ? `<pre style="white-space:pre-wrap;font-size:12.5px;color:var(--muted);background:rgba(255,255,255,0.03);padding:12px;border-radius:10px">${esc(task.chartData)}</pre>` : ''}
+          ${task.criteria ? `<details class="criteria-box"><summary>${esc(t('writing_criteria'))}</summary><p>${esc(task.criteria)}</p></details>` : ''}
+          <textarea data-w-text="${i}" data-min-words="${task.minWords || 0}" placeholder="Write your response here..." style="width:100%;min-height:180px;margin-top:14px;background:rgba(255,255,255,0.03);border:1px solid var(--panel-border);border-radius:12px;color:var(--text);padding:14px;font-family:var(--font-body);font-size:14px">${esc(writingState.answers[i] || '')}</textarea>
+          <p class="micro word-count-${i}${task.minWords && words < task.minWords ? ' word-count--short' : ''}">${t2('words', { n: words })}${task.minWords ? ` · min ${task.minWords}` : ''}</p>
+        </div>`;
+      }).join('')}
       <button class="btn btn-primary" data-w-submit>${t('submit_writing')} ↗</button>
       <div id="writing-result"></div>
     </section>`, 'writing');
@@ -626,29 +750,54 @@ function writing() {
 
 /* ---------------- SPEAKING ---------------- */
 let speakingState = { partIndex: 0, transcripts: { sp1: [], sp2: '', sp3: [] } };
+/* Part 1 may carry grouped topics ({ title, questions[] }) or the legacy
+   flat questions[] list. This flattens both into [{ topic, q }] so record
+   buttons and the AI grading payload share one index space. */
+function speakingPart1Flat(part) {
+  if (Array.isArray(part.topics) && part.topics.length) {
+    return part.topics.flatMap(tp => (tp.questions || []).map(q => ({ topic: tp.title || '', q })));
+  }
+  return (part.questions || []).map(q => ({ topic: '', q }));
+}
+function spQuestionRow(q, i) {
+  return `<div class="sp-question">
+      <p style="font-size:14.5px;margin-bottom:8px">${esc(q)}</p>
+      <button class="btn btn-primary" data-sp-record="${i}">● Record answer</button>
+      <p class="micro sp-transcript-${i}"></p>
+    </div>`;
+}
 function speaking() {
   const test = currentTest('speaking');
   const part = test.parts[speakingState.partIndex];
+  const prepSec = Number(part.prepSeconds) > 0 ? Number(part.prepSeconds) : 60;
+  const talkSec = Number(part.talkSeconds) > 0 ? Number(part.talkSeconds) : 120;
+  let part1Idx = 0; /* running flattened index while rendering topics */
   return shell(`
     <section class="section">
-      <div class="eyebrow">Speaking · ${part.title} · ${part.minutes} min</div>
-      <h1 style="font-family:var(--font-display);font-size:26px;margin:10px 0 20px">Part ${part.partNumber} of 3</h1>
+      <div class="eyebrow">Speaking · ${esc(part.title)} · ${esc(part.minutes || '')} min</div>
+      <h1 style="font-family:var(--font-display);font-size:26px;margin:10px 0 20px">Part ${part.partNumber} of ${test.parts.length}</h1>
       <div class="glass" style="padding:24px">
         ${part.partNumber === 2 ? `
-          <p style="font-size:15.5px;margin-bottom:10px">${part.topic}</p>
-          <ul style="color:var(--muted);font-size:13.5px;line-height:1.8">${part.bullets.map(b => `<li>${b}</li>`).join('')}</ul>
+          <p class="cue-card-label">${esc(t('cue_card'))}</p>
+          <p style="font-size:15.5px;margin-bottom:10px">${esc(part.topic || '')}</p>
+          <ul style="color:var(--muted);font-size:13.5px;line-height:1.8">${(part.bullets || []).map(b => `<li>${esc(b)}</li>`).join('')}</ul>
+          <p class="micro cue-timer-hint">${t2('cue_timer_hint', { prep: Math.max(1, Math.round(prepSec / 60)), talk: Math.max(1, Math.round(talkSec / 60)) })}</p>
           <div id="speaking-cue-flow"></div>
         ` : `
-          <div style="display:flex;flex-direction:column;gap:16px">${part.questions.map((q, i) => `
-            <div>
-              <p style="font-size:14.5px;margin-bottom:8px">${q}</p>
-              <button class="btn btn-primary" data-sp-record="${i}">● Record answer</button>
-              <p class="micro sp-transcript-${i}"></p>
-            </div>`).join('')}</div>
+          ${part.partNumber === 3 && part.linkedTopic ? `<p class="micro sp-linked">${esc(t('sp_linked_topic'))}: <strong>${esc(part.linkedTopic)}</strong></p>` : ''}
+          <div style="display:flex;flex-direction:column;gap:16px">${
+            part.partNumber === 1 && Array.isArray(part.topics) && part.topics.length
+              ? part.topics.map(tp => `
+                <div class="sp-topic">
+                  <p class="sp-topic-title">${esc(tp.title || '')}</p>
+                  ${(tp.questions || []).map(q => spQuestionRow(q, part1Idx++)).join('')}
+                </div>`).join('')
+              : (part.questions || []).map((q, i) => spQuestionRow(q, i)).join('')
+          }</div>
         `}
       </div>
       <div style="margin-top:24px;display:flex;gap:12px">
-        ${speakingState.partIndex < 2 ? `<button class="btn btn-primary" data-sp-next>${t('next_part')} ↗</button>` : `<button class="btn btn-primary" data-sp-submit>${t('finish_speaking')} ↗</button>`}
+        ${speakingState.partIndex < test.parts.length - 1 ? `<button class="btn btn-primary" data-sp-next>${t('next_part')} ↗</button>` : `<button class="btn btn-primary" data-sp-submit>${t('finish_speaking')} ↗</button>`}
       </div>
       <div id="speaking-result"></div>
     </section>`, 'speaking');
@@ -709,6 +858,7 @@ function mistakes() {
           <div class="glass" style="padding:16px 18px">
             <p style="margin:0 0 8px;font-size:14px">${esc(m.prompt)}</p>
             <p style="margin:0;font-size:13px;color:var(--muted)">${t('your_answer')}: <span style="color:var(--coral)">${esc(m.given || '(no answer)')}</span> · ${t('correct_answer')}: <span style="color:var(--cyan)">${esc(m.correct)}</span></p>
+            ${m.explanation ? `<p class="explain-box" style="margin:10px 0 0;font-size:12.5px">${esc(m.explanation)}</p>` : ''}
             <p style="margin:8px 0 0;font-size:12.5px;color:var(--muted)">${new Date(m.date || Date.now()).toLocaleDateString()}</p>
             <button class="btn btn-ghost" style="margin-top:10px;font-size:12px;padding:6px 10px" data-remove-mistake="${esc(m.sig)}">${t('remove_mistake')}</button>
           </div>`).join('')}</div>` : '').join('')}
@@ -782,9 +932,15 @@ function recordMistakes(section, questions, answers, keyFn) {
   questions.forEach((q, i) => {
     const given = answers[keyFn(i)];
     if (!SERVICES.isCorrect(q, given)) {
-      const sig = `${section}:${q.prompt}:${SERVICES.normalizeAnswer(q.answer)}`;
+      const sig = `${section}:${q.prompt}:${SERVICES.normalizeAnswer(Array.isArray(q.answer) ? q.answer.join(',') : q.answer)}`;
       if (store.mistakes.some(m => m.sig === sig)) return; /* avoid duplicates across attempts */
-      store.mistakes.push({ sig, section, prompt: q.prompt, given, correct: q.options ? q.options[q.answer] : q.answer, date: Date.now() });
+      store.mistakes.push({
+        sig, section, prompt: q.prompt,
+        given: SERVICES.answerLabel(q, given),
+        correct: SERVICES.answerLabel(q, q.answer),
+        explanation: q.explanation || SERVICES.explanationFor(q, section, i),
+        date: Date.now()
+      });
     }
   });
 }
@@ -830,6 +986,9 @@ function bind() {
   if (warnCancel) warnCancel.onclick = () => go('/mock');
 
   const r = route();
+  if (r !== '/listening') stopListeningAudio();
+  if (r === '/roadmap') bindRoadmap();
+  if (r === '/leaderboard') bindLeaderboard();
 
   /* The admin panel binds its own handlers for #/admin. */
   if (window.IELTS_ADMIN && typeof window.IELTS_ADMIN.bind === 'function') window.IELTS_ADMIN.bind();
@@ -838,32 +997,57 @@ function bind() {
     if (listeningState.deadline) startTimer(() => listeningState.deadline, submitListening);
     const playBtn = document.querySelector('[data-play-part]');
     if (playBtn) playBtn.onclick = () => {
-      if (!window.speechSynthesis) return notify('Audio not supported in this browser');
       const part = currentTest('listening').parts[listeningState.partIndex];
+      const idleLabel = part.audioUrl ? '▶ ' + t('play_mp3') : '▶ ' + t('play_recording');
+      /* A real uploaded MP3 (Supabase Storage) plays once, like the exam. */
+      if (part.audioUrl) {
+        if (typeof Audio === 'undefined') return notify('Audio playback is not supported in this browser');
+        if (listeningState.audio) { try { listeningState.audio.pause(); } catch {} }
+        const audio = new Audio(part.audioUrl);
+        listeningState.audio = audio;
+        playBtn.disabled = true; playBtn.textContent = 'Playing…';
+        audio.onplay = () => { listeningState.played[part.id] = true; };
+        audio.onended = () => { listeningState.played[part.id] = true; playBtn.textContent = '✓ ' + t('played'); };
+        audio.onerror = () => { playBtn.disabled = false; playBtn.textContent = idleLabel; notify('Playback issue — the audio file could not be loaded'); };
+        const started = audio.play();
+        if (started && started.catch) started.catch(() => { playBtn.disabled = false; playBtn.textContent = idleLabel; notify('Playback blocked by the browser — press play again'); });
+        return;
+      }
+      /* Fallback for tests without an MP3: the transcript is read aloud. */
+      if (!window.speechSynthesis) return notify('Audio not supported in this browser');
       window.speechSynthesis.cancel();
       const utter = new SpeechSynthesisUtterance(part.transcript);
       utter.rate = 0.95;
       playBtn.disabled = true; playBtn.textContent = 'Playing…';
+      utter.onstart = () => { listeningState.played[part.id] = true; };
       utter.onend = () => { listeningState.played[part.id] = true; playBtn.textContent = '✓ ' + t('played'); };
-      utter.onerror = () => { playBtn.disabled = false; playBtn.textContent = '▶ ' + t('play_recording'); notify('Playback issue — try again'); };
+      utter.onerror = () => { playBtn.disabled = false; playBtn.textContent = idleLabel; notify('Playback issue — try again'); };
       window.speechSynthesis.speak(utter);
     };
     document.querySelectorAll('[data-l-answer]').forEach(el => el.onclick = () => {
-      const part = currentTest('listening').parts[listeningState.partIndex];
-      const globalIndex = (part.partNumber - 1) * 10 + Number(el.dataset.lAnswer);
+      const globalIndex = listeningOffset() + Number(el.dataset.lAnswer);
+      if (el.dataset.multi === '1') {
+        /* multi-answer MC: toggle membership, several buttons stay selected */
+        const list = Array.isArray(listeningState.answers[globalIndex]) ? [...listeningState.answers[globalIndex]] : [];
+        const v = Number(el.dataset.value);
+        const at = list.indexOf(v);
+        if (at >= 0) list.splice(at, 1); else list.push(v);
+        listeningState.answers[globalIndex] = list;
+        el.classList.toggle('selected', at < 0);
+        return;
+      }
       listeningState.answers[globalIndex] = el.dataset.value;
       /* select in place — no full re-render, scroll position and focus are kept */
       el.parentElement.querySelectorAll('.opt-btn').forEach(b => b.classList.toggle('selected', b === el));
     });
     document.querySelectorAll('[data-l-text]').forEach(el => el.onchange = () => {
-      const part = currentTest('listening').parts[listeningState.partIndex];
-      const globalIndex = (part.partNumber - 1) * 10 + Number(el.dataset.lText);
+      const globalIndex = listeningOffset() + Number(el.dataset.lText);
       listeningState.answers[globalIndex] = el.value;
     });
     const lNext = document.querySelector('[data-l-next]');
-    if (lNext) lNext.onclick = () => { listeningState.partIndex++; render(); };
+    if (lNext) lNext.onclick = () => { stopListeningAudio(); listeningState.partIndex++; render(); };
     const lPrev = document.querySelector('[data-l-prev]');
-    if (lPrev) lPrev.onclick = () => { listeningState.partIndex--; render(); };
+    if (lPrev) lPrev.onclick = () => { stopListeningAudio(); listeningState.partIndex--; render(); };
     const lSubmit = document.querySelector('[data-l-submit]');
     if (lSubmit) lSubmit.onclick = submitListening;
   }
@@ -872,6 +1056,15 @@ function bind() {
     if (readingState.deadline) startTimer(() => readingState.deadline, submitReading);
     document.querySelectorAll('[data-r-answer]').forEach(el => el.onclick = () => {
       const key = `${readingState.passageIndex}-${el.dataset.rAnswer}`;
+      if (el.dataset.multi === '1') {
+        const list = Array.isArray(readingState.answers[key]) ? [...readingState.answers[key]] : [];
+        const v = Number(el.dataset.value);
+        const at = list.indexOf(v);
+        if (at >= 0) list.splice(at, 1); else list.push(v);
+        readingState.answers[key] = list;
+        el.classList.toggle('selected', at < 0);
+        return;
+      }
       readingState.answers[key] = el.dataset.value;
       el.parentElement.querySelectorAll('.opt-btn').forEach(b => b.classList.toggle('selected', b === el));
     });
@@ -892,15 +1085,19 @@ function bind() {
     document.querySelectorAll('[data-w-text]').forEach(el => el.oninput = () => {
       writingState.answers[el.dataset.wText] = el.value;
       const words = el.value.trim() ? el.value.trim().split(/\s+/).length : 0;
+      const minWords = Number(el.dataset.minWords) || 0;
       const label = document.querySelector(`.word-count-${el.dataset.wText}`);
-      if (label) label.textContent = t2('words', { n: words });
+      if (label) {
+        label.textContent = t2('words', { n: words }) + (minWords ? ` · min ${minWords}` : '');
+        label.classList.toggle('word-count--short', !!(minWords && words < minWords));
+      }
     });
     const wSubmit = document.querySelector('[data-w-submit]');
     if (wSubmit) wSubmit.onclick = async () => {
       const submissionScope = storageKey();
       const submissionTest = store.selectedTest;
       const tasks = currentTest('writing').tasks;
-      const payload = { mode: 'writing', tasks: tasks.map((t, i) => ({ title: t.title, prompt: t.prompt, response: writingState.answers[i] || '' })) };
+      const payload = { mode: 'writing', tasks: tasks.map((t, i) => ({ title: t.title, prompt: t.prompt, response: writingState.answers[i] || '', minWords: t.minWords, criteria: t.criteria || '' })) };
       wSubmit.disabled = true; wSubmit.textContent = t('grading');
       try {
         const res = await fetch('/api/grade', {
@@ -954,7 +1151,7 @@ function bind() {
       const parts = test.parts.map((p) => ({
         title: p.title,
         qa: p.partNumber === 1
-          ? (p.questions || []).map((q, i) => ({ q, a: speakingState.transcripts.sp1[i] || '' }))
+          ? speakingPart1Flat(p).map((x, i) => ({ q: x.topic ? `${x.topic}: ${x.q}` : x.q, a: speakingState.transcripts.sp1[i] || '' }))
           : p.partNumber === 2
             ? [{ q: p.topic, a: speakingState.transcripts.sp2 || '' }]
             : (p.questions || []).map((q, i) => ({ q, a: speakingState.transcripts.sp3[i] || '' }))
@@ -985,13 +1182,18 @@ function bind() {
     };
     const cueFlow = document.querySelector('#speaking-cue-flow');
     if (cueFlow) {
+      /* Real IELTS Part 2 timings come from the content (default 60s prep,
+         120s talk) so an admin-authored cue card keeps its own rules. */
+      const cuePart = currentTest('speaking').parts[speakingState.partIndex] || {};
+      const cuePrep = Number(cuePart.prepSeconds) > 0 ? Number(cuePart.prepSeconds) : 60;
+      const cueTalk = Number(cuePart.talkSeconds) > 0 ? Number(cuePart.talkSeconds) : 120;
       let sp2Timers = [];
       let sp2Recognition = null;
       let sp2Phase = 'idle'; /* idle → prep → recording → done */
       const sp2Btn = document.createElement('button');
       sp2Btn.className = 'btn btn-primary';
       sp2Btn.style.marginTop = '16px';
-      sp2Btn.textContent = 'Start 1-minute prep';
+      sp2Btn.textContent = `Start ${cuePrep >= 60 ? Math.round(cuePrep / 60) + '-minute' : cuePrep + '-second'} prep`;
       cueFlow.appendChild(sp2Btn);
       const status = document.createElement('p');
       status.className = 'micro';
@@ -1000,12 +1202,12 @@ function bind() {
       function setSp2Phase(p) {
         sp2Phase = p;
         sp2Btn.disabled = (p === 'prep' || p === 'recording');
-        sp2Btn.textContent = p === 'done' ? '↻ Re-record answer' : p === 'recording' ? 'Recording…' : 'Start 1-minute prep';
+        sp2Btn.textContent = p === 'done' ? '↻ Re-record answer' : p === 'recording' ? 'Recording…' : `Start ${cuePrep >= 60 ? Math.round(cuePrep / 60) + '-minute' : cuePrep + '-second'} prep`;
       }
       function startRecordingPart2() {
         const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
         if (!SR) { notify('Speech recognition not supported — try Chrome or Edge'); setSp2Phase('idle'); return; }
-        let talkLeft = 120;
+        let talkLeft = cueTalk;
         let restarts = 0;
         let prevSeg = ''; /* committed transcript of previous recognition sessions */
         const DONE = '✓ Recorded. Click Next part when ready.';
@@ -1048,7 +1250,7 @@ function bind() {
         }
         makeRecognition();
         setSp2Phase('recording');
-        status.textContent = '🔴 Recording… speak now (2 minutes)';
+        status.textContent = `🔴 Recording… speak now (${cueTalk >= 60 ? Math.round(cueTalk / 60) + ' minutes' : cueTalk + ' seconds'})`;
         sp2Timers.push(setInterval(() => {
           talkLeft--;
           if (talkLeft <= 0) {
@@ -1065,7 +1267,7 @@ function bind() {
         if (sp2Recognition && sp2Phase === 'recording') { try { sp2Recognition.stop(); } catch {} }
         stopSp2Timers();
         setSp2Phase('prep');
-        let prep = 60;
+        let prep = cuePrep;
         status.textContent = `Prep time: ${prep}s`;
         sp2Timers.push(setInterval(() => {
           prep--;
@@ -1141,9 +1343,10 @@ function bindPremium() {
   document.querySelectorAll('[data-test]').forEach(el => el.onclick = () => {
     const id = el.dataset.test;
     if (store.selectedTest === id) return;
+    stopListeningAudio();
     store.selectedTest = id;
     save();
-    listeningState = { partIndex: 0, answers: {}, played: {}, deadline: null };
+    listeningState = { partIndex: 0, answers: {}, played: {}, deadline: null, audio: null };
     readingState = { passageIndex: 0, answers: {}, deadline: null };
     writingState = { answers: {}, deadline: null };
     speakingState = { partIndex: 0, transcripts: { sp1: [], sp2: '', sp3: [] } };
@@ -1365,6 +1568,7 @@ function bindDocOnce() {
     const hb = document.querySelector('#hamburgerBtn');
     if (hb) hb.setAttribute('aria-expanded', 'false');
     if (lessonModalId) { lessonModalId = null; render(); }
+    if (roadmapState.topicId) { roadmapState.topicId = null; roadmapState.answers = []; roadmapState.result = null; roadmapState.submitError = ''; roadmapState.saving = false; render(); }
   });
 }
 
@@ -1394,6 +1598,7 @@ function gradeReading() {
 }
 
 function submitListening() {
+  stopListeningAudio();
   const a = gradeListening();
   store.attempts.push(a);
   save();
@@ -1515,6 +1720,7 @@ function testGate(section, minutes, pageFn) {
     return shell(`<section class="section"><div class="glass auth-notice auth-notice--error" role="status">${esc(CLOUD && CLOUD.getState().status === 'loading' ? t('auth_connecting') : t('auth_unavailable'))}</div></section>`, section);
   }
   if (!cloudUserActive()) { pendingRoute = '/' + section; return gateView(); }
+  if (!currentTest(section)) return unavailableTestContent(section);
   const done = attemptFor(section, store.selectedTest);
   if (done) return completedView(section, done);
   const raw = rawDeadline(section);
@@ -1612,6 +1818,358 @@ function lessons() {
 }
 function lessonCard(l) {
   return `<article class="test-card lesson-card" data-cat="${esc(l.category)}"><div class="test-meta"><span>${esc(l.category)}</span><span>${esc(l.level)}</span></div><h3>${esc(l.title)}</h3><p class="micro">${l.minutes} min</p><ul class="lesson-bullets">${l.bullets.slice(0, 3).map(b => `<li>${esc(b)}</li>`).join('')}</ul><button class="btn btn-ghost btn-sm" data-lesson-open="${esc(l.id)}">Read ↗</button></article>`;
+}
+
+/* ---------------- ROADMAP + GAMIFICATION ---------------- */
+function gamificationGate() {
+  const state = CLOUD && CLOUD.getState ? CLOUD.getState() : null;
+  if (!state || state.status !== 'ready') {
+    const message = state && state.status === 'loading'
+      ? t('gamification_connecting')
+      : state && state.status === 'error'
+        ? t('gamification_unavailable')
+        : t('gamification_supabase_required');
+    return shell(`<section class="section auth-wrap"><div class="glass center-card gamification-gate">
+      <div class="warn-icon">🪙</div><h1>${esc(t('gamification_title'))}</h1>
+      <p class="micro">${esc(message)}</p>
+      <p class="micro">${esc(t('gamification_setup_hint'))}</p>
+    </div></section>`, route().slice(1));
+  }
+  if (!cloudUserActive()) {
+    return shell(`<section class="section auth-wrap"><div class="glass center-card gamification-gate">
+      <div class="warn-icon">🔐</div><h1>${esc(t('gamification_signin_title'))}</h1>
+      <p class="micro">${esc(t('gamification_signin_body'))}</p>
+      <div class="roadmap-actions"><a class="btn btn-primary" href="#/login">${esc(t('nav_login'))} ↗</a><a class="btn btn-ghost" href="#/signup">${esc(t('auth_signup_title'))}</a></div>
+    </div></section>`, route().slice(1));
+  }
+  return null;
+}
+
+async function loadRoadmapData(force = false) {
+  if (!CLOUD || typeof CLOUD.loadRoadmap !== 'function' || !cloudUserActive()) return;
+  const owner = store.user.id;
+  if (!force && roadmapState.loadedUser === owner) return;
+  if (roadmapState.loading) return;
+  roadmapState.loading = true;
+  roadmapState.error = '';
+  try {
+    const data = await CLOUD.loadRoadmap();
+    if (!store.user || store.user.id !== owner) return;
+    const stageOrder = new Map(ROADMAP_STAGES.map((stage, i) => [stage.id, i]));
+    roadmapState.topics = (data.topics || []).slice().sort((a, b) =>
+      (stageOrder.get(a.stage) ?? 99) - (stageOrder.get(b.stage) ?? 99)
+      || Number(a.order_index || 0) - Number(b.order_index || 0));
+    roadmapState.progress = Object.fromEntries((data.progress || []).map(row => [row.topic_id, row]));
+    roadmapState.loadedUser = owner;
+  } catch (error) {
+    if (store.user && store.user.id === owner) roadmapState.error = String(error.message || t('roadmap_load_error'));
+  } finally {
+    if (store.user && store.user.id === owner) roadmapState.loading = false;
+    if (route() === '/roadmap' && store.user && store.user.id === owner) render();
+  }
+}
+
+function roadmapTopicProgress(id) {
+  const progress = roadmapState.progress[id];
+  return {
+    score: Math.max(0, Math.min(100, Number(progress && progress.score_percentage) || 0)),
+    completed: !!(progress && progress.is_completed)
+  };
+}
+
+function roadmapTopicCard(topic) {
+  const progress = roadmapTopicProgress(topic.id);
+  const firstLine = String(topic.summary || '').split(/\n/)[0];
+  return `<article class="test-card roadmap-topic-card ${progress.completed ? 'is-complete' : ''}">
+    <div class="roadmap-topic-top"><span class="roadmap-topic-stage">${esc(topic.stage)}</span>
+      ${progress.completed ? `<span class="roadmap-complete-badge"><span aria-hidden="true">✓</span> ${esc(t('roadmap_completed'))}</span>` : ''}
+    </div>
+    <h3>${esc(topic.title)}</h3><p class="micro roadmap-summary-preview">${esc(firstLine)}</p>
+    <div class="roadmap-topic-meta"><span class="roadmap-reward">🪙 <strong>+${esc(topic.reward_coins)}</strong> ${esc(t('roadmap_coins'))}</span>
+      <span class="micro">${esc(t('roadmap_mastery'))} <strong>${progress.score}%</strong></span>
+    </div>
+    <div class="roadmap-progress" role="progressbar" aria-label="${esc(t('roadmap_mastery'))}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${progress.score}"><i style="width:${progress.score}%"></i></div>
+    <button class="btn ${progress.completed ? 'btn-ghost' : 'btn-primary'} btn-sm" data-roadmap-open="${esc(topic.id)}">${esc(progress.completed ? t('roadmap_review_topic') : t('roadmap_start_topic'))} ↗</button>
+  </article>`;
+}
+
+function roadmapPage() {
+  const gated = gamificationGate();
+  if (gated) return gated;
+  const active = ROADMAP_STAGES.find(stage => stage.id === roadmapState.activeStage) || ROADMAP_STAGES[0];
+  const stageTopics = roadmapState.topics.filter(topic => topic.stage === active.id);
+  const completeCount = roadmapState.topics.filter(topic => roadmapTopicProgress(topic.id).completed).length;
+  const average = roadmapState.topics.length
+    ? Math.round(roadmapState.topics.reduce((sum, topic) => sum + roadmapTopicProgress(topic.id).score, 0) / roadmapState.topics.length)
+    : 0;
+  const stageReward = stageTopics.length ? Number(stageTopics[0].reward_coins) || 0
+    : active.id === 'A1-A2' ? 10 : active.id === 'A2-B1' ? 20 : active.id === 'B1-B2' ? 35 : 50;
+  const stageTabs = ROADMAP_STAGES.map(stage => {
+    const topics = roadmapState.topics.filter(topic => topic.stage === stage.id);
+    const done = topics.filter(topic => roadmapTopicProgress(topic.id).completed).length;
+    return `<button class="roadmap-tab ${stage.id === active.id ? 'active' : ''}" role="tab" aria-selected="${stage.id === active.id}" data-roadmap-stage="${stage.id}">
+      <strong>${esc(t(stage.title))}</strong><span>${esc(t(stage.name))}</span><small>${done}/${topics.length} ${esc(t('roadmap_topics_short'))}</small>
+    </button>`;
+  }).join('');
+  let topicList = '';
+  if (roadmapState.error) {
+    topicList = `<div class="glass roadmap-state roadmap-state--error" role="alert"><strong>${esc(t('roadmap_load_error'))}</strong><p class="micro">${esc(roadmapState.error)}</p><p class="micro">${esc(t('roadmap_migration_hint'))}</p><button class="btn btn-ghost" data-roadmap-retry>${esc(t('roadmap_retry'))} ↻</button></div>`;
+  } else if (roadmapState.loading || roadmapState.loadedUser !== store.user.id) {
+    topicList = `<div class="glass roadmap-state" role="status">${esc(t('roadmap_loading'))}</div>`;
+  } else if (!stageTopics.length) {
+    topicList = `<div class="glass roadmap-state"><p class="micro">${esc(t('roadmap_empty'))}</p><button class="btn btn-ghost" data-roadmap-retry>${esc(t('roadmap_retry'))} ↻</button></div>`;
+  } else {
+    topicList = `<div class="roadmap-topic-grid">${stageTopics.map(roadmapTopicCard).join('')}</div>`;
+  }
+  return shell(`<section class="section roadmap-page">
+    <div class="section-header roadmap-header"><div><div class="eyebrow">${esc(t('roadmap_eyebrow'))}</div><h1 style="margin:8px 0 6px">${esc(t('roadmap_title'))}</h1><p class="micro">${esc(t('roadmap_subtitle'))}</p></div>
+      <div class="roadmap-wallet-summary glass"><span class="wallet-coin" aria-hidden="true">🪙</span><div><strong>${esc(formatCoins(currentCoins()))}</strong><span>${esc(t('coins_balance_label'))}</span></div></div>
+    </div>
+    <div class="roadmap-overview glass"><div><span>${esc(t('roadmap_overall_progress'))}</span><strong>${average}%</strong></div><div class="roadmap-overview-bar"><i style="width:${average}%"></i></div><p class="micro">${completeCount}/${roadmapState.topics.length} ${esc(t('roadmap_topics_completed'))}</p></div>
+    <div class="roadmap-tabs" role="tablist" aria-label="${esc(t('roadmap_levels'))}">${stageTabs}</div>
+    <div class="roadmap-stage-heading"><div><div class="eyebrow">${esc(t(active.title))}</div><h2>${esc(t(active.name))}</h2><p class="micro">${esc(t(active.hint))}</p></div><span class="roadmap-stage-reward">🪙 +${esc(stageReward)} ${esc(t('roadmap_each_topic'))}</span></div>
+    ${topicList}
+  </section>`, 'roadmap');
+}
+
+function roadmapQuestionHtml(question, index) {
+  const answer = roadmapState.answers[index];
+  const title = `${t('roadmap_question')} ${index + 1}`;
+  if (question.type === 'input') {
+    return `<div class="roadmap-question"><label for="roadmap-answer-${index}"><span class="roadmap-question-num">${index + 1}</span><strong>${esc(question.prompt || '')}</strong></label>
+      <input id="roadmap-answer-${index}" class="roadmap-answer-input" type="text" autocomplete="off" maxlength="160" placeholder="${esc(question.placeholder || t('roadmap_your_answer'))}" data-roadmap-answer="${index}" value="${esc(answer ?? '')}"/></div>`;
+  }
+  const options = Array.isArray(question.options) ? question.options : [];
+  return `<fieldset class="roadmap-question"><legend><span class="roadmap-question-num">${index + 1}</span>${esc(question.prompt || title)}</legend>
+    <div class="roadmap-options">${options.map((option, optionIndex) => `<label class="roadmap-option ${String(answer) === String(optionIndex) ? 'selected' : ''}">
+      <input type="radio" name="roadmap-answer-${index}" value="${optionIndex}" data-roadmap-choice="${index}" ${String(answer) === String(optionIndex) ? 'checked' : ''}/>
+      <span class="roadmap-option-letter">${String.fromCharCode(65 + optionIndex)}</span><span>${esc(option)}</span>
+    </label>`).join('')}</div>
+  </fieldset>`;
+}
+
+function roadmapQuizResultHtml(topic) {
+  const result = roadmapState.result;
+  if (!result) return '';
+  const passed = Number(result.score_percentage) >= 80;
+  const message = result.coins_awarded > 0
+    ? t2('roadmap_reward_earned', { n: formatCoins(result.coins_awarded) })
+    : result.is_completed ? t('roadmap_already_completed')
+      : passed ? t('roadmap_no_new_reward') : t('roadmap_try_again');
+  return `<div class="roadmap-quiz-result ${passed ? 'passed' : 'needs-practice'}" role="status">
+    <div class="roadmap-result-score"><strong>${esc(result.score_percentage)}%</strong><span>${esc(t('roadmap_quiz_score'))}</span></div>
+    <div><strong>${esc(passed ? t('roadmap_quiz_passed') : t('roadmap_quiz_not_passed'))}</strong><p class="micro">${esc(t2('roadmap_correct_count', { correct: result.correct_count, total: result.total_questions }))} · ${esc(t('roadmap_best_score'))}: ${esc(result.best_score_percentage)}%</p><p class="micro">${esc(message)}</p></div>
+  </div>`;
+}
+
+function roadmapTopicModalHtml() {
+  const topic = roadmapState.topics.find(item => item.id === roadmapState.topicId);
+  if (!topic) return '';
+  const progress = roadmapTopicProgress(topic.id);
+  const questions = Array.isArray(topic.questions) ? topic.questions : [];
+  return `<div class="modal-backdrop roadmap-modal-backdrop" id="roadmapBackdrop">
+    <div class="modal glass roadmap-modal" role="dialog" aria-modal="true" aria-labelledby="roadmapModalTitle">
+      <button class="modal-close" data-roadmap-close aria-label="${esc(t('modal_close'))}">×</button>
+      <div class="test-meta"><span>${esc(topic.stage)}</span><span>🪙 +${esc(topic.reward_coins)} ${esc(t('roadmap_coins'))}</span>${progress.completed ? `<span class="roadmap-complete-badge">✓ ${esc(t('roadmap_completed'))}</span>` : ''}</div>
+      <h2 id="roadmapModalTitle">${esc(topic.title)}</h2>
+      <section class="roadmap-cheatsheet"><h3>${esc(t('roadmap_cheatsheet'))}</h3><div>${esc(topic.summary).replace(/\r?\n/g, '<br>')}</div></section>
+      <section class="roadmap-ai-block"><div><div class="eyebrow">${esc(t('roadmap_ai_practice'))}</div><h3>${esc(t('roadmap_ai_title'))}</h3><p class="micro">${esc(t('roadmap_ai_hint'))}</p></div>
+        <textarea class="roadmap-prompt" readonly aria-label="${esc(t('roadmap_ai_prompt'))}">${esc(topic.ai_prompt)}</textarea>
+        <button class="btn btn-ghost btn-sm" data-roadmap-copy="${esc(topic.id)}">${esc(t('roadmap_copy_prompt'))} ⧉</button>
+      </section>
+      <section class="roadmap-quiz"><div class="roadmap-quiz-head"><div><div class="eyebrow">${esc(t('roadmap_quiz'))}</div><h3>${esc(t('roadmap_quiz_hint'))}</h3></div><span class="pill">${questions.length} ${esc(t('roadmap_questions_short'))}</span></div>
+        ${progress.score ? `<p class="micro">${esc(t('roadmap_best_score'))}: <strong>${progress.score}%</strong></p>` : ''}
+        <div class="roadmap-question-list">${questions.map(roadmapQuestionHtml).join('')}</div>
+        ${roadmapState.submitError ? `<p class="roadmap-submit-error" role="alert">${esc(roadmapState.submitError)}</p>` : ''}
+        ${roadmapQuizResultHtml(topic)}
+        <div class="roadmap-actions"><button class="btn btn-primary" data-roadmap-submit ${roadmapState.saving ? 'disabled' : ''}>${esc(t(roadmapState.saving ? 'roadmap_submitting' : 'roadmap_submit'))} ${roadmapState.saving ? '…' : '↗'}</button><button class="btn btn-ghost" data-roadmap-close>${esc(t('modal_close'))}</button></div>
+      </section>
+    </div>
+  </div>`;
+}
+
+function bindRoadmap() {
+  document.querySelectorAll('[data-roadmap-stage]').forEach(button => button.onclick = () => {
+    roadmapState.activeStage = button.dataset.roadmapStage;
+    render();
+  });
+  document.querySelectorAll('[data-roadmap-open]').forEach(button => button.onclick = () => {
+    roadmapState.topicId = button.dataset.roadmapOpen;
+    roadmapState.answers = [];
+    roadmapState.result = null;
+    roadmapState.submitError = '';
+    roadmapState.saving = false;
+    render();
+  });
+  document.querySelectorAll('[data-roadmap-retry]').forEach(button => button.onclick = () => loadRoadmapData(true));
+  document.querySelectorAll('[data-roadmap-choice]').forEach(input => input.onchange = () => {
+    roadmapState.answers[Number(input.dataset.roadmapChoice)] = input.value;
+    const group = input.closest('.roadmap-options');
+    if (group) group.querySelectorAll('.roadmap-option').forEach(label => label.classList.toggle('selected', label.contains(input) && input.checked));
+  });
+  document.querySelectorAll('[data-roadmap-answer]').forEach(input => input.oninput = () => {
+    roadmapState.answers[Number(input.dataset.roadmapAnswer)] = input.value;
+  });
+  document.querySelectorAll('[data-roadmap-copy]').forEach(button => button.onclick = async () => {
+    const topic = roadmapState.topics.find(item => item.id === button.dataset.roadmapCopy);
+    if (!topic) return;
+    try {
+      if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(topic.ai_prompt);
+      } else {
+        const area = document.createElement('textarea');
+        area.value = topic.ai_prompt;
+        area.setAttribute('readonly', '');
+        area.style.position = 'fixed'; area.style.opacity = '0';
+        document.body.appendChild(area); area.select();
+        const copied = document.execCommand && document.execCommand('copy');
+        area.remove();
+        if (!copied) throw new Error('Clipboard unavailable');
+      }
+      notify(t('roadmap_prompt_copied'));
+    } catch { notify(t('roadmap_copy_failed')); }
+  });
+  document.querySelectorAll('[data-roadmap-close]').forEach(button => button.onclick = () => {
+    roadmapState.topicId = null; roadmapState.answers = []; roadmapState.result = null; roadmapState.submitError = ''; roadmapState.saving = false; render();
+  });
+  const backdrop = document.querySelector('#roadmapBackdrop');
+  if (backdrop) backdrop.onclick = event => {
+    if (event.target === backdrop) {
+      roadmapState.topicId = null; roadmapState.answers = []; roadmapState.result = null; roadmapState.submitError = ''; roadmapState.saving = false; render();
+    }
+  };
+  const submit = document.querySelector('[data-roadmap-submit]');
+  if (submit) submit.onclick = async () => {
+    if (roadmapState.saving) return;
+    const topic = roadmapState.topics.find(item => item.id === roadmapState.topicId);
+    if (!topic) return;
+    const answers = topic.questions.map((_, index) => String(roadmapState.answers[index] ?? '').trim());
+    if (answers.length !== 5 || answers.some(answer => !answer)) return notify(t('roadmap_answer_all'));
+    if (!CLOUD || typeof CLOUD.submitRoadmapQuiz !== 'function') return notify(t('gamification_unavailable'));
+    const owner = store.user && store.user.id;
+    roadmapState.submitError = '';
+    roadmapState.saving = true; render();
+    try {
+      const result = await CLOUD.submitRoadmapQuiz(topic.id, answers);
+      if (!store.user || store.user.id !== owner || roadmapState.topicId !== topic.id) return;
+      roadmapState.result = result;
+      const previous = roadmapTopicProgress(topic.id);
+      roadmapState.progress[topic.id] = {
+        topic_id: topic.id,
+        score_percentage: Math.max(previous.score, Number(result.best_score_percentage ?? result.score_percentage) || 0),
+        is_completed: previous.completed || !!result.is_completed
+      };
+      roadmapState.saving = false;
+      await loadRoadmapData(true);
+      if (Number(result.coins_awarded) > 0) celebrateCoinReward(result.coins_awarded, result.coins_balance);
+      render();
+    } catch (error) {
+      if (store.user && store.user.id === owner) {
+        roadmapState.submitError = String(error.message || t('roadmap_submit_error'));
+        notify(t('roadmap_submit_error'));
+      }
+    } finally {
+      if (store.user && store.user.id === owner) { roadmapState.saving = false; render(); }
+    }
+  };
+  if (cloudUserActive() && roadmapState.loadedUser !== store.user.id && !roadmapState.loading) loadRoadmapData();
+}
+
+function celebrateCoinReward(amount, balance) {
+  const earned = Math.max(0, Number(amount) || 0);
+  if (store.user && Number.isFinite(Number(balance))) {
+    store.user = { ...store.user, coins: Math.max(0, Number(balance) || 0) };
+    if (activeUser && activeUser.id === store.user.id) activeUser = { ...activeUser, coins: store.user.coins };
+  }
+  if (earned > 0) notify(t2('coins_earned_toast', { n: formatCoins(earned) }));
+  render();
+  setTimeout(() => {
+    const wallet = document.querySelector('[data-coin-wallet]');
+    if (!wallet) return;
+    wallet.classList.add('coin-wallet--earned');
+    setTimeout(() => wallet.classList.remove('coin-wallet--earned'), 850);
+  }, 0);
+}
+
+/* ---------------- LEADERBOARD ---------------- */
+function safeAvatarUrl(value) {
+  try {
+    const url = new URL(String(value || ''), window.location && window.location.origin || 'https://example.invalid');
+    return ['https:', 'http:'].includes(url.protocol) ? url.href : '';
+  } catch { return ''; }
+}
+function localizeLeaderboardBadge(value) {
+  const badge = String(value || '');
+  const key = {
+    'A1 Starter': 'leaderboard_badge_a1',
+    'A2 Explorer': 'leaderboard_badge_a2',
+    'B1 Builder': 'leaderboard_badge_b1',
+    'B2 Achiever': 'leaderboard_badge_b2',
+    'C1 Master': 'leaderboard_badge_c1'
+  }[badge];
+  return key ? t(key) : badge || t('leaderboard_default_level');
+}
+
+async function loadLeaderboardData(force = false) {
+  if (!CLOUD || typeof CLOUD.loadLeaderboard !== 'function' || !cloudUserActive()) return;
+  const owner = store.user.id;
+  if (!force && leaderboardState.loadedUser === owner) return;
+  if (leaderboardState.loading) return;
+  leaderboardState.loading = true; leaderboardState.error = '';
+  try {
+    const rows = await CLOUD.loadLeaderboard(100);
+    if (!store.user || store.user.id !== owner) return;
+    leaderboardState.rows = Array.isArray(rows) ? rows : [];
+    leaderboardState.loadedUser = owner;
+  } catch (error) {
+    if (store.user && store.user.id === owner) leaderboardState.error = String(error.message || t('leaderboard_load_error'));
+  } finally {
+    if (store.user && store.user.id === owner) leaderboardState.loading = false;
+    if (route() === '/leaderboard' && store.user && store.user.id === owner) render();
+  }
+}
+
+function leaderboardPage() {
+  const gated = gamificationGate();
+  if (gated) return gated;
+  const current = leaderboardState.rows.find(row => row.is_you);
+  let content = '';
+  if (leaderboardState.error) {
+    content = `<div class="glass roadmap-state roadmap-state--error" role="alert"><strong>${esc(t('leaderboard_load_error'))}</strong><p class="micro">${esc(leaderboardState.error)}</p><p class="micro">${esc(t('roadmap_migration_hint'))}</p><button class="btn btn-ghost" data-leaderboard-retry>${esc(t('roadmap_retry'))} ↻</button></div>`;
+  } else if (leaderboardState.loading || leaderboardState.loadedUser !== store.user.id) {
+    content = `<div class="glass roadmap-state" role="status">${esc(t('leaderboard_loading'))}</div>`;
+  } else if (!leaderboardState.rows.length) {
+    content = `<div class="glass roadmap-state"><p class="micro">${esc(t('leaderboard_empty'))}</p></div>`;
+  } else {
+    content = `<div class="glass leaderboard-table-wrap"><table class="leaderboard-table">
+      <thead><tr><th>${esc(t('leaderboard_rank'))}</th><th>${esc(t('leaderboard_learner'))}</th><th>${esc(t('leaderboard_coins'))}</th><th>${esc(t('leaderboard_level'))}</th></tr></thead>
+      <tbody>${leaderboardState.rows.map(row => {
+        const place = Number(row.rank_position) || 0;
+        const medal = place === 1 ? '🥇' : place === 2 ? '🥈' : place === 3 ? '🥉' : '';
+        const name = String(row.display_name || 'Learner');
+        const avatar = safeAvatarUrl(row.avatar_url);
+        const me = !!row.is_you;
+        return `<tr class="leaderboard-row ${me ? 'is-you' : ''} ${place <= 3 ? `podium-${place}` : ''}" ${me ? 'aria-current="true"' : ''}>
+          <td><span class="leaderboard-rank"><span class="leaderboard-medal" aria-label="${place === 1 ? esc(t('leaderboard_gold')) : place === 2 ? esc(t('leaderboard_silver')) : place === 3 ? esc(t('leaderboard_bronze')) : ''}">${medal}</span>${place}</span></td>
+          <td><span class="leaderboard-person">${avatar ? `<img src="${esc(avatar)}" alt="" loading="lazy"/>` : `<span class="leaderboard-avatar" aria-hidden="true">${esc(name.trim().charAt(0).toUpperCase() || '?')}</span>`}<span><strong>${esc(name)}</strong>${me ? `<small>${esc(t('leaderboard_you'))}</small>` : ''}</span></span></td>
+          <td><span class="leaderboard-coins">🪙 ${esc(formatCoins(row.coins))}</span></td>
+          <td><span class="roadmap-level-badge">${esc(localizeLeaderboardBadge(row.level_badge))}</span></td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table></div>`;
+  }
+  return shell(`<section class="section leaderboard-page">
+    <div class="section-header roadmap-header"><div><div class="eyebrow">${esc(t('leaderboard_eyebrow'))}</div><h1 style="margin:8px 0 6px">${esc(t('leaderboard_title'))}</h1><p class="micro">${esc(t('leaderboard_subtitle'))}</p></div>
+      <div class="leaderboard-your-rank glass"><span>${esc(t('leaderboard_your_rank'))}</span><strong>${current ? `#${esc(current.rank_position)}` : '—'}</strong><small>🪙 ${esc(formatCoins(currentCoins()))}</small></div>
+    </div>
+    <div class="leaderboard-toolbar"><p class="micro">${esc(t('leaderboard_public_note'))}</p><button class="btn btn-ghost btn-sm" data-leaderboard-retry ${leaderboardState.loading ? 'disabled' : ''}>${esc(t('roadmap_retry'))} ↻</button></div>
+    ${content}
+  </section>`, 'leaderboard');
+}
+
+function bindLeaderboard() {
+  document.querySelectorAll('[data-leaderboard-retry]').forEach(button => button.onclick = () => loadLeaderboardData(true));
+  if (cloudUserActive() && leaderboardState.loadedUser !== store.user.id && !leaderboardState.loading) loadLeaderboardData();
 }
 
 /* ---------------- VOCABULARY ---------------- */
@@ -1771,6 +2329,8 @@ function render() {
   else if (r === '/mistakes') html = mistakes();
   else if (r === '/coach') html = coach();
   else if (r === '/dashboard') html = dashboard();
+  else if (r === '/roadmap') html = roadmapPage();
+  else if (r === '/leaderboard') html = leaderboardPage();
   else if (r === '/lessons') html = lessons();
   else if (r === '/vocabulary') html = vocabulary();
   else if (r === '/quiz') html = quizPage();
@@ -1781,6 +2341,7 @@ function render() {
   else if (r === '/signup') html = authPage('signup');
   else html = home();
   if (lessonModalId) html += lessonModalHtml();
+  if (r === '/roadmap' && roadmapState.topicId) html += roadmapTopicModalHtml();
   const adminModal = window.IELTS_ADMIN && window.IELTS_ADMIN.modalHtml ? window.IELTS_ADMIN.modalHtml() : '';
   if (adminModal) html += adminModal;
   app.innerHTML = html;
@@ -1832,10 +2393,19 @@ function applyCloudUser(user) {
   const previous = store.user && store.user.auth === 'supabase' ? store.user.id : null;
   if (user && previous === user.id) { if (!cloudLastLoad) syncCloudResults(true); return; }
   if (!user && !store.user) return;
+  clearDynamicTests();
   cloudRows = []; cloudLastLoad = 0; cloudStatus = 'idle'; cloudError = '';
+  roadmapState = { topics: [], progress: {}, activeStage: 'A1-A2', loadedUser: null, loading: false, error: '', submitError: '', topicId: null, answers: [], result: null, saving: false };
+  leaderboardState = { rows: [], loading: false, error: '', loadedUser: null };
   if (user) {
     const metadata = user.user_metadata || {};
-    signIn({ id: user.id, email: user.email || '', name: metadata.name || metadata.full_name || user.email?.split('@')[0] || 'User', picture: metadata.avatar_url || '', auth: 'supabase' });
+    const cloudProfile = CLOUD && CLOUD.getState ? CLOUD.getState().profile : null;
+    signIn({
+      id: user.id, email: user.email || '',
+      name: cloudProfile?.name || metadata.name || metadata.full_name || user.email?.split('@')[0] || 'User',
+      picture: cloudProfile?.avatar_url || metadata.avatar_url || '',
+      coins: Number(cloudProfile?.coins) || 0, auth: 'supabase'
+    });
   } else signOut();
   render();
   if (user) syncCloudResults(true);
@@ -1877,20 +2447,34 @@ async function syncCloudResults(force = false) {
   cloudStatus = 'syncing'; cloudError = '';
   cloudSyncTask = (async () => {
     try {
+      let mockCoinsUpdated = false;
       for (const attempt of pending) {
         if (!stillCurrent()) return;
         const version = CLOUD.fingerprint(attempt);
         await CLOUD.saveMockSection(CLOUD.sectionPayload(attempt, localStore.user.name), owner);
         if (!stillCurrent()) return;
+        /* Award only when this local mock section is first synchronized. The
+           RPC derives the band from the saved row; a unique ledger key makes
+           retries safe without re-awarding historical results on every boot. */
+        if (['listening', 'reading'].includes(attempt.section) && typeof CLOUD.addUserCoins === 'function') {
+          const reward = await CLOUD.addUserCoins('mock', `${attempt.test || 'test1'}:${attempt.section}`);
+          if (!stillCurrent()) return;
+          if (Number(reward && reward.awarded_coins) > 0) {
+            mockCoinsUpdated = true;
+            celebrateCoinReward(reward.awarded_coins, reward.coins_balance);
+          }
+        }
         store.cloudSynced = { ...store.cloudSynced, [CLOUD.sectionKey(attempt)]: version };
         save(true);
       }
+      if (mockCoinsUpdated && typeof CLOUD.loadProfile === 'function') await CLOUD.loadProfile(true);
       if (!stillCurrent()) return;
       const rows = await CLOUD.loadMockResults();
       if (!stillCurrent()) return;
+      const remoteAttempts = CLOUD.rowsToAttempts(rows);
       cloudRows = rows;
       const merged = new Map(store.attempts.map(a => [CLOUD.sectionKey(a), a]));
-      for (const remote of CLOUD.rowsToAttempts(rows)) {
+      for (const remote of remoteAttempts) {
         const key = CLOUD.sectionKey(remote);
         const local = merged.get(key);
         // Never replace an unsent local change with a stale remote copy.
@@ -1961,6 +2545,19 @@ if (CLOUD) {
     CLOUD.subscribe(state => {
       if (state.status !== 'ready') return;
       applyCloudUser(state.user);
+      const profile = state.profile;
+      if (state.user && profile && store.user && store.user.id === state.user.id) {
+        const before = `${store.user.coins || 0}:${store.user.name || ''}:${store.user.picture || ''}`;
+        store.user = {
+          ...store.user,
+          name: profile.name || store.user.name,
+          picture: profile.avatar_url || store.user.picture,
+          coins: Number(profile.coins) || 0
+        };
+        if (activeUser && activeUser.id === state.user.id) activeUser = { ...activeUser, ...store.user };
+        const after = `${store.user.coins || 0}:${store.user.name || ''}:${store.user.picture || ''}`;
+        if (before !== after) render();
+      }
       afterOAuthReturn();
       /* The admin role is read here rather than from the auth listener so a
          profile request is never left in flight while the page is closing. */

@@ -100,11 +100,19 @@ function consumeOAuthReturnUrl() {
    it can also run from inside `ready` — calling requireClient() there would
    await `ready` while `ready` is still running, i.e. deadlock. */
 async function readProfile(sb) {
-  const { data, error } = await sb.from('profiles')
+  const result = await sb.from('profiles')
+    .select('id,email,name,avatar_url,role,coins,created_at')
+    .eq('id', currentUser.id).maybeSingle();
+  if (!result.error) return result.data || null;
+  /* Existing installations remain usable between deploying the app and
+     applying the gamification migration; admin/auth features do not depend
+     on the new coins column being present yet. */
+  if (!/coins/i.test(String(result.error.message || ''))) throw result.error;
+  const legacy = await sb.from('profiles')
     .select('id,email,name,avatar_url,role,created_at')
     .eq('id', currentUser.id).maybeSingle();
-  if (error) throw error;
-  return data || null;
+  if (legacy.error) throw legacy.error;
+  return legacy.data ? { ...legacy.data, coins: 0 } : null;
 }
 
 /* Read (and cache) the current user's profile row. A missing row means the
@@ -177,6 +185,73 @@ export async function loadMockResults() {
     .select('id,user_id,name,test_id,scores,listening,reading,writing,speaking,overall_band,created_at,updated_at')
     .eq('user_id', owner).order('updated_at', { ascending: false });
   if (error) throw error;
+  return data || [];
+}
+
+/* ---------------- Roadmap + gamification ----------------
+ * Topic answer keys never cross the wire: submitTopicQuiz sends only the
+ * learner's five choices to a SECURITY DEFINER RPC, which grades and awards
+ * coins atomically in PostgreSQL. */
+export async function loadRoadmap() {
+  const sb = await requireClient();
+  if (!currentUser) throw new Error('Sign in to save roadmap progress.');
+  const owner = currentUser.id;
+  const [topics, progress] = await Promise.all([
+    sb.from('topics')
+      .select('id,stage,title,summary,ai_prompt,questions,reward_coins,order_index')
+      .order('stage').order('order_index'),
+    sb.from('user_topic_progress')
+      .select('topic_id,score_percentage,is_completed,updated_at')
+      .eq('user_id', owner)
+  ]);
+  if (topics.error) throw topics.error;
+  if (progress.error) throw progress.error;
+  if (!currentUser || currentUser.id !== owner) throw new Error('Account changed. Please reload the roadmap.');
+  return { topics: topics.data || [], progress: progress.data || [] };
+}
+
+export async function submitRoadmapQuiz(topicId, answers) {
+  const sb = await requireClient();
+  if (!currentUser) throw new Error('Sign in to save roadmap progress.');
+  const owner = currentUser.id;
+  const verified = await sb.auth.getUser();
+  if (verified.error) throw verified.error;
+  if (!verified.data.user || verified.data.user.id !== owner || currentUser?.id !== owner) {
+    throw new Error('Account changed. Please sign in again.');
+  }
+  if (!Array.isArray(answers) || answers.length !== 5) throw new Error('Answer all five questions.');
+  const { data, error } = await sb.rpc('submit_topic_quiz', {
+    p_topic_id: String(topicId || ''),
+    p_answers: answers.map(answer => String(answer ?? ''))
+  });
+  if (error) throw error;
+  if (currentUser?.id !== owner) throw new Error('Account changed. Please sign in again.');
+  await loadProfile(true);
+  return data || {};
+}
+
+/* Server derives the reward from the completed topic or saved mock result;
+   the client deliberately has no p_amount parameter. */
+export async function addUserCoins(source, reference) {
+  const sb = await requireClient();
+  if (!currentUser) throw new Error('Sign in to earn coins.');
+  const owner = currentUser.id;
+  const { data, error } = await sb.rpc('add_user_coins', {
+    p_source: String(source || ''),
+    p_reference: String(reference || '')
+  });
+  if (error) throw error;
+  if (currentUser?.id !== owner) throw new Error('Account changed. Please sign in again.');
+  return data || {};
+}
+
+export async function loadLeaderboard(limit = 100) {
+  const sb = await requireClient();
+  if (!currentUser) throw new Error('Sign in to view the leaderboard.');
+  const owner = currentUser.id;
+  const { data, error } = await sb.rpc('get_leaderboard', { p_limit: limit });
+  if (error) throw error;
+  if (!currentUser || currentUser.id !== owner) throw new Error('Account changed. Please reload the leaderboard.');
   return data || [];
 }
 
@@ -320,6 +395,61 @@ export async function adminDeleteTestMeta(testId) {
   const { error: contentError } = await sb.from('mock_tests').delete().eq('test_id', testId);
   if (contentError) throw contentError;
   const { error } = await sb.from('mock_test_meta').delete().eq('test_id', testId);
+  if (error) throw error;
+}
+
+/* ---------------- Media uploads (Supabase Storage) ----------------
+ * Listening MP3s, Writing Task 1 charts and map/plan images live in the
+ * public "ielts-media" bucket. The browser uploads with the anon key and
+ * the storage policies (202610050002_media_storage.sql) are the real gate:
+ * only public.is_admin() may write, everybody may read.
+ * ========================================= */
+export const MEDIA_BUCKET = 'ielts-media';
+
+function safeExt(file) {
+  const fromName = String(file && file.name ? file.name.split('.').pop() : '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (fromName && fromName.length <= 5) return fromName;
+  const mime = String((file && file.type) || '');
+  if (mime.includes('mpeg') || mime.includes('mp3')) return 'mp3';
+  if (mime.includes('wav')) return 'wav';
+  if (mime.includes('ogg')) return 'ogg';
+  if (mime.includes('png')) return 'png';
+  if (mime.includes('jpeg') || mime.includes('jpg')) return 'jpg';
+  if (mime.includes('webp')) return 'webp';
+  if (mime.includes('gif')) return 'gif';
+  return 'bin';
+}
+
+/* Upload one file and return { url, path }. `folder` groups files inside the
+   bucket ('audio' for listening parts, 'images' for writing/maps); `label`
+   keeps names human-readable (e.g. 'test5-listening-part1'). */
+export async function adminUploadMedia(file, { folder = 'media', label = '' } = {}) {
+  const sb = await requireAdminClient();
+  if (!file) throw new Error('No file selected.');
+  if (file.size > 50 * 1024 * 1024) throw new Error('The file is larger than the 50 MB limit.');
+  const cleanLabel = String(label || '').toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60);
+  const cleanFolder = ['audio', 'images'].includes(folder) ? folder : 'media';
+  const path = `${cleanFolder}/${cleanLabel ? cleanLabel + '-' : ''}${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${safeExt(file)}`;
+  const { error } = await sb.storage.from(MEDIA_BUCKET).upload(path, file, {
+    upsert: false,
+    contentType: file.type || undefined
+  });
+  if (error) throw error;
+  const { data } = sb.storage.from(MEDIA_BUCKET).getPublicUrl(path);
+  return { url: data.publicUrl, path };
+}
+
+/* Delete a media object by its storage path or by its public URL, so
+   replacing a file in the editor does not leave orphans behind. */
+export async function adminRemoveMedia(pathOrUrl) {
+  const sb = await requireAdminClient();
+  let path = String(pathOrUrl || '');
+  const marker = `/${MEDIA_BUCKET}/`;
+  const at = path.indexOf(marker);
+  if (at >= 0) path = path.slice(at + marker.length).split('?')[0];
+  path = decodeURIComponent(path).replace(/^\/+/, '');
+  if (!path) return;
+  const { error } = await sb.storage.from(MEDIA_BUCKET).remove([path]);
   if (error) throw error;
 }
 

@@ -42,7 +42,19 @@
   }
 
   const SKILLS = ['listening', 'reading', 'writing', 'speaking'];
-  const Q_TYPES = ['sentence-completion', 'multiple-choice', 'true-false-not-given'];
+  const Q_TYPES = [
+    'sentence-completion', 'form-completion', 'note-completion', 'table-completion', 'summary-completion',
+    'multiple-choice', 'multiple-choice-multi', 'true-false-not-given', 'yes-no-not-given',
+    'matching', 'matching-headings', 'map-labelling'
+  ];
+  const Q_TYPE_LABEL = {
+    'sentence-completion': 'Sentence completion', 'form-completion': 'Form completion',
+    'note-completion': 'Note completion', 'table-completion': 'Table completion',
+    'summary-completion': 'Summary completion', 'multiple-choice': 'Multiple choice · one answer',
+    'multiple-choice-multi': 'Multiple choice · choose TWO',
+    'true-false-not-given': 'True / False / Not Given', 'yes-no-not-given': 'Yes / No / Not Given',
+    matching: 'Matching', 'matching-headings': 'Matching headings', 'map-labelling': 'Map / plan labelling'
+  };
   const SKILL_LABEL = { listening: 'Listening', reading: 'Reading', writing: 'Writing', speaking: 'Speaking' };
 
   /* ---------- state ---------- */
@@ -61,6 +73,7 @@
     jsonMode: false,
     jsonDraft: '',
     jsonError: '',
+    uploadError: '',
     setup: null         /* null | { missing: bool, message } */
   };
   const loaded = { overview: false, users: false, submissions: false, tests: false };
@@ -431,54 +444,203 @@
   /* ===================================================================
    * EDITOR — hybrid: a structured form, plus a JSON view for pasting
    * =================================================================== */
+  /* ===================================================================
+   * EDITOR — IELTS-specific visual builder + per-skill JSON mode
+   *
+   * Fixed section counts match the exam: 4 Listening parts, 3 Reading
+   * passages, 2 Writing tasks, 3 Speaking parts. Questions remain flexible
+   * and every Listening/Reading question must have an answer + explanation.
+   * =================================================================== */
   function emptyPayload(skill) {
-    if (skill === 'listening') return { id: skill + '-custom', title: '', skill: 'Listening', duration: 30, parts: [emptyListeningPart()] };
-    if (skill === 'reading') return { id: skill + '-custom', title: '', skill: 'Reading', duration: 60, format: 'Academic', passages: [emptyPassage()] };
-    if (skill === 'writing') return { id: skill + '-custom', title: '', skill: 'Writing', format: 'Academic', duration: 60, tasks: [emptyTask(1), emptyTask(2)] };
-    return { id: skill + '-custom', title: '', skill: 'Speaking', duration: 14, parts: [emptySpeakingPart(1)] };
+    if (skill === 'listening') return {
+      id: 'listening-custom', title: '', skill: 'Listening', duration: 30,
+      parts: [1, 2, 3, 4].map(emptyListeningPart)
+    };
+    if (skill === 'reading') return {
+      id: 'reading-custom', title: '', skill: 'Reading', duration: 60, format: 'Academic',
+      passages: [1, 2, 3].map(emptyPassage)
+    };
+    if (skill === 'writing') return {
+      id: 'writing-custom', title: '', skill: 'Writing', format: 'Academic', duration: 60,
+      tasks: [emptyTask(1), emptyTask(2)]
+    };
+    return {
+      id: 'speaking-custom', title: '', skill: 'Speaking', duration: 14,
+      parts: [1, 2, 3].map(emptySpeakingPart)
+    };
   }
-  function emptyListeningPart() {
-    return { id: 'lp1', partNumber: 1, title: 'Part 1', instructions: '', transcript: '', questions: [emptyQuestion()] };
+  function emptyListeningPart(n) {
+    return {
+      id: 'lp' + n, partNumber: n, title: 'Part ' + n,
+      instructions: n === 1 ? 'Questions 1–10. You will hear this recording ONCE.' : '',
+      transcript: '', audioUrl: '', audioPath: '', questions: []
+    };
   }
-  function emptyPassage() {
-    return { id: 'rp1', passageNumber: 1, title: 'Passage 1', difficulty: 'Easier', text: '', questions: [emptyQuestion('true-false-not-given')] };
+  function emptyPassage(n) {
+    return {
+      id: 'rp' + n, passageNumber: n, title: 'Passage ' + n,
+      difficulty: ['Easier', 'Medium', 'Harder'][n - 1], text: '', paragraphs: [], questions: []
+    };
+  }
+  function writingCriteria(taskNumber) {
+    return taskNumber === 1
+      ? 'Task Achievement · Coherence and Cohesion · Lexical Resource · Grammatical Range and Accuracy.'
+      : 'Task Response · Coherence and Cohesion · Lexical Resource · Grammatical Range and Accuracy.';
   }
   function emptyTask(n) {
-    return { id: 'w' + n, taskNumber: n, title: 'Task ' + n, minutes: n === 1 ? 20 : 40, minWords: n === 1 ? 150 : 250, prompt: '' };
+    return {
+      id: 'w' + n, taskNumber: n, title: 'Task ' + n,
+      minutes: n === 1 ? 20 : 40, minWords: n === 1 ? 150 : 250,
+      prompt: '', visualType: n === 1 ? 'Chart / graph / map / process / table' : '',
+      imageUrl: '', imagePath: '', chartData: '', criteria: writingCriteria(n)
+    };
   }
   function emptySpeakingPart(n) {
-    return { id: 'sp' + n, partNumber: n, title: 'Part ' + n, minutes: '4-5', questions: [''] };
+    if (n === 1) return {
+      id: 'sp1', partNumber: 1, title: 'Part 1 — Introduction and interview', minutes: '4–5',
+      topics: [1, 2, 3].map(i => ({ title: 'Topic ' + i, questions: [] })), questions: []
+    };
+    if (n === 2) return {
+      id: 'sp2', partNumber: 2, title: 'Part 2 — Individual long turn (cue card)', minutes: '3–4',
+      prepSeconds: 60, talkSeconds: 120, topic: '', bullets: []
+    };
+    return {
+      id: 'sp3', partNumber: 3, title: 'Part 3 — Two-way discussion', minutes: '4–5',
+      linkedTopic: '', questions: []
+    };
   }
   function emptyQuestion(type) {
-    return { id: 'q', type: type || 'sentence-completion', prompt: '', answer: '' };
+    return {
+      id: 'q', type: type || 'sentence-completion', prompt: '', options: [], answer: '', explanation: '',
+      wordLimit: /completion/.test(type || 'sentence-completion') ? 'NO MORE THAN TWO WORDS AND/OR A NUMBER' : ''
+    };
+  }
+  function alphaLabel(index) { return String.fromCharCode(65 + (Number(index) || 0)); }
+  function questionTypesFor(skill) {
+    if (skill === 'listening') return [
+      'form-completion', 'note-completion', 'table-completion', 'sentence-completion',
+      'multiple-choice', 'multiple-choice-multi', 'matching', 'map-labelling'
+    ];
+    if (skill === 'reading') return [
+      'true-false-not-given', 'yes-no-not-given', 'matching-headings',
+      'summary-completion', 'sentence-completion', 'multiple-choice', 'multiple-choice-multi', 'matching'
+    ];
+    return Q_TYPES;
+  }
+  function isOptionQuestion(type) {
+    return ['multiple-choice', 'multiple-choice-multi', 'matching', 'matching-headings', 'map-labelling'].includes(type);
+  }
+  function indexValue(value) {
+    const one = item => {
+      if (typeof item === 'number' && Number.isFinite(item)) return item;
+      const text = String(item == null ? '' : item).trim();
+      const letter = /^([A-Z])$/i.exec(text);
+      if (letter) return letter[1].toUpperCase().charCodeAt(0) - 65;
+      if (/^\d+$/.test(text)) return Number(text);
+      return null;
+    };
+    if (Array.isArray(value)) return value.map(one).filter(n => n != null);
+    const raw = String(value == null ? '' : value).trim();
+    if (!raw) return '';
+    if (raw.includes(',') || raw.includes(';') || raw.includes('|')) return raw.split(/[,;|]/).map(one).filter(n => n != null);
+    const n = one(raw);
+    return n == null ? value : n;
+  }
+  function normalizeQuestion(question, id, skill) {
+    const q = { ...(question || {}) };
+    q.id = id;
+    q.type = String(q.type || (skill === 'reading' ? 'true-false-not-given' : 'sentence-completion'));
+    q.prompt = String(q.prompt || '');
+    q.explanation = String(q.explanation || '');
+    if (isOptionQuestion(q.type)) {
+      q.options = Array.isArray(q.options) ? q.options : [];
+      if (q.answer !== '' && q.answer !== undefined && q.answer !== null) q.answer = indexValue(q.answer);
+    } else if (q.type === 'multiple-choice-multi') {
+      if (q.answer !== '' && q.answer !== undefined && q.answer !== null) q.answer = indexValue(q.answer);
+    } else {
+      q.answer = q.answer == null ? '' : q.answer;
+    }
+    if (q.type === 'yes-no-not-given') q.answerSet = 'yes-no';
+    if (/completion/.test(q.type) && !String(q.wordLimit || '').trim()) {
+      q.wordLimit = 'NO MORE THAN TWO WORDS AND/OR A NUMBER';
+    }
+    return q;
   }
 
-  /* Renumber blocks/questions and rebuild ids so the saved payload always
-     matches the shape the test runners expect. */
+  /* Normalise visual + JSON data to the public legacy shape consumed by the
+     learner runners. Existing fields (id, skill, parts/passages/tasks,
+     questions, answer, options, transcript, chartData) are kept; richer
+     IELTS fields are additive. */
   function normalizePayload(skill, payload) {
-    const p = payload && typeof payload === 'object' ? payload : {};
+    const p = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {};
     p.skill = SKILL_LABEL[skill] || skill;
-    if (!p.id) p.id = skill + '-custom';
-    if (skill === 'writing') {
-      p.tasks = (p.tasks || []).map((task, i) => ({ ...task, taskNumber: i + 1, id: task.id || 'w' + (i + 1) }));
-      return p;
-    }
-    if (skill === 'speaking') {
-      p.parts = (p.parts || []).map((part, i) => ({ ...part, partNumber: i + 1, id: part.id || 'sp' + (i + 1) }));
-      return p;
-    }
-    const key = skill === 'reading' ? 'passages' : 'parts';
-    const numKey = skill === 'reading' ? 'passageNumber' : 'partNumber';
-    const prefix = skill === 'reading' ? 'rp' : 'lp';
-    let q = 0;
-    p[key] = (p[key] || []).map((block, i) => {
-      const questions = (block.questions || []).map(question => {
-        q += 1;
-        return { ...question, id: (skill === 'reading' ? 'r' : 'l') + q };
+    p.id = String(p.id || skill + '-custom');
+    if (skill === 'listening') {
+      p.duration = Number(p.duration) || 30;
+      let qn = 0;
+      p.parts = (Array.isArray(p.parts) ? p.parts : []).map((part, i) => {
+        const questions = (Array.isArray(part.questions) ? part.questions : []).map(q => normalizeQuestion(q, 'l' + (++qn), skill));
+        return { ...part, id: part.id || 'lp' + (i + 1), partNumber: i + 1, title: String(part.title || 'Part ' + (i + 1)), questions };
       });
-      return { ...block, [numKey]: i + 1, id: block.id || prefix + (i + 1), questions };
+      return p;
+    }
+    if (skill === 'reading') {
+      p.duration = Number(p.duration) || 60;
+      p.format = p.format || 'Academic';
+      let qn = 0;
+      p.passages = (Array.isArray(p.passages) ? p.passages : []).map((passage, i) => {
+        const paragraphs = (Array.isArray(passage.paragraphs) ? passage.paragraphs : [])
+          .filter(row => row && String(row.text || '').trim())
+          .map((row, j) => ({ ...row, label: alphaLabel(j), text: String(row.text || '').trim() }));
+        const text = paragraphs.length ? paragraphs.map(row => row.text).join('\n\n') : String(passage.text || '');
+        const questions = (Array.isArray(passage.questions) ? passage.questions : []).map(q => normalizeQuestion(q, 'r' + (++qn), skill));
+        return { ...passage, id: passage.id || 'rp' + (i + 1), passageNumber: i + 1, title: String(passage.title || 'Passage ' + (i + 1)), text, paragraphs, questions };
+      });
+      return p;
+    }
+    if (skill === 'writing') {
+      p.duration = Number(p.duration) || 60;
+      p.format = p.format || 'Academic';
+      p.tasks = (Array.isArray(p.tasks) ? p.tasks : []).map((task, i) => {
+        const n = i + 1;
+        return {
+          ...task, id: task.id || 'w' + n, taskNumber: n, title: String(task.title || 'Task ' + n),
+          minutes: n === 1 ? 20 : 40, minWords: n === 1 ? 150 : 250,
+          criteria: String(task.criteria || writingCriteria(n))
+        };
+      });
+      return p;
+    }
+    p.duration = Number(p.duration) || 14;
+    const parts = (Array.isArray(p.parts) ? p.parts : []).map((part, i) => {
+      const n = i + 1;
+      let next = { ...part, id: part.id || 'sp' + n, partNumber: n };
+      if (n === 1) {
+        if (!Array.isArray(next.topics)) {
+          const legacyQs = Array.isArray(next.questions) ? next.questions : [];
+          next.topics = [{ title: 'Interview', questions: legacyQs }];
+        }
+        next.topics = next.topics.map((topic, ti) => ({
+          ...topic, title: String(topic.title || 'Topic ' + (ti + 1)),
+          questions: (Array.isArray(topic.questions) ? topic.questions : []).map(x => String(x || '')).filter(x => x.trim())
+        }));
+        next.questions = next.topics.flatMap(topic => topic.questions);
+        next.minutes = next.minutes || '4–5';
+      } else if (n === 2) {
+        next.bullets = (Array.isArray(next.bullets) ? next.bullets : []).map(x => String(x || '').trim()).filter(Boolean);
+        next.prepSeconds = 60;
+        next.talkSeconds = 120;
+        next.minutes = '3–4';
+      } else if (n === 3) {
+        next.questions = (Array.isArray(next.questions) ? next.questions : []).map(x => String(x || '')).filter(x => x.trim());
+        next.minutes = next.minutes || '4–5';
+      }
+      return next;
     });
-    /* question ids must be unique across the whole skill */
+    p.parts = parts;
+    const cue = parts.find(part => part.partNumber === 2);
+    const discussion = parts.find(part => part.partNumber === 3);
+    if (discussion && !discussion.linkedTopic && cue) discussion.linkedTopic = cue.topic || '';
     return p;
   }
 
@@ -498,6 +660,7 @@
     state.jsonMode = false;
     state.jsonDraft = JSON.stringify(payload, null, 2);
     state.jsonError = '';
+    state.uploadError = '';
     rerender();
   }
 
@@ -507,7 +670,7 @@
       kind: 'meta',
       meta: existing
         ? { ...existing }
-        : { test_id: testId || nextTestId(), label: '', label_uz: '', difficulty: '', is_published: true, position: 100 }
+        : { test_id: testId || nextTestId(), label: '', label_uz: '', difficulty: '', is_published: false, position: 100 }
     };
     state.jsonError = '';
     rerender();
@@ -575,12 +738,14 @@
 
   function skillEditorHtml() {
     const e = state.editor;
+    const fixed = { listening: 4, reading: 3, writing: 2, speaking: 3 }[e.skill];
     return `
     <div class="modal-backdrop" id="adminEditorBackdrop">
       <div class="modal glass admin-modal admin-modal--wide" role="dialog" aria-modal="true" aria-labelledby="adminEditorTitle">
         <div class="admin-modal-head">
           <div>
-            <h2 id="adminEditorTitle" style="font-family:var(--font-display);font-size:20px;margin:0">${esc(e.title)}</h2>
+            <span class="admin-editor-kicker">${esc(t('admin_tests_title'))} · ${fixed} ${esc(e.skill === 'reading' ? t('admin_passages') : e.skill === 'writing' ? t('admin_tasks') : t('admin_parts'))}</span>
+            <h2 id="adminEditorTitle" style="font-family:var(--font-display);font-size:20px;margin:4px 0 0">${esc(e.title)}</h2>
             <p class="micro" style="margin:4px 0 0">${esc(e.test_id)} · ${esc(SKILL_LABEL[e.skill])}</p>
           </div>
           <button class="modal-close" data-admin-close-modal aria-label="${esc(t('admin_cancel'))}">×</button>
@@ -594,11 +759,12 @@
             <span>${esc(t('admin_field_published'))}</span>
           </label>
         </div>
-        <div class="admin-mode-switch">
+        <div class="admin-mode-switch" role="tablist" aria-label="${esc(t('admin_editor_mode'))}">
           <button class="seg-btn${!state.jsonMode ? ' active' : ''}" data-admin-mode="visual">${esc(t('admin_editor_visual'))}</button>
           <button class="seg-btn${state.jsonMode ? ' active' : ''}" data-admin-mode="json">${esc(t('admin_editor_json'))}</button>
         </div>
-        ${state.jsonError ? `<p class="admin-json-error">${esc(state.jsonError)}</p>` : ''}
+        ${state.jsonError ? `<p class="admin-json-error" role="alert">${esc(state.jsonError)}</p>` : ''}
+        ${state.uploadError ? `<p class="admin-json-error" role="alert">${esc(state.uploadError)}</p>` : ''}
         <div class="admin-editor-body">
           ${state.jsonMode ? jsonEditorHtml() : visualEditorHtml()}
         </div>
@@ -616,7 +782,7 @@
       <p class="micro">${esc(t('admin_json_hint'))}</p>`;
   }
 
-  /* ---------- the visual builder ---------- */
+  /* ---------- skill-specific visual forms ---------- */
   function visualEditorHtml() {
     const e = state.editor;
     if (e.skill === 'listening') return blocksHtml('parts', e.payload.parts, listeningPartHtml);
@@ -624,132 +790,197 @@
     if (e.skill === 'writing') return blocksHtml('tasks', e.payload.tasks, taskHtml);
     return blocksHtml('parts', e.payload.parts, speakingPartHtml);
   }
-
   function blocksHtml(key, blocks, renderBlock) {
     const list = blocks || [];
+    const name = key === 'passages' ? t('admin_passages') : key === 'tasks' ? t('admin_tasks') : t('admin_parts');
     return `<div class="admin-blocks">
+      <div class="admin-fixed-note"><strong>${esc(list.length)} / ${key === 'parts' && state.editor.skill === 'listening' ? 4 : key === 'passages' ? 3 : key === 'tasks' ? 2 : 3} ${esc(name)}</strong><span>${esc(t('admin_fixed_structure'))}</span></div>
       ${list.map((b, i) => renderBlock(b, i, key)).join('')}
-      <button class="btn btn-ghost admin-add" data-edit-add="${key}">＋ ${esc(t(blocksAddKey(key)))}</button>
     </div>`;
   }
-  function blocksAddKey(key) {
-    if (key === 'passages') return 'admin_add_passage';
-    if (key === 'tasks') return 'admin_add_task';
-    return 'admin_add_part';
-  }
-
-  function blockShell(key, index, title, inner) {
-    return `<div class="admin-edit-block">
+  function blockShell(key, index, title, inner, badge) {
+    return `<section class="admin-edit-block">
       <div class="admin-edit-block-head">
-        <input class="btn btn-ghost field-input admin-inline-title" data-edit="${key}.${index}.title" value="${esc(title)}" />
-        <button class="btn btn-ghost btn-sm admin-danger" data-edit-del="${key}.${index}">${esc(t('admin_remove'))}</button>
+        <span class="admin-part-badge">${esc(badge || '')}</span>
+        <input class="btn btn-ghost field-input admin-inline-title" aria-label="${esc(t('admin_field_title'))}" data-edit="${key}.${index}.title" value="${esc(title || '')}" />
       </div>
       ${inner}
+    </section>`;
+  }
+  function uploadField({ urlPath, pathPath, folder, accept, title, url, label, kind }) {
+    const isAudio = kind === 'audio';
+    const preview = url ? (isAudio
+      ? `<audio class="admin-media-audio" controls preload="none" src="${esc(url)}"></audio>`
+      : `<img class="admin-media-image" src="${esc(url)}" alt="${esc(title)}" loading="lazy">`) : '';
+    return `<div class="admin-upload">
+      <div class="admin-upload-head"><strong>${esc(title)}</strong><span>${esc(isAudio ? 'MP3 · max 50 MB' : 'PNG / JPG / WebP · max 50 MB')}</span></div>
+      <label class="admin-upload-picker">
+        <span class="btn btn-ghost btn-sm">↑ ${esc(t('admin_upload_choose'))}</span>
+        <input type="file" data-admin-upload="${esc(urlPath)}" data-media-path="${esc(pathPath)}" data-folder="${esc(folder)}" data-label="${esc(label)}" accept="${esc(accept)}">
+      </label>
+      ${preview ? `<div class="admin-upload-preview">${preview}<a href="${esc(url)}" target="_blank" rel="noopener">${esc(t('admin_open_media'))} ↗</a></div>` : `<p class="micro admin-upload-empty">${esc(t('admin_upload_empty'))}</p>`}
+      <label class="field admin-url-field"><span>${esc(t('admin_media_url'))}</span><input class="btn btn-ghost field-input" data-edit="${esc(urlPath)}" value="${esc(url || '')}" placeholder="https://…" /></label>
+      <small class="admin-upload-status" aria-live="polite"></small>
     </div>`;
   }
-
   function listeningPartHtml(part, i, key) {
+    const prefix = `${key}.${i}`;
     return blockShell(key, i, part.title, `
-      <label class="field"><span>${esc(t('admin_field_instructions'))}</span>
-        <input class="btn btn-ghost field-input" data-edit="${key}.${i}.instructions" value="${esc(part.instructions || '')}" />
-      </label>
-      <label class="field"><span>${esc(t('admin_field_transcript'))}</span>
-        <textarea class="admin-textarea" rows="5" data-edit="${key}.${i}.transcript">${esc(part.transcript || '')}</textarea>
-      </label>
-      ${questionsHtml(`${key}.${i}.questions`, part.questions || [])}`);
-  }
-
-  function passageHtml(passage, i, key) {
-    return blockShell(key, i, passage.title, `
-      <label class="field"><span>${esc(t('admin_field_difficulty'))}</span>
-        <input class="btn btn-ghost field-input" data-edit="${key}.${i}.difficulty" value="${esc(passage.difficulty || '')}" />
-      </label>
-      <label class="field"><span>${esc(t('admin_field_text'))}</span>
-        <textarea class="admin-textarea" rows="7" data-edit="${key}.${i}.text">${esc(passage.text || '')}</textarea>
-      </label>
-      ${questionsHtml(`${key}.${i}.questions`, passage.questions || [])}`);
-  }
-
-  function taskHtml(task, i, key) {
-    return `<div class="admin-edit-block">
-      <div class="admin-edit-block-head">
-        <input class="btn btn-ghost field-input admin-inline-title" data-edit="${key}.${i}.title" value="${esc(task.title || '')}" />
-        <button class="btn btn-ghost btn-sm admin-danger" data-edit-del="${key}.${i}">${esc(t('admin_remove'))}</button>
-      </div>
       <div class="admin-form admin-form--row">
-        <label class="field"><span>${esc(t('admin_field_minutes'))}</span>
-          <input class="btn btn-ghost field-input" type="number" data-edit-num="${key}.${i}.minutes" value="${esc(task.minutes || 20)}" />
-        </label>
-        <label class="field"><span>${esc(t('admin_field_min_words'))}</span>
-          <input class="btn btn-ghost field-input" type="number" data-edit-num="${key}.${i}.minWords" value="${esc(task.minWords || 150)}" />
+        <label class="field"><span>${esc(t('admin_field_instructions'))}</span>
+          <input class="btn btn-ghost field-input" data-edit="${prefix}.instructions" value="${esc(part.instructions || '')}" placeholder="Questions 1–10. You will hear this recording once." />
         </label>
       </div>
-      <label class="field"><span>${esc(t('admin_field_prompt'))}</span>
-        <textarea class="admin-textarea" rows="4" data-edit="${key}.${i}.prompt">${esc(task.prompt || '')}</textarea>
+      ${uploadField({ urlPath: `${prefix}.audioUrl`, pathPath: `${prefix}.audioPath`, folder: 'audio', accept: '.mp3,audio/mpeg,audio/mp3', kind: 'audio', title: t('admin_audio_upload'), url: part.audioUrl || '', label: `${state.editor.test_id}-listening-part${i + 1}` })}
+      <label class="field"><span>${esc(t('admin_field_transcript'))}</span>
+        <textarea class="admin-textarea" rows="6" data-edit="${prefix}.transcript" placeholder="Full audio transcript for review and answer explanations">${esc(part.transcript || '')}</textarea>
       </label>
-      <label class="field"><span>${esc(t('admin_field_chart_data'))}</span>
-        <textarea class="admin-textarea" rows="3" data-edit="${key}.${i}.chartData">${esc(task.chartData || '')}</textarea>
-      </label>
+      ${questionsHtml(`${prefix}.questions`, part.questions || [], 'listening', `${state.editor.test_id}-part${i + 1}`)}`, `Part ${i + 1}`);
+  }
+  function paragraphEditor(path, passage) {
+    const paras = Array.isArray(passage.paragraphs) ? passage.paragraphs : [];
+    if (!paras.length) return `<label class="field"><span>${esc(t('admin_field_text'))}</span>
+      <textarea class="admin-textarea" rows="10" data-edit="${path}.text" placeholder="Paste the full academic passage here. Use blank lines between paragraphs.">${esc(passage.text || '')}</textarea>
+      <div class="admin-inline-actions"><button class="btn btn-ghost btn-sm" type="button" data-edit-split-paragraphs="${path}">${esc(t('admin_split_paragraphs'))}</button></div>
+    </label>`;
+    return `<div class="admin-paragraphs">
+      <div class="admin-subhead">${esc(t('admin_paragraphs'))} (${paras.length})</div>
+      <p class="micro">${esc(t('admin_paragraphs_hint'))}</p>
+      ${paras.map((paragraph, pi) => `<div class="admin-paragraph-editor">
+        <span class="paragraph-label">${alphaLabel(pi)}</span>
+        <textarea class="admin-textarea" rows="4" data-edit="${path}.paragraphs.${pi}.text" aria-label="Paragraph ${alphaLabel(pi)}">${esc(paragraph.text || '')}</textarea>
+        <button class="btn btn-ghost btn-sm admin-danger" type="button" data-edit-del="${path}.paragraphs.${pi}">${esc(t('admin_remove'))}</button>
+      </div>`).join('')}
+      <div class="admin-inline-actions">
+        <button class="btn btn-ghost btn-sm" type="button" data-edit-add-paragraph="${path}.paragraphs">＋ ${esc(t('admin_add_paragraph'))}</button>
+        <button class="btn btn-ghost btn-sm" type="button" data-edit-clear-paragraphs="${path}">${esc(t('admin_use_full_text'))}</button>
+      </div>
     </div>`;
   }
-
-  function speakingPartHtml(part, i, key) {
-    return blockShell(key, i, part.title, `
+  function passageHtml(passage, i, key) {
+    const prefix = `${key}.${i}`;
+    return blockShell(key, i, passage.title, `
       <div class="admin-form admin-form--row">
-        <label class="field"><span>${esc(t('admin_field_minutes'))}</span>
-          <input class="btn btn-ghost field-input" data-edit="${key}.${i}.minutes" value="${esc(part.minutes || '')}" />
-        </label>
-        <label class="field"><span>${esc(t('admin_field_prep'))}</span>
-          <input class="btn btn-ghost field-input" type="number" data-edit-num="${key}.${i}.prepSeconds" value="${esc(part.prepSeconds || '')}" />
-        </label>
-        <label class="field"><span>${esc(t('admin_field_talk'))}</span>
-          <input class="btn btn-ghost field-input" type="number" data-edit-num="${key}.${i}.talkSeconds" value="${esc(part.talkSeconds || '')}" />
+        <label class="field"><span>${esc(t('admin_field_difficulty'))}</span>
+          <select class="admin-select admin-select--large" data-edit="${prefix}.difficulty">
+            ${['Easier', 'Medium', 'Harder'].map(v => `<option value="${v}"${v === passage.difficulty ? ' selected' : ''}>${v}</option>`).join('')}
+          </select>
         </label>
       </div>
-      <label class="field"><span>${esc(t('admin_field_topic'))}</span>
-        <input class="btn btn-ghost field-input" data-edit="${key}.${i}.topic" value="${esc(part.topic || '')}" />
-      </label>
-      <label class="field"><span>${esc(t('admin_field_questions_lines'))}</span>
-        <textarea class="admin-textarea" rows="4" data-edit-lines="${key}.${i}.questions">${esc((part.questions || []).join('\n'))}</textarea>
-      </label>
-      <label class="field"><span>${esc(t('admin_field_bullets'))}</span>
-        <textarea class="admin-textarea" rows="3" data-edit-lines="${key}.${i}.bullets">${esc((part.bullets || []).join('\n'))}</textarea>
-      </label>`);
+      ${paragraphEditor(prefix, passage)}
+      ${questionsHtml(`${prefix}.questions`, passage.questions || [], 'reading', `${state.editor.test_id}-passage${i + 1}`)}`, `Passage ${i + 1}`);
   }
-
-  function questionsHtml(path, questions) {
+  function taskHtml(task, i, key) {
+    const prefix = `${key}.${i}`;
+    return blockShell(key, i, task.title, `
+      <div class="admin-task-rule">${esc(i === 0 ? t('admin_task1_rule') : t('admin_task2_rule'))}</div>
+      <label class="field"><span>${esc(t('admin_field_prompt'))} <b class="required-star">*</b></span>
+        <textarea class="admin-textarea" rows="4" data-edit="${prefix}.prompt" placeholder="${esc(i === 0 ? t('admin_task1_prompt_placeholder') : t('admin_task2_prompt_placeholder'))}">${esc(task.prompt || '')}</textarea>
+      </label>
+      ${i === 0 ? `
+        <label class="field"><span>${esc(t('admin_visual_type'))}</span>
+          <input class="btn btn-ghost field-input" data-edit="${prefix}.visualType" value="${esc(task.visualType || '')}" placeholder="Chart, graph, process, map or table" />
+        </label>
+        ${uploadField({ urlPath: `${prefix}.imageUrl`, pathPath: `${prefix}.imagePath`, folder: 'images', accept: 'image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp', kind: 'image', title: t('admin_task1_upload'), url: task.imageUrl || '', label: `${state.editor.test_id}-writing-task1` })}
+        <label class="field"><span>${esc(t('admin_field_chart_data'))} · ${esc(t('admin_legacy_optional'))}</span>
+          <textarea class="admin-textarea" rows="3" data-edit="${prefix}.chartData">${esc(task.chartData || '')}</textarea>
+        </label>` : ''}
+      <label class="field"><span>${esc(t('admin_writing_criteria'))}${i === 1 ? ' *' : ''}</span>
+        <textarea class="admin-textarea" rows="3" data-edit="${prefix}.criteria">${esc(task.criteria || writingCriteria(i + 1))}</textarea>
+      </label>`, `Task ${i + 1}`);
+  }
+  function speakingPartHtml(part, i, key) {
+    const prefix = `${key}.${i}`;
+    if (i === 0) {
+      const topics = Array.isArray(part.topics) ? part.topics : [];
+      return blockShell(key, i, part.title, `
+        <p class="micro">${esc(t('admin_part1_hint'))}</p>
+        <div class="admin-topic-list">
+          ${topics.map((topic, ti) => `<div class="admin-topic-editor">
+            <div class="admin-topic-head"><span class="admin-part-badge">${esc(t('admin_topic'))} ${ti + 1}</span><button class="btn btn-ghost btn-sm admin-danger" type="button" data-edit-del="${prefix}.topics.${ti}">${esc(t('admin_remove'))}</button></div>
+            <label class="field"><span>${esc(t('admin_topic_title'))}</span><input class="btn btn-ghost field-input" data-edit="${prefix}.topics.${ti}.title" value="${esc(topic.title || '')}" placeholder="Hometown, study, work, hobbies…" /></label>
+            <label class="field"><span>${esc(t('admin_field_questions_lines'))}</span><textarea class="admin-textarea" rows="3" data-edit-lines="${prefix}.topics.${ti}.questions" placeholder="One short interview question per line">${esc((topic.questions || []).join('\n'))}</textarea></label>
+          </div>`).join('')}
+        </div>
+        <button class="btn btn-ghost admin-add" type="button" data-edit-add-topic="${prefix}.topics">＋ ${esc(t('admin_add_topic'))}</button>`, `Part 1`);
+    }
+    if (i === 1) return blockShell(key, i, part.title, `
+      <div class="cue-card-preview"><span>${esc(t('cue_card'))}</span><strong>${esc(t('admin_cue_card_rule'))}</strong></div>
+      <label class="field"><span>${esc(t('admin_field_topic'))} <b class="required-star">*</b></span>
+        <textarea class="admin-textarea" rows="3" data-edit="${prefix}.topic" placeholder="Describe a person, place, event, object or experience…">${esc(part.topic || '')}</textarea>
+      </label>
+      <label class="field"><span>${esc(t('admin_field_bullets'))} <b class="required-star">*</b></span>
+        <textarea class="admin-textarea" rows="4" data-edit-lines="${prefix}.bullets" placeholder="One prompt per line; use three or four bullets">${esc((part.bullets || []).join('\n'))}</textarea>
+      </label>
+      <div class="admin-fixed-timers"><span>⏱ ${esc(t('admin_prep_minute'))}</span><span>🎙 ${esc(t('admin_talk_two_minutes'))}</span></div>`, `Part 2`);
+    return blockShell(key, i, part.title, `
+      <label class="field"><span>${esc(t('admin_linked_topic'))}</span>
+        <input class="btn btn-ghost field-input" data-edit="${prefix}.linkedTopic" value="${esc(part.linkedTopic || '')}" placeholder="${esc(t('admin_auto_link_hint'))}" />
+      </label>
+      ${linesQuestionList(`${prefix}.questions`, part.questions || [], 'Part 3 discussion questions')}`, `Part 3`);
+  }
+  function linesQuestionList(path, questions, hint) {
+    return `<label class="field"><span>${esc(t('admin_field_questions_lines'))} <b class="required-star">*</b></span>
+      <textarea class="admin-textarea" rows="6" data-edit-lines="${path}" placeholder="${esc(hint)}">${esc((questions || []).join('\n'))}</textarea>
+    </label>`;
+  }
+  function answerText(answer, type) {
+    if (answer == null || answer === '') return '';
+    if (isOptionQuestion(type)) {
+      const items = Array.isArray(answer) ? answer : [answer];
+      return items.map(value => {
+        const raw = String(value).trim();
+        if (/^[A-Z]$/i.test(raw)) return raw.toUpperCase();
+        const index = Number(value);
+        return Number.isInteger(index) && index >= 0 ? alphaLabel(index) : raw;
+      }).join(', ');
+    }
+    return Array.isArray(answer) ? answer.join(', ') : String(answer);
+  }
+  function questionsHtml(path, questions, skill, labelPrefix) {
+    const types = questionTypesFor(skill);
+    const list = questions || [];
     return `<div class="admin-questions">
-      <p class="admin-subhead">${esc(t('admin_questions_head'))} (${questions.length})</p>
-      ${questions.map((q, i) => `
-        <div class="admin-question">
+      <div class="admin-questions-title"><p class="admin-subhead">${esc(t('admin_questions_head'))} (${list.length})</p><span>${esc(t('admin_required_answer_hint'))}</span></div>
+      ${list.map((q, i) => {
+        const type = q.type || types[0];
+        const opts = q.options || [];
+        const needsOptions = isOptionQuestion(type);
+        const isCompletion = /completion/.test(type);
+        return `<article class="admin-question">
           <div class="admin-question-head">
             <span class="admin-q-num">Q${i + 1}</span>
-            <select class="admin-select" data-edit-type="${path}.${i}.type">
-              ${Q_TYPES.map(x => `<option value="${esc(x)}"${x === q.type ? ' selected' : ''}>${esc(x)}</option>`).join('')}
+            <select class="admin-select" data-edit-type="${path}.${i}.type" aria-label="${esc(t('admin_question_type'))}">
+              ${types.map(x => `<option value="${esc(x)}"${x === type ? ' selected' : ''}>${esc(Q_TYPE_LABEL[x] || x)}</option>`).join('')}
+              ${!types.includes(type) ? `<option value="${esc(type)}" selected>${esc(Q_TYPE_LABEL[type] || type)}</option>` : ''}
             </select>
-            <button class="btn btn-ghost btn-sm admin-danger" data-edit-del="${path}.${i}">${esc(t('admin_remove'))}</button>
+            <button class="btn btn-ghost btn-sm admin-danger" type="button" data-edit-del="${path}.${i}">${esc(t('admin_remove'))}</button>
           </div>
-          <label class="field"><span>${esc(t('admin_field_prompt'))}</span>
-            <textarea class="admin-textarea" rows="2" data-edit="${path}.${i}.prompt">${esc(q.prompt || '')}</textarea>
+          <label class="field"><span>${esc(t('admin_field_prompt'))} <b class="required-star">*</b></span>
+            <textarea class="admin-textarea" rows="2" data-edit="${path}.${i}.prompt" placeholder="${esc(t('admin_question_prompt_placeholder'))}">${esc(q.prompt || '')}</textarea>
           </label>
-          ${q.type === 'multiple-choice' ? `
-          <label class="field"><span>${esc(t('admin_field_options'))}</span>
-            <input class="btn btn-ghost field-input" data-edit-list="${path}.${i}.options" value="${esc((q.options || []).join(' | '))}" placeholder="Option A | Option B | Option C" />
+          ${q.group !== undefined || type === 'matching' || type === 'map-labelling' ? `<label class="field"><span>${esc(t('admin_question_group'))}</span><input class="btn btn-ghost field-input" data-edit="${path}.${i}.group" value="${esc(q.group || '')}" placeholder="Questions 1–5 / labelling group title" /></label>` : ''}
+          ${needsOptions ? `<label class="field"><span>${esc(t('admin_field_options'))} <b class="required-star">*</b></span>
+            <textarea class="admin-textarea" rows="2" data-edit-list="${path}.${i}.options" placeholder="Option A | Option B | Option C">${esc(opts.join(' | '))}</textarea>
           </label>` : ''}
-          <div class="admin-form admin-form--row">
-            <label class="field"><span>${esc(t('admin_field_answer'))}</span>
-              <input class="btn btn-ghost field-input" data-edit="${path}.${i}.answer" value="${esc(q.answer == null ? '' : q.answer)}" />
+          ${isCompletion ? `<label class="field"><span>${esc(t('admin_word_limit'))}</span><input class="btn btn-ghost field-input" data-edit="${path}.${i}.wordLimit" value="${esc(q.wordLimit || 'NO MORE THAN TWO WORDS AND/OR A NUMBER')}" placeholder="NO MORE THAN TWO WORDS" /></label>` : ''}
+          ${type === 'map-labelling' ? uploadField({ urlPath: `${path}.${i}.imageUrl`, pathPath: `${path}.${i}.imagePath`, folder: 'images', accept: 'image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp', kind: 'image', title: t('admin_map_upload'), url: q.imageUrl || '', label: `${state.editor.test_id}-${labelPrefix}-q${i + 1}` }) : ''}
+          <div class="admin-form admin-form--row admin-answer-row">
+            <label class="field"><span>${esc(t('admin_field_answer'))} <b class="required-star">*</b></span>
+              <input class="btn btn-ghost field-input" data-edit="${path}.${i}.answer" value="${esc(answerText(q.answer, type))}" placeholder="${esc(type === 'multiple-choice-multi' ? 'A, C' : needsOptions ? 'B or 2' : type.includes('not-given') ? 'TRUE / FALSE / NOT GIVEN' : 'Exact accepted answer') }" />
+              ${needsOptions ? `<small class="micro">${esc(t('admin_answer_index_hint'))}</small>` : ''}
             </label>
-            <label class="field"><span>${esc(t('admin_field_explanation'))}</span>
-              <input class="btn btn-ghost field-input" data-edit="${path}.${i}.explanation" value="${esc(q.explanation || '')}" />
+            <label class="field"><span>${esc(t('admin_field_explanation'))} <b class="required-star">*</b></span>
+              <textarea class="admin-textarea" rows="2" data-edit="${path}.${i}.explanation" placeholder="${esc(t('admin_explanation_placeholder'))}">${esc(q.explanation || '')}</textarea>
             </label>
           </div>
-        </div>`).join('')}
-      <button class="btn btn-ghost admin-add" data-edit-add-q="${path}">＋ ${esc(t('admin_add_question'))}</button>
+        </article>`;
+      }).join('')}
+      <button class="btn btn-ghost admin-add" type="button" data-edit-add-q="${path}">＋ ${esc(t('admin_add_question'))}</button>
     </div>`;
   }
 
-  /* ---------- path helpers used by the form ---------- */
+    /* ---------- path helpers used by the form ---------- */
   function getByPath(obj, path) {
     return path.split('.').reduce((cur, k) => (cur == null ? undefined : cur[k]), obj);
   }
@@ -832,34 +1063,85 @@
    * =================================================================== */
   function validatePayload(skill, payload) {
     const problems = [];
-    const p = payload || {};
+    const p = payload && typeof payload === 'object' ? payload : {};
+    const blocks = skill === 'reading' ? (p.passages || []) : (skill === 'writing' ? (p.tasks || []) : (p.parts || []));
+    const expected = { listening: 4, reading: 3, writing: 2, speaking: 3 }[skill];
+    if (blocks.length !== expected) {
+      const key = skill === 'listening' || skill === 'speaking' ? 'admin_err_part_count'
+        : skill === 'reading' ? 'admin_err_passage_count' : 'admin_err_task_count';
+      problems.push(t2(key, { n: expected }));
+    }
     if (skill === 'writing') {
-      const tasks = p.tasks || [];
-      if (!tasks.length) problems.push(t('admin_err_need_task'));
-      tasks.forEach((task, i) => {
+      (p.tasks || []).forEach((task, i) => {
         if (!String(task.prompt || '').trim()) problems.push(t2('admin_err_task_prompt', { n: i + 1 }));
+        if (i === 0 && !String(task.imageUrl || task.chartData || '').trim()) problems.push(t('admin_err_task1_visual'));
+        if (i === 1 && !String(task.criteria || '').trim()) problems.push(t('admin_err_task2_criteria'));
       });
       return problems;
     }
     if (skill === 'speaking') {
-      if (!(p.parts || []).length) problems.push(t('admin_err_need_part'));
+      const parts = p.parts || [];
+      const p1 = parts[0] || {};
+      const topics = p1.topics || [];
+      if (topics.length < 3 || topics.length > 4) problems.push(t('admin_err_speaking_topics'));
+      topics.forEach((topic, i) => {
+        if (!String(topic.title || '').trim()) problems.push(t2('admin_err_topic_title', { n: i + 1 }));
+        if (!(topic.questions || []).some(q => String(q || '').trim())) problems.push(t2('admin_err_topic_questions', { n: i + 1 }));
+      });
+      const cue = parts[1] || {};
+      if (!String(cue.topic || '').trim()) problems.push(t('admin_err_cue_topic'));
+      const bullets = (cue.bullets || []).filter(x => String(x || '').trim());
+      if (bullets.length < 3 || bullets.length > 4) problems.push(t('admin_err_cue_bullets'));
+      if (Number(cue.prepSeconds || 60) !== 60 || Number(cue.talkSeconds || 120) !== 120) problems.push(t('admin_err_cue_timers'));
+      const p3 = parts[2] || {};
+      if ((p3.questions || []).filter(q => String(q || '').trim()).length < 3) problems.push(t('admin_err_discussion_questions'));
       return problems;
     }
-    const key = skill === 'reading' ? 'passages' : 'parts';
-    const blocks = p[key] || [];
-    if (!blocks.length) problems.push(t(skill === 'reading' ? 'admin_err_need_passage' : 'admin_err_need_part'));
+
     let n = 0;
-    blocks.forEach(block => {
-      (block.questions || []).forEach(q => {
+    blocks.forEach((block, bi) => {
+      if (!String(block.title || '').trim()) problems.push(t2(skill === 'reading' ? 'admin_err_passage_title' : 'admin_err_part_title', { n: bi + 1 }));
+      if (skill === 'listening' && !String(block.audioUrl || block.transcript || '').trim()) problems.push(t2('admin_err_part_audio', { n: bi + 1 }));
+      if (skill === 'reading' && !String(block.text || '').trim() && !(block.paragraphs || []).some(x => String(x.text || '').trim())) {
+        problems.push(t2('admin_err_passage_text', { n: bi + 1 }));
+      }
+      const questions = block.questions || [];
+      if (!questions.length) problems.push(t2('admin_err_block_questions', { n: bi + 1 }));
+      questions.forEach(q => {
         n += 1;
+        const qtype = String(q.type || '');
+        if (!Q_TYPES.includes(qtype)) problems.push(t2('admin_err_q_type', { n }));
         if (!String(q.prompt || '').trim()) problems.push(t2('admin_err_q_prompt', { n }));
-        if (q.answer === undefined || q.answer === null || String(q.answer).trim() === '') problems.push(t2('admin_err_q_answer', { n }));
-        if (q.type === 'multiple-choice' && !(q.options || []).length) problems.push(t2('admin_err_q_options', { n }));
+        const answer = q.answer;
+        const hasAnswer = Array.isArray(answer) ? answer.length > 0 : String(answer == null ? '' : answer).trim() !== '';
+        if (!hasAnswer) problems.push(t2('admin_err_q_answer', { n }));
+        if (!String(q.explanation || '').trim()) problems.push(t2('admin_err_q_explanation', { n }));
+        if (isOptionQuestion(qtype)) {
+          const options = (q.options || []).map(x => String(x || '').trim()).filter(Boolean);
+          if (options.length < 2) problems.push(t2('admin_err_q_options', { n }));
+          const indexes = indexValue(answer);
+          const picks = Array.isArray(indexes) ? indexes : (indexes === '' || indexes == null ? [] : [indexes]);
+          if (options.length >= 2 && picks.some(index => typeof index !== 'number' || index < 0 || index >= options.length)) {
+            problems.push(t2('admin_err_q_answer_option', { n }));
+          }
+          if (qtype === 'multiple-choice-multi' && (picks.length !== 2 || new Set(picks).size !== 2)) problems.push(t2('admin_err_q_choose_two', { n }));
+          if (qtype === 'multiple-choice' && picks.length > 1) problems.push(t2('admin_err_q_single', { n }));
+        }
+        if (/completion/.test(qtype) && !String(q.wordLimit || '').trim()) problems.push(t2('admin_err_q_word_limit', { n }));
+        if (qtype === 'map-labelling' && !String(q.imageUrl || '').trim()) problems.push(t2('admin_err_map_image', { n }));
+        if (qtype === 'matching-headings' && skill === 'reading'
+          && !(block.paragraphs || []).some(row => String(row && row.text || '').trim())) {
+          problems.push(t2('admin_err_headings_paragraphs', { n }));
+        }
+        const tfnAnswer = String(answer || '').trim();
+        const validTfn = qtype === 'yes-no-not-given'
+          ? /^(YES|NO|NOT GIVEN)$/i.test(tfnAnswer)
+          : qtype === 'true-false-not-given' ? /^(TRUE|FALSE|NOT GIVEN)$/i.test(tfnAnswer) : true;
+        if (!validTfn) problems.push(t2('admin_err_q_tfn_answer', { n }));
       });
     });
     return problems;
   }
-
   /* ===================================================================
    * ACTIONS
    * =================================================================== */
@@ -912,6 +1194,7 @@
       return;
     }
     normalizePayload(e.skill, e.payload);
+    e.payload.title = String(e.title || e.payload.title || '').trim();
     try {
       const c = api();
       await c.adminSaveTest({
@@ -1098,7 +1381,8 @@
 
     /* --- editor: header fields --- */
     on('[data-editor]', el => {
-      el.oninput = () => { state.editor.title = el.value; };
+      if (el.type === 'checkbox') el.onchange = () => { state.editor.is_published = el.checked; };
+      else el.oninput = () => { state.editor.title = el.value; };
     });
     on('[data-meta]', el => {
       const key = el.dataset.meta;
@@ -1108,7 +1392,10 @@
 
     /* --- editor: structured form (mutate the model, do not re-render) --- */
     on('[data-edit]', el => {
-      el.oninput = () => { setByPath(state.editor.payload, el.dataset.edit, el.value); };
+      el.oninput = () => {
+        setByPath(state.editor.payload, el.dataset.edit, el.value);
+        state.uploadError = '';
+      };
     });
     on('[data-edit-num]', el => {
       el.oninput = () => { setByPath(state.editor.payload, el.dataset.editNum, el.value === '' ? '' : Number(el.value)); };
@@ -1128,6 +1415,59 @@
     on('[data-admin-json]', el => {
       el.oninput = () => { state.jsonDraft = el.value; };
     });
+    on('[data-admin-upload]', el => {
+      el.onchange = async () => {
+        const file = el.files && el.files[0];
+        if (!file) return;
+        const folder = el.dataset.folder || 'media';
+        const status = el.parentElement && el.parentElement.parentElement
+          ? el.parentElement.parentElement.querySelector('.admin-upload-status') : null;
+        const setStatus = (text, isError) => {
+          if (!status) return;
+          status.textContent = text;
+          status.classList.toggle('is-error', !!isError);
+        };
+        if (file.size > 50 * 1024 * 1024) {
+          setStatus(t('admin_upload_too_large'), true);
+          return;
+        }
+        if (folder === 'audio' && !(/\.mp3$/i.test(file.name || '') || /audio\/(mpeg|mp3)/i.test(file.type || ''))) {
+          setStatus(t('admin_upload_mp3_only'), true);
+          return;
+        }
+        if (folder === 'images' && !/^image\/(png|jpe?g|webp)$/i.test(file.type || '') && !/\.(png|jpe?g|webp)$/i.test(file.name || '')) {
+          setStatus(t('admin_upload_image_only'), true);
+          return;
+        }
+        setStatus(t('admin_uploading'), false);
+        el.disabled = true;
+        state.uploadError = '';
+        try {
+          const e = state.editor;
+          const urlPath = el.dataset.adminUpload;
+          const pathPath = el.dataset.mediaPath;
+          const oldPath = pathPath ? getByPath(e.payload, pathPath) : '';
+          const oldUrl = getByPath(e.payload, urlPath);
+          const result = await api().adminUploadMedia(file, { folder, label: el.dataset.label || e.test_id });
+          setByPath(e.payload, urlPath, result.url);
+          if (pathPath) setByPath(e.payload, pathPath, result.path);
+          syncJsonDraft();
+          if (oldPath && oldPath !== result.path && typeof api().adminRemoveMedia === 'function') {
+            try { await api().adminRemoveMedia(oldPath); } catch { /* old media cleanup is best-effort */ }
+          } else if (oldUrl && oldUrl.includes('/ielts-media/') && oldUrl !== result.url && typeof api().adminRemoveMedia === 'function') {
+            try { await api().adminRemoveMedia(oldUrl); } catch { /* old media cleanup is best-effort */ }
+          }
+          state.notice = t('admin_upload_done');
+          setStatus(t('admin_upload_done'), false);
+          rerender();
+        } catch (err) {
+          state.uploadError = message(err);
+          setStatus(message(err), true);
+        } finally {
+          el.disabled = false;
+        }
+      };
+    });
 
     /* --- editor: structural edits (these re-render) --- */
     on('[data-edit-type]', el => {
@@ -1136,24 +1476,13 @@
         const q = getByPath(state.editor.payload, path);
         if (q) {
           q.type = el.value;
-          if (q.type === 'multiple-choice' && !Array.isArray(q.options)) q.options = ['', '', ''];
-          if (q.type !== 'multiple-choice') delete q.options;
+          if (isOptionQuestion(q.type)) {
+            if (!Array.isArray(q.options) || !q.options.length) q.options = ['', '', ''];
+          } else delete q.options;
+          if (/completion/.test(q.type) && !q.wordLimit) q.wordLimit = 'NO MORE THAN TWO WORDS AND/OR A NUMBER';
+          if (q.type === 'yes-no-not-given') q.answerSet = 'yes-no';
+          else if (q.type === 'true-false-not-given') delete q.answerSet;
         }
-        syncJsonDraft();
-        rerender();
-      };
-    });
-    on('[data-edit-add]', el => {
-      el.onclick = () => {
-        const key = el.dataset.editAdd;
-        const p = state.editor.payload;
-        p[key] = p[key] || [];
-        const skill = state.editor.skill;
-        if (skill === 'reading') p[key].push(emptyPassage());
-        else if (skill === 'writing') p[key].push(emptyTask(p[key].length + 1));
-        else if (skill === 'speaking') p[key].push(emptySpeakingPart(p[key].length + 1));
-        else p[key].push(emptyListeningPart());
-        normalizePayload(skill, p);
         syncJsonDraft();
         rerender();
       };
@@ -1162,9 +1491,51 @@
       el.onclick = () => {
         const path = el.dataset.editAddQ;
         const list = getByPath(state.editor.payload, path) || [];
-        list.push(emptyQuestion(state.editor.skill === 'reading' ? 'true-false-not-given' : 'sentence-completion'));
+        list.push(emptyQuestion(state.editor.skill === 'reading' ? 'true-false-not-given' : 'form-completion'));
         setByPath(state.editor.payload, path, list);
         normalizePayload(state.editor.skill, state.editor.payload);
+        syncJsonDraft();
+        rerender();
+      };
+    });
+    on('[data-edit-add-paragraph]', el => {
+      el.onclick = () => {
+        const path = el.dataset.editAddParagraph;
+        const list = getByPath(state.editor.payload, path) || [];
+        list.push({ label: alphaLabel(list.length), text: '' });
+        setByPath(state.editor.payload, path, list);
+        normalizePayload('reading', state.editor.payload);
+        syncJsonDraft();
+        rerender();
+      };
+    });
+    on('[data-edit-split-paragraphs]', el => {
+      el.onclick = () => {
+        const path = el.dataset.editSplitParagraphs;
+        const passage = getByPath(state.editor.payload, path) || {};
+        const rows = String(passage.text || '').split(/\n\s*\n|\n/).map(text => text.trim()).filter(Boolean);
+        passage.paragraphs = rows.map((text, i) => ({ label: alphaLabel(i), text }));
+        normalizePayload('reading', state.editor.payload);
+        syncJsonDraft();
+        rerender();
+      };
+    });
+    on('[data-edit-clear-paragraphs]', el => {
+      el.onclick = () => {
+        const path = el.dataset.editClearParagraphs;
+        const passage = getByPath(state.editor.payload, path);
+        if (passage) passage.paragraphs = [];
+        syncJsonDraft();
+        rerender();
+      };
+    });
+    on('[data-edit-add-topic]', el => {
+      el.onclick = () => {
+        const path = el.dataset.editAddTopic;
+        const list = getByPath(state.editor.payload, path) || [];
+        list.push({ title: 'Topic ' + (list.length + 1), questions: [] });
+        setByPath(state.editor.payload, path, list);
+        normalizePayload('speaking', state.editor.payload);
         syncJsonDraft();
         rerender();
       };
@@ -1181,8 +1552,21 @@
     on('[data-admin-mode]', el => {
       el.onclick = () => {
         const wantJson = el.dataset.adminMode === 'json';
-        if (wantJson) syncJsonDraft();
-        state.jsonMode = wantJson;
+        if (wantJson) {
+          syncJsonDraft();
+          state.jsonMode = true;
+        } else {
+          try {
+            const parsed = JSON.parse(state.jsonDraft);
+            if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('JSON must be an object.');
+            state.editor.payload = normalizePayload(state.editor.skill, parsed);
+            state.jsonMode = false;
+          } catch (err) {
+            state.jsonError = t('admin_editor_invalid_json') + ' — ' + err.message;
+            rerender();
+            return;
+          }
+        }
         state.jsonError = '';
         rerender();
       };
@@ -1237,6 +1621,10 @@
     state, loaded,
     isAdmin, body, modalHtml, bind, ensure, refresh, esc, t,
     /* used by tests and by the router guard */
-    _internal: { nextTestId, validatePayload, normalizePayload, testsByUser, countQuestions, emptyPayload }
+    _internal: {
+      nextTestId, validatePayload, normalizePayload, testsByUser, countQuestions, emptyPayload,
+      emptyQuestion, emptyListeningPart, emptyPassage, emptyTask, emptySpeakingPart,
+      questionTypesFor, indexValue
+    }
   };
 })();

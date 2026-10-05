@@ -19,12 +19,78 @@ window.IELTS_SERVICES = {
       .replace(/^(the|a|an)\s+/, '');
   },
 
+  /* Index-style question types: the answer is the position of the correct
+     option (a number, or a letter like "B" in hand-written JSON). */
+  isIndexType(type) {
+    return ['multiple-choice', 'matching', 'map-labelling', 'matching-headings'].includes(type);
+  },
+
+  /* Accept 2, "2", "B", [0,2], "0,2", "A,C" and always return numbers. */
+  toIndexList(value) {
+    if (Array.isArray(value)) return value.map(v => this.toIndexList(v)).flat().filter(v => Number.isFinite(v));
+    const letter = /^([a-z])$/i.exec(String(value || '').trim());
+    if (letter) return [letter[1].toUpperCase().charCodeAt(0) - 65];
+    return String(value == null ? '' : value)
+      .split(/[,;|\s]+/)
+      .map(x => x.trim())
+      .filter(Boolean)
+      .map(x => {
+        const l = /^([a-z])$/i.exec(x);
+        if (l) return l[1].toUpperCase().charCodeAt(0) - 65;
+        const n = Number(x);
+        return Number.isFinite(n) ? n : NaN;
+      })
+      .filter(n => Number.isFinite(n));
+  },
+
+  withinWordLimit(answer, rule) {
+    const text = String(answer == null ? '' : answer).trim();
+    const instruction = String(rule || '').toLowerCase();
+    const limitMatch = /no more than\s+(one|two|three|four|five|\d+)\s+words?/.exec(instruction);
+    if (!limitMatch) return true;
+    const numbers = { one: 1, two: 2, three: 3, four: 4, five: 5 };
+    const max = numbers[limitMatch[1]] || Number(limitMatch[1]);
+    const tokens = text.match(/[A-Za-z0-9]+(?:['’\-][A-Za-z0-9]+)*/g) || [];
+    if (/and\/or\s+(?:a\s+)?number/.test(instruction)) {
+      const numeric = tokens.filter(token => /\d/.test(token)).length;
+      const words = tokens.length - numeric;
+      return words <= max && numeric <= 1;
+    }
+    return tokens.length <= max;
+  },
+
   isCorrect(question, given) {
     if (given === undefined || given === null || given === '') return false;
-    if (question.type === 'multiple-choice') return Number(given) === Number(question.answer);
-    if (question.type === 'true-false-not-given') return String(given).trim().toUpperCase() === String(question.answer).toUpperCase();
-    /* open text answers: tolerant match (e.g. "a utility bill" ≈ "utility bill", "£42" ≈ "42") */
+    const type = question.type;
+    if (question.wordLimit && !this.isIndexType(type) && type !== 'multiple-choice-multi'
+      && !this.withinWordLimit(given, question.wordLimit)) return false;
+    /* Multi-answer multiple choice: every correct option and nothing else. */
+    if (type === 'multiple-choice-multi' || (type === 'multiple-choice' && Array.isArray(question.answer))) {
+      const want = this.toIndexList(question.answer);
+      const got = this.toIndexList(given);
+      return want.length > 0 && got.length === want.length && want.every(v => got.includes(v));
+    }
+    if (this.isIndexType(type)) return Number(this.toIndexList(given)[0]) === Number(this.toIndexList(question.answer)[0]);
+    if (type === 'true-false-not-given' || type === 'yes-no-not-given') return String(given).trim().toUpperCase() === String(question.answer).trim().toUpperCase();
+    /* open text answers (form/note/table, sentence, summary completion):
+       tolerant match (e.g. "a utility bill" ≈ "utility bill", "£42" ≈ "42") */
     return this.normalizeAnswer(given) === this.normalizeAnswer(question.answer);
+  },
+
+  /* Human label for an answer, used by the mistake notebook and results:
+     "B. Sports centre" for option questions, "A, C" for multi, text as-is. */
+  answerLabel(question, value) {
+    if (value === undefined || value === null || value === '') return '';
+    const opts = question && question.options;
+    const multi = (question && question.type === 'multiple-choice-multi') || (question && Array.isArray(question.answer)) || Array.isArray(value);
+    if (multi && opts) {
+      return this.toIndexList(value).map(i => `${String.fromCharCode(65 + i)}. ${opts[i] != null ? opts[i] : '?'}`).join(' · ');
+    }
+    if (this.isIndexType(question && question.type) && opts) {
+      const i = this.toIndexList(value)[0];
+      return opts && opts[i] != null ? `${String.fromCharCode(65 + i)}. ${opts[i]}` : String(value);
+    }
+    return Array.isArray(value) ? value.join(', ') : String(value);
   },
 
   /* ---------- premium helpers ---------- */
@@ -36,7 +102,12 @@ window.IELTS_SERVICES = {
     const n = /^test(\d+)$/.exec(id);
     if (!n) return c[skill];
     const suffix = n[1] === '1' ? '' : n[1];
-    return c[skill + suffix] || c[skill];
+    const found = c[skill + suffix];
+    if (found) return found;
+    /* Legacy built-ins may safely fall back to Test 1. Admin-authored tests
+       must never borrow another test's content if a skill is missing or has
+       not loaded yet. */
+    return Number(n[1]) <= 4 ? c[skill] : null;
   },
 
   /* Return the human test label (localised when possible). */
@@ -57,9 +128,14 @@ window.IELTS_SERVICES = {
     const extra = (c.extraExplanations || {})[question.id];
     if (question.explanation) return question.explanation;
     if (extra) return extra;
-    if (question.type === 'multiple-choice') {
-      const opt = question.options ? question.options[question.answer] : '';
-      return `The correct answer is option ${String.fromCharCode(65 + Number(question.answer))}: ${opt}. ${section}.`;
+    if (question.type === 'multiple-choice-multi') {
+      const picks = this.toIndexList(question.answer).map(i => String.fromCharCode(65 + Number(i))).join(' and ');
+      return `The correct options are ${picks}. Every one of them is stated in the ${section} material.`;
+    }
+    if (question.type === 'multiple-choice' || question.type === 'matching' || question.type === 'map-labelling' || question.type === 'matching-headings') {
+      const opt = question.options ? question.options[Number(this.toIndexList(question.answer)[0])] : '';
+      const noun = question.type === 'matching-headings' ? 'heading' : 'option';
+      return `The correct answer is ${noun} ${String.fromCharCode(65 + Number(this.toIndexList(question.answer)[0]))}: ${opt}. ${section}.`;
     }
     if (question.type === 'true-false-not-given') {
       return `The answer is ${question.answer}. Re-read the part of the passage that matches this statement.`;

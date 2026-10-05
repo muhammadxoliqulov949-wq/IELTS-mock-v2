@@ -117,7 +117,7 @@ try {
 
   /* ---------- 2. the logo tile, on every page ---------- */
   const routes = ['/', '/mock', '/results', '/mistakes', '/coach', '/dashboard',
-    '/lessons', '/vocabulary', '/quiz', '/settings', '/login', '/signup'];
+    '/roadmap', '/leaderboard', '/lessons', '/vocabulary', '/quiz', '/settings', '/login', '/signup'];
   let logoOk = true, dockOk = true, tipOk = true;
   routes.forEach(r => {
     global.location.hash = '#' + r;
@@ -155,14 +155,14 @@ try {
 
   /* ---------- 4. the tip is contextual, not a static line ---------- */
   const tips = {};
-  ['/', '/mock', '/listening', '/reading', '/writing', '/speaking', '/coach', '/results'].forEach(r => {
+  ['/', '/mock', '/listening', '/reading', '/writing', '/speaking', '/coach', '/results', '/roadmap', '/leaderboard'].forEach(r => {
     global.location.hash = '#' + r;
     render();
     const m = html().match(/<div class="mascot-tip"[^>]*>[\s\S]*?<p>([\s\S]*?)<\/p>/);
     tips[r] = m ? m[1].trim() : '';
   });
   const tipValues = Object.values(tips).filter(Boolean);
-  check('companion: every page has a tip', tipValues.length === 8);
+  check('companion: every page has a tip', tipValues.length === 10);
   check('companion: tips are contextual (all different)', new Set(tipValues).size === tipValues.length);
   check('companion: listening tip is about the recording', /recording/i.test(tips['/listening']));
   check('companion: coach tip is about the coach', /band|session|plan/i.test(tips['/coach']));

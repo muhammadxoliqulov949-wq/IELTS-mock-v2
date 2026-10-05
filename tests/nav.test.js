@@ -81,10 +81,13 @@ try {
   check('nav: hamburger present with remaining features in menu', html.includes('id="hamburgerBtn"')
     && html.includes('id="mobileMenu"') && html.includes('mm-rest')
     && /mm-rest[\s\S]*#\/settings/.test(html) && /mm-rest[\s\S]*#\/vocabulary/.test(html) && /mm-rest[\s\S]*#\/quiz/.test(html)
-    && /mm-rest[\s\S]*#\/dashboard/.test(html) && /mm-rest[\s\S]*#\/mistakes/.test(html) && /mm-rest[\s\S]*#\/lessons/.test(html));
+    && /mm-rest[\s\S]*#\/dashboard/.test(html) && /mm-rest[\s\S]*#\/mistakes/.test(html) && /mm-rest[\s\S]*#\/lessons/.test(html)
+    && /mm-rest[\s\S]*#\/roadmap/.test(html) && /mm-rest[\s\S]*#\/leaderboard/.test(html));
   check('nav: user chip with dropdown sign-out (no confirm dialog)', html.includes('id="userChip"')
     && html.includes('user-menu') && html.includes('Aziz') && !html.includes('confirm('));
   check('nav: user picture escaped (XSS-safe)', !html.includes('src="https://example.com/a"b.png"'));
+  check('nav: signed-in profile shows the coin wallet', html.includes('data-coin-wallet') && html.includes('🪙'));
+  check('nav: Roadmap and Leaderboard links are available from the user menu', html.includes('#/roadmap') && html.includes('#/leaderboard'));
   check('nav: theme + language toggles in header', html.includes('data-toggle-theme') && html.includes('data-toggle-lang'));
   check('footer: translated + year + disclaimer', html.includes('Bandly AI tomonidan')
     && html.includes(String(new Date().getFullYear())) && html.includes('IELTS, British Council, IDP'));

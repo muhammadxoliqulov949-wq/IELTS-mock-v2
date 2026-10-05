@@ -100,6 +100,7 @@ async function testBridge() {
   function element() { return { innerHTML: '', textContent: '', dataset: {}, style: {}, classList: { add() {}, remove() {}, contains() { return false; }, toggle() {} }, querySelector() { return null; }, querySelectorAll() { return []; }, setAttribute() {}, addEventListener() {} }; }
   const storage = new Map();
   const writes = [];
+  const coinClaims = [];
   let rows = [];
   let fail = false;
   let release = null;
@@ -108,6 +109,7 @@ async function testBridge() {
   const cloud = {
     ...helpers, ready: new Promise(() => {}), getState: () => state,
     async saveMockSection(payload, owner) { if (fail) throw new Error('offline'); writes.push({ payload, owner }); if (hold) await new Promise(resolve => { release = resolve; }); },
+    async addUserCoins(source, reference) { coinClaims.push({ source, reference }); return { awarded_coins: 30, coins_balance: 30 }; },
     async loadMockResults() { if (fail) throw new Error('offline'); return rows; }
   };
   const context = vm.createContext({
@@ -134,9 +136,12 @@ async function testBridge() {
   await run('syncCloudResults(true)');
   assert.equal(writes.length, 1);
   assert.equal(writes[0].owner, 'user-a');
+  assert.equal(coinClaims.length, 1);
+  assert.deepEqual(coinClaims[0], { source: 'mock', reference: 'test1:listening' });
   assert.equal(run('cloudStatus'), 'synced');
   await run('syncCloudResults(true)');
   assert.equal(writes.length, 1, 'unchanged results are not resent');
+  assert.equal(coinClaims.length, 1, 'retry does not request another mock reward');
   run('store.attempts = []; store.cloudSynced = {}; save(true)');
   await run('syncCloudResults(true)');
   assert.equal(run('store.attempts[0].band'), 7, 'cloud history hydrates new device');
@@ -161,6 +166,8 @@ async function testBridge() {
   assert.equal(helpers.sectionPayload(timedOut, 'Aziz').p_band, null);
   assert.equal(helpers.sectionPayload({ ...timedOut, band: 0 }, 'Aziz').p_band, 0);
   assert.throws(() => helpers.sectionPayload({ ...timedOut, test: 'other' }, 'Aziz'));
+  assert.equal(helpers.sectionPayload({ ...timedOut, test: 'test5' }, 'Aziz').p_test_id, 'test5');
+  assert.throws(() => helpers.sectionPayload({ ...timedOut, test: 'test100' }, 'Aziz'));
   assert.equal(helpers.rowsToAttempts([{ test_id: 'test4', writing: null, scores: { writing: { date: 1000, timedOut: true } } }])[0].band, null);
   await testSQL();
   await testBridge();
