@@ -5,11 +5,12 @@ let client = null;
 let status = 'loading';
 let currentUser = null;
 let errorMessage = '';
+let oauthError = '';
 let authRevision = 0;
 const listeners = new Set();
 const emit = () => listeners.forEach(fn => fn(getState()));
 
-export function getState() { return { status, user: currentUser, error: errorMessage }; }
+export function getState() { return { status, user: currentUser, error: errorMessage, oauthError }; }
 export function subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); }
 
 export const ready = (async () => {
@@ -42,6 +43,9 @@ export const ready = (async () => {
         else currentUser = verified.data.user;
       }
     }
+    // getSession() above awaited _initialize(), so a Google/PKCE ?code= in the
+    // URL has already been exchanged for a session by this point.
+    oauthError = consumeOAuthReturnUrl();
     status = 'ready';
   } catch (error) {
     status = 'error';
@@ -53,6 +57,29 @@ async function requireClient() {
   await ready;
   if (status !== 'ready' || !client) throw new Error(errorMessage || 'Supabase is not configured.');
   return client;
+}
+
+/* Reads and removes the one-time OAuth parameters Supabase appends when it
+ * sends the user back to this site:
+ *   ?code=…  — exchanged by the SDK into a session (already consumed by now)
+ *   ?error=… — Google or Supabase refused the sign-in (user pressed Cancel,
+ *              provider disabled, expired email link) — returned to the app
+ *               so it can explain what happened instead of failing silently.
+ * Removing them keeps a refresh, a shared link or the back button from
+ * replaying a one-time code or a stale error. */
+function consumeOAuthReturnUrl() {
+  try {
+    if (typeof window === 'undefined' || !window.location) return '';
+    const url = new URL(window.location.href);
+    const oauthKeys = ['code', 'sb_flow_id', 'error', 'error_code', 'error_description'];
+    if (!oauthKeys.some(key => url.searchParams.has(key))) return '';
+    const error = url.searchParams.get('error_description') || url.searchParams.get('error') || '';
+    for (const key of oauthKeys) url.searchParams.delete(key);
+    if (window.history && typeof window.history.replaceState === 'function') {
+      window.history.replaceState(window.history.state || {}, '', url.pathname + url.search + url.hash);
+    }
+    return error ? String(error) : '';
+  } catch { return ''; } // best-effort: cleaning the URL must never block sign-in
 }
 
 export async function authenticate({ mode, email, password, name }) {
@@ -67,10 +94,15 @@ export async function authenticate({ mode, email, password, name }) {
   return result.data;
 }
 
+/* Google OAuth. The SDK builds the Supabase authorize URL (PKCE code
+ * challenge included) and sends the browser to Google; Google comes back to
+ * `redirectTo`, where the ?code= is exchanged for a session on that page load
+ * (detectSessionInUrl). redirectTo must be listed in Supabase's redirect
+ * allow-list — window.location.origin keeps it identical on every host. */
 export async function googleSignIn() {
   const sb = await requireClient();
   const { error } = await sb.auth.signInWithOAuth({
-    provider: 'google', options: { redirectTo: window.location.origin + '/' }
+    provider: 'google', options: { redirectTo: window.location.origin }
   });
   if (error) throw error;
 }
