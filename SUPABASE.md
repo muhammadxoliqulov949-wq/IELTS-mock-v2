@@ -65,12 +65,13 @@ Har foydalanuvchi/test uchun **bitta satr** saqlanadi — mavjud saytning bir ma
 
 1. Authentication → Providers → **Email** yoqilgan bo'lsin.
 2. Authentication → URL Configuration da **Site URL** ni haqiqiy sayt manziliga sozlang.
-3. **Redirect URLs** ro'yxatiga ishlatadigan saytlaringizning root manzilini qo'shing:
-   - lokal ish uchun `http://localhost:3000/`;
-   - Arena uchun LIVE PREVIEW'dagi haqiqiy HTTPS origin + `/`;
-   - production domeningiz + `/`.
+3. **Redirect URLs** ro'yxatiga ishlatadigan saytlaringiz root manzilini **ikkala ko'rinishda** qo'shing (`/` bilan va `/` siz — Google OAuth `window.location.origin` ga, email tasdiqlash `origin + '/'` ga qaytaradi):
+   - lokal ish uchun `http://localhost:3000` va `http://localhost:3000/`;
+   - Arena uchun LIVE PREVIEW'dagi haqiqiy HTTPS origin va origin + `/`;
+   - production domeningiz va domen + `/`.
 4. **Authentication → Providers → Email → Confirm Email** ni yoqing. Yangi foydalanuvchi uchun sayt **“Pochtangizga tasdiqlash xati yuborildi, pochtangizni tekshiring”** xabarini ko'rsatadi; foydalanuvchi emaildagi havolani tasdiqlab, keyin login qiladi. Confirm Email o'chirilgan loyihada Supabase darhol sessiya qaytarishi mumkin: sayt bunday holda xat yuborilganini yolg'on da'vo qilmaydi, akkaunt yaratilganini ko'rsatadi. Production uchun Supabase SMTP/rate limit sozlamalarini ham tekshiring.
 5. Google login kerak bo'lsa, Supabase **Google provider** ni yoqing, uning OAuth callback manzilini Google Console'ga va sayt originini Supabase redirect ro'yxatiga kiriting. Endi Supabase yoqilgan rejimda eski kosmetik Google token login ishlatilmaydi.
+6. **"Google bilan davom etish"** bosilganda sayt `supabase.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: window.location.origin } })` chaqiriladi: brauzer Supabase authorize manziliga (PKCE `code_challenge` bilan) o'tadi, Google'da tasdiqlanadi va sayt originiga `?code=...` bilan qaytadi. Qaytish sahifasida SDK bu kodni sessiyaga almashtiradi (`detectSessionInUrl`), foydalanuvchi `auth: 'supabase'` bilan tizimga kiradi va kabinetiga (`/dashboard`) yo'naltiriladi. Google'da rad etilishi (yoki provayder o'chiq) bilan qaytgan `?error=...` login sahifasida doimiy xabar ko'rinishida chiqadi; bir martalik `?code=`/`?error=` parametrlari ishlanganidan keyin manzildan tozalanadi, shunda sahifani yangilash yoki linkni ulashish eskigan kodni qayta ishlatmaydi.
 
 **Eski demo akkauntlar Supabase akkaunti emas.** Ular avtomatik ro'yxatdan o'tkazilmaydi va tasdiqlanmagan demo natijalar bazaga avtomatik ko'chirilmaydi. Supabase orqali yangi akkaunt oching. Local kesh Supabase user UUID bo'yicha alohida saqlanadi, demo email keshidan aralashtirilmaydi. Eski `ielts-v2-user` profil kaliti endi autentifikatsiya hisoblanmaydi va o'chiriladi. Reload paytida SDK sessiyasi `getUser()` bilan tekshiriladi; natija yozishdan oldin ham serverdan haqiqiy user ID olinadi.
 

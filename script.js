@@ -1716,11 +1716,35 @@ applyPrefs();
 registerPWA();
 window.addEventListener('hashchange', render);
 render();
+/* A Google sign-in bounces the user back to this site's origin with a
+ * one-time ?code=. The SDK exchanges it into a real Supabase session on this
+ * page load, so remember the return before the URL is cleaned up and land the
+ * user on their account (or back on the test they came from). */
+const oauthReturn = typeof window !== 'undefined' && window.location &&
+  /[?&]code=/.test(String(window.location.search || ''));
 if (CLOUD) {
   CLOUD.ready.then(() => {
-    CLOUD.subscribe(state => { if (state.status === 'ready') applyCloudUser(state.user); });
+    const afterOAuthReturn = () => {
+      if (!oauthReturn) return;
+      const state = CLOUD.getState();
+      if (!state.user) return;
+      const target = pendingRoute; pendingRoute = null;
+      go(target || '/dashboard');
+    };
+    const oauthError = CLOUD.getState().oauthError || '';
+    if (oauthError) {
+      // Google or Supabase refused the sign-in (Cancel, provider disabled…).
+      pendingRoute = null;
+      go('/login');
+      setAuthNotice('error', oauthError);
+    }
+    CLOUD.subscribe(state => {
+      if (state.status !== 'ready') return;
+      applyCloudUser(state.user);
+      afterOAuthReturn();
+    });
     const state = CLOUD.getState();
-    if (state.status === 'ready') applyCloudUser(state.user);
+    if (state.status === 'ready') { applyCloudUser(state.user); afterOAuthReturn(); }
     render();
   });
   window.addEventListener('online', () => syncCloudResults(true));

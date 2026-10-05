@@ -18,6 +18,8 @@ function appHarness(status = 'ready', missingClient = false) {
   const state = { status, user: null };
   let outcome = 'confirmation';
   let calls = 0;
+  let googleCalls = 0;
+  let googleFails = false;
   let logoutCalls = 0;
   let logoutFails = false;
   let release;
@@ -34,7 +36,7 @@ function appHarness(status = 'ready', missingClient = false) {
     },
     async logout() { logoutCalls++; if (logoutFails) throw new Error('Unable to sign out'); state.user = null; },
     async loadMockResults() { return []; }, async saveMockSection() {},
-    async googleSignIn() {}
+    async googleSignIn() { googleCalls++; if (googleFails) throw new Error('Google sign-in failed'); }
   };
   const ctx = vm.createContext({
     console, Date, JSON, Map, Set, Number, String, Array, Math, Promise,
@@ -51,7 +53,8 @@ function appHarness(status = 'ready', missingClient = false) {
   return {
     run, state, storage, select, cloud, formData,
     setOutcome: value => { outcome = value; }, failLogout: value => { logoutFails = value; }, release: () => release(),
-    get calls() { return calls; }, get logoutCalls() { return logoutCalls; },
+    failGoogle: value => { googleFails = value; },
+    get calls() { return calls; }, get logoutCalls() { return logoutCalls; }, get googleCalls() { return googleCalls; },
     submit: () => select('#auth-form').onsubmit({ preventDefault() {} }),
     message: () => select('#auth-feedback').innerHTML
   };
@@ -106,6 +109,8 @@ async function uiTests() {
     await closed.submit();
     assert.equal(closed.calls, 0);
     assert.equal(closed.run('store.user'), null);
+    await closed.select('[data-google-auth]').onclick();
+    assert.equal(closed.googleCalls, 0, 'Google button is inert until Supabase is ready');
     closed.run("location.hash='#/listening'; render()");
     assert(!closed.select('#app').innerHTML.includes('data-l-submit'));
   }
@@ -115,6 +120,21 @@ async function uiTests() {
   restored.run('applyCloudUser(CLOUD.getState().user)');
   assert.equal(restored.run('store.user.id'), 'restored-id');
   console.log('✓ auth UI: no demo fallback, confirmation, persistent escaped errors, double-submit guard, login, logout, restored identity');
+
+  // The Google button hands the browser to the Supabase Google OAuth flow.
+  const g = appHarness();
+  g.run("location.hash = '#/login'; render()");
+  assert.equal(g.select('[data-google-auth]').disabled, false, 'Google button is enabled when Supabase is ready');
+  await g.select('[data-google-auth]').onclick();
+  assert.equal(g.googleCalls, 1, 'Google button starts the Supabase OAuth redirect');
+  assert.equal(g.run('store.user'), null, 'no local identity is invented before the OAuth redirect');
+  g.failGoogle(true);
+  await g.select('[data-google-auth]').onclick();
+  assert.equal(g.googleCalls, 2);
+  assert(g.message().includes('Google sign-in failed'), 'OAuth errors stay in the persistent notice');
+  assert(!g.select('[data-google-auth]').disabled, 'Google button is re-enabled after a failed redirect');
+  g.failGoogle(false);
+  console.log('✓ auth UI: Google button starts OAuth and surfaces redirect errors');
 }
 
 async function sdkTests() {
@@ -180,5 +200,107 @@ async function sdkTests() {
   }
 }
 
-(async () => { await uiTests(); await sdkTests(); console.log('AUTH TESTS OK ✓'); })()
+/* Real Supabase SDK + mock HTTP for the Google button: pressing it must call
+ * signInWithOAuth({ provider: 'google', options: { redirectTo: window.location.origin } })
+ * so the browser is sent to Supabase, and the one-time ?code= that Google sends
+ * back to that origin must be exchanged into a signed-in session. */
+async function googleOAuthTests() {
+  const source = esbuild.buildSync({ entryPoints: [path.join(root, 'supabaseClient.js')], bundle: true, platform: 'node', format: 'cjs', write: false }).outputFiles[0].text;
+  const ORIGIN = 'https://preview.example';
+  const uid = '11111111-1111-4111-8111-111111111111';
+  const user = { id: uid, email: 'aziz@gmail.com', user_metadata: { name: 'Aziz' }, email_confirmed_at: new Date().toISOString() };
+  const oldFetch = global.fetch;
+  const oldWindow = global.window;
+  const oldDocument = global.document;
+  const oldStorage = global.localStorage;
+  const oldBroadcast = global.BroadcastChannel;
+  const storage = new Map(); // browser localStorage survives the Google round trip
+  const requests = [];
+  let assigned = null;
+  let href = ORIGIN + '/#/login';
+  let search = '';
+  const json = (data, status = 200) => new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } });
+  global.document = {};
+  // The SDK opens a BroadcastChannel for multi-tab sync when it detects a
+  // browser; Node's implementation would keep this process alive forever.
+  global.BroadcastChannel = undefined;
+  global.localStorage = {
+    getItem: k => (storage.has(k) ? storage.get(k) : null),
+    setItem: (k, v) => storage.set(k, String(v)),
+    removeItem: k => storage.delete(k)
+  };
+  global.fetch = async (url) => {
+    const u = String(url);
+    requests.push(u);
+    if (u === '/api/config') return json({ configured: true, SUPABASE_URL: 'https://test.supabase.co', SUPABASE_ANON_KEY: 'sb_publishable_test' });
+    if (u.includes('/auth/v1/token')) return json({ access_token: 'google.' + Buffer.from(JSON.stringify({ sub: uid, exp: Math.floor(Date.now() / 1000) + 3600 })).toString('base64url') + '.sig', refresh_token: 'refresh', expires_in: 3600, token_type: 'bearer', user });
+    if (u.includes('/auth/v1/user')) return json(user);
+    if (u.includes('/auth/v1/logout')) return json({});
+    throw new Error('Unexpected request ' + u);
+  };
+  global.window = {
+    location: {
+      origin: ORIGIN,
+      get href() { return href; },
+      get search() { return search; },
+      assign(url) { assigned = url; },
+      replace(url) { assigned = url; }
+    },
+    history: { state: null, replaceState(_state, _title, url) { href = String(url); search = new URL(String(url), ORIGIN).search; } },
+    addEventListener() {}
+  };
+  const load = () => {
+    const mod = { exports: {} };
+    new Function('require', 'module', 'exports', source)(require, mod, mod.exports);
+    return mod.exports;
+  };
+  let sdk;
+  let returned;
+  let refused;
+  try {
+    sdk = load();
+    await sdk.ready;
+    assert.equal(sdk.getState().status, 'ready');
+    await sdk.googleSignIn();
+    assert(assigned, 'the Google button sends the browser to Supabase');
+    const authorize = new URL(assigned);
+    assert.equal(authorize.origin + authorize.pathname, 'https://test.supabase.co/auth/v1/authorize');
+    assert.equal(authorize.searchParams.get('provider'), 'google');
+    assert.equal(authorize.searchParams.get('redirect_to'), window.location.origin, 'redirectTo is window.location.origin');
+    assert(authorize.searchParams.get('code_challenge'), 'PKCE challenge is generated');
+
+    // Google sends the user back to that origin with a one-time code.
+    href = ORIGIN + '/?code=google-auth-code';
+    search = '?code=google-auth-code';
+    returned = load();
+    await returned.ready;
+    await new Promise(resolve => setTimeout(resolve, 20)); // SIGNED_IN arrives on a macrotask
+    assert.equal(returned.getState().status, 'ready');
+    assert.equal(returned.getState().user && returned.getState().user.id, uid, 'the Google code is exchanged into a signed-in session');
+    assert(requests.some(u => u.includes('/auth/v1/token?grant_type=pkce')), 'the returned code is exchanged for a token');
+    assert(!href.includes('code='), 'the consumed code is removed from the URL');
+
+    // A refused sign-in comes back as ?error= and must be explained, not swallowed.
+    // A fresh browser (no stored session) is what a first-time visitor sees.
+    storage.clear();
+    href = ORIGIN + '/?error=access_denied&error_code=403&error_description=User%20cancelled';
+    search = '?error=access_denied&error_code=403&error_description=User%20cancelled';
+    refused = load();
+    await refused.ready;
+    assert.equal(refused.getState().user, null, 'a refused OAuth attempt signs nobody in');
+    assert.equal(refused.getState().oauthError, 'User cancelled', 'the OAuth error is reported to the app');
+    assert(!href.includes('error='), 'the stale error is removed from the URL');
+  } finally {
+    for (const client of [refused, returned, sdk]) {
+      if (client && client.getState().user) await client.logout();
+    }
+    global.fetch = oldFetch;
+    global.document = oldDocument;
+    global.localStorage = oldStorage;
+    global.BroadcastChannel = oldBroadcast;
+    if (oldWindow === undefined) delete global.window; else global.window = oldWindow;
+  }
+  console.log('✓ real Supabase SDK/mock HTTP: Google button -> authorize URL with redirectTo=origin, code exchanged into a session, refused sign-in reported, URL cleaned');
+}
+(async () => { await uiTests(); await sdkTests(); await googleOAuthTests(); console.log('AUTH TESTS OK ✓'); })()
   .catch(error => { console.error(error); process.exitCode = 1; });
