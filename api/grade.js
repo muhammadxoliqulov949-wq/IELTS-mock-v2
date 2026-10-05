@@ -182,13 +182,15 @@ module.exports = async function handler(req, res) {
       const clean = list.map((t, i) => ({
         title: str(t.title) || `Task ${i + 1}`,
         prompt: str(t.prompt).slice(0, 4000),
-        response: str(t.response).trim().slice(0, 6000)
+        response: str(t.response).trim().slice(0, 6000),
+        minWords: Number(t.minWords) || (i === 0 ? 150 : 250),
+        criteria: str(t.criteria).slice(0, 1200)
       }));
       if (!clean.length || clean.every((t) => t.response.length < 10)) {
         res.status(400).json({ error: 'Your responses are too short to grade — write at least a few sentences for each task.' });
         return;
       }
-      const userContent = clean.map((t) => `TASK: ${t.title}\nTASK PROMPT:\n${t.prompt}\n\nCANDIDATE RESPONSE:\n${t.response}`).join('\n\n---\n\n');
+      const userContent = clean.map((t) => `TASK: ${t.title}\nOFFICIAL MINIMUM: ${t.minWords} words\nTASK PROMPT:\n${t.prompt}${t.criteria ? `\n\nASSESSMENT CRITERIA / NOTES:\n${t.criteria}` : ''}\n\nCANDIDATE RESPONSE:\n${t.response}`).join('\n\n---\n\n');
       const parsed = await callGemini(WRITING_SYSTEM, userContent.slice(0, 12000), 3000);
       res.status(200).json(normalizeWriting(parsed, clean.length));
       return;

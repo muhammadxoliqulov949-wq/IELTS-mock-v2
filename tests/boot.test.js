@@ -63,7 +63,7 @@ try {
   console.log('script.js BOOTED OK');
 
   // render each route
-  const routes = ['/', '/mock', '/listening', '/reading', '/writing', '/speaking', '/results', '/mistakes', '/coach', '/dashboard', '/lessons', '/vocabulary', '/quiz', '/fullmock', '/settings', '/login', '/unknown'];
+  const routes = ['/', '/mock', '/listening', '/reading', '/writing', '/speaking', '/results', '/mistakes', '/coach', '/dashboard', '/roadmap', '/leaderboard', '/lessons', '/vocabulary', '/quiz', '/fullmock', '/settings', '/login', '/unknown'];
   let ok = true;
   for (const r of routes) {
     global.location.hash = '#' + r;

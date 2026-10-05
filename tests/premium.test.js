@@ -41,6 +41,7 @@ const allR2 = win.IELTS_CONTENT.reading2.passages.reduce((s, p) => s.concat(p.qu
 const S = win.IELTS_SERVICES;
 assert(S.getSkillContent('listening', 'test2').id === 'listening-02', 'getSkillContent test2');
 assert(S.getSkillContent('reading', 'test1').id === 'reading-01', 'getSkillContent test1');
+assert(S.getSkillContent('listening', 'test5') === null, 'missing custom skills never fall back to Test 1');
 assert(S.testLabel('test2', 'en') === 'Practice Test 2', 'testLabel en');
 assert(S.testLabel('test2', 'uz') === 'Amaliyot testi 2', 'testLabel uz');
 
@@ -49,6 +50,17 @@ assert(S.explanationFor(allL2[0], 'listening', 0).length > 10, 'explanation from
 assert(S.explanationFor({ id: 'l1', type: 'sentence-completion' }, 'listening', 0).includes('forty-two'), 'test-1 curated explanation');
 const mcq = { id: 'x', type: 'multiple-choice', options: ['A', 'B'], answer: 1 };
 assert(S.explanationFor(mcq).includes('option B'), 'multiple-choice fallback');
+assert(S.isCorrect(mcq, '1'), 'legacy numeric MC answer is still accepted');
+assert(S.isCorrect({ type: 'multiple-choice', options: ['A', 'B', 'C'], answer: 1 }, 'B'), 'new admin MC accepts option letters');
+assert(S.isCorrect({ type: 'multiple-choice-multi', options: ['A', 'B', 'C'], answer: [0, 2] }, 'C, A'), 'multiple-choice multi accepts both answers in any order');
+assert(!S.isCorrect({ type: 'multiple-choice-multi', options: ['A', 'B', 'C'], answer: [0, 2] }, 'A'), 'multiple-choice multi requires every correct answer');
+assert(S.isCorrect({ type: 'matching-headings', options: ['One', 'Two'], answer: 1 }, 'B'), 'matching headings uses index answers');
+assert(S.isCorrect({ type: 'map-labelling', options: ['North', 'South'], answer: 0 }, 'A'), 'map labelling uses index answers');
+assert(S.isCorrect({ type: 'yes-no-not-given', answer: 'NO' }, 'no'), 'Yes/No/Not Given is graded case-insensitively');
+assert(S.isCorrect({ type: 'true-false-not-given', answer: 'NOT GIVEN' }, 'not given'), 'True/False/Not Given is still graded');
+assert(S.isCorrect({ type: 'form-completion', answer: 'fitness classes', wordLimit: 'NO MORE THAN TWO WORDS' }, 'fitness classes'), 'completion accepts answers within the IELTS word limit');
+assert(!S.isCorrect({ type: 'form-completion', answer: 'fitness classes', wordLimit: 'NO MORE THAN TWO WORDS' }, 'the fitness classes'), 'completion rejects answers exceeding the IELTS word limit');
+assert(S.isCorrect({ type: 'summary-completion', answer: '2024', wordLimit: 'NO MORE THAN TWO WORDS AND/OR A NUMBER' }, '2024'), 'word limit permits the instructed number');
 
 /* --- Dashboard/quiz helpers --- */
 const attempts = [
