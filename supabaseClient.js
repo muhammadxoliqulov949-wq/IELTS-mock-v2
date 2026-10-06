@@ -11,6 +11,8 @@ let authRevision = 0;
    it never decides access on its own — every admin query is re-checked by
    row level security in Postgres. */
 let profile = null;
+let profileLoadedFor = null;
+let profileTask = null;
 const listeners = new Set();
 const emit = () => listeners.forEach(fn => fn(getState()));
 
@@ -35,8 +37,9 @@ export const ready = (async () => {
     client.auth.onAuthStateChange((_event, session) => {
       if (_event === 'INITIAL_SESSION') return; // restored identity is verified below
       authRevision++;
-      currentUser = session?.user || null;
-      if (!currentUser) profile = null;
+      const nextUser = session?.user || null;
+      if (currentUser?.id !== nextUser?.id) { profile = null; profileLoadedFor = null; profileTask = null; }
+      currentUser = nextUser;
       setTimeout(emit, 0);
     });
     const { data, error } = await client.auth.getSession();
@@ -58,7 +61,10 @@ export const ready = (async () => {
     oauthError = consumeOAuthReturnUrl();
     status = 'ready';
     if (currentUser) {
-      try { profile = await readProfile(client); } catch { profile = null; }
+      const owner = currentUser.id, revision = authRevision;
+      let loaded = null;
+      try { loaded = await readProfile(client); } catch { /* Keep auth usable if profile setup is missing. */ }
+      if (currentUser?.id === owner && authRevision === revision) { profile = loaded; profileLoadedFor = owner; }
       emit();
     }
   } catch (error) {
@@ -100,34 +106,54 @@ function consumeOAuthReturnUrl() {
    it can also run from inside `ready` — calling requireClient() there would
    await `ready` while `ready` is still running, i.e. deadlock. */
 async function readProfile(sb) {
-  const result = await sb.from('profiles')
-    .select('id,email,name,avatar_url,role,coins,created_at')
-    .eq('id', currentUser.id).maybeSingle();
-  if (!result.error) return result.data || null;
-  /* Existing installations remain usable between deploying the app and
-     applying the gamification migration; admin/auth features do not depend
-     on the new coins column being present yet. */
-  if (!/coins/i.test(String(result.error.message || ''))) throw result.error;
-  const legacy = await sb.from('profiles')
-    .select('id,email,name,avatar_url,role,created_at')
-    .eq('id', currentUser.id).maybeSingle();
-  if (legacy.error) throw legacy.error;
-  return legacy.data ? { ...legacy.data, coins: 0 } : null;
+  const owner = currentUser?.id;
+  if (!owner) return null;
+  // Login can reset an expired streak, but cannot create activity or earn a
+  // day. Missing RPC/columns are tolerated during a rolling DB deployment.
+  const streak = await sb.rpc('update_daily_streak');
+  if (streak.error && !['PGRST202', '42883'].includes(streak.error.code)) throw streak.error;
+  let result = await sb.from('profiles')
+    .select('id,email,name,avatar_url,role,coins,current_streak,last_active_date,created_at')
+    .eq('id', owner).maybeSingle();
+  if (result.error && /current_streak|last_active_date|coins/i.test(String(result.error.message || ''))) {
+    result = await sb.from('profiles')
+      .select('id,email,name,avatar_url,role,coins,created_at').eq('id', owner).maybeSingle();
+    if (result.error && /coins/i.test(String(result.error.message || ''))) {
+      result = await sb.from('profiles')
+        .select('id,email,name,avatar_url,role,created_at').eq('id', owner).maybeSingle();
+    }
+  }
+  if (result.error) throw result.error;
+  if (currentUser?.id !== owner) throw new Error('Account changed.');
+  return result.data ? { coins: 0, current_streak: 0, last_active_date: null, ...result.data } : null;
 }
 
 /* Read (and cache) the current user's profile row. A missing row means the
    admin migration has not been run yet — a normal state, not an error: the
    app keeps working with `profile: null`. */
 export async function loadProfile(force) {
-  if (!currentUser) { profile = null; emit(); return null; }
-  if (!force && profile && profile.id === currentUser.id) return profile;
-  try {
-    profile = await readProfile(await requireClient());
-  } catch {
-    profile = null; // profiles table not installed, or RLS refused — stay signed in
-  }
-  emit();
-  return profile;
+  if (!currentUser) { profile = null; profileLoadedFor = null; emit(); return null; }
+  const owner = currentUser.id, revision = authRevision;
+  if (!force && profileLoadedFor === owner) return profile;
+  if (!force && profileTask?.owner === owner) return profileTask.promise;
+  const task = { owner, promise: null };
+  task.promise = (async () => {
+    let loaded = null;
+    try { loaded = await readProfile(await requireClient()); }
+    catch {
+      // Offline/transient reads must not erase a known wallet or streak.
+      loaded = profile?.id === owner ? profile : null;
+    }
+    if (currentUser?.id !== owner || authRevision !== revision) return null;
+    // A newer forced refresh may already contain a just-earned reward.
+    if (profileTask !== task) return profile;
+    profile = loaded; profileLoadedFor = owner;
+    emit();
+    return profile;
+  })();
+  profileTask = task;
+  try { return await task.promise; }
+  finally { if (profileTask === task) profileTask = null; }
 }
 
 export async function authenticate({ mode, email, password, name }) {
@@ -175,6 +201,8 @@ export async function saveMockSection(payload, owner) {
   // Ownership comes from auth.uid() in SQL, never from a supplied email/user ID.
   const { error } = await sb.rpc('save_mock_section', { ...payload, p_owner: verified.data.user.id });
   if (error) throw error;
+  if (currentUser?.id !== owner) throw new Error('Account changed. Please sign in again.');
+  await loadProfile(true); // fresh scored mocks also complete the daily goal
 }
 
 export async function loadMockResults() {
@@ -196,18 +224,22 @@ export async function loadRoadmap() {
   const sb = await requireClient();
   if (!currentUser) throw new Error('Sign in to save roadmap progress.');
   const owner = currentUser.id;
-  const [topics, progress] = await Promise.all([
+  const [topics, progress, games] = await Promise.all([
     sb.from('topics')
-      .select('id,stage,title,summary,ai_prompt,questions,reward_coins,order_index')
+      .select('id,stage,title,summary,ai_prompt,questions,reward_coins,order_index,game_data')
       .order('stage').order('order_index'),
     sb.from('user_topic_progress')
       .select('topic_id,score_percentage,is_completed,updated_at')
+      .eq('user_id', owner),
+    sb.from('user_game_progress')
+      .select('topic_id,game_type,best_score,is_completed,attempt_count,last_played_at,last_reward_date')
       .eq('user_id', owner)
   ]);
   if (topics.error) throw topics.error;
   if (progress.error) throw progress.error;
+  if (games.error) throw games.error;
   if (!currentUser || currentUser.id !== owner) throw new Error('Account changed. Please reload the roadmap.');
-  return { topics: topics.data || [], progress: progress.data || [] };
+  return { topics: topics.data || [], progress: progress.data || [], games: games.data || [] };
 }
 
 export async function submitRoadmapQuiz(topicId, answers) {
@@ -228,6 +260,41 @@ export async function submitRoadmapQuiz(topicId, answers) {
   if (currentUser?.id !== owner) throw new Error('Account changed. Please sign in again.');
   await loadProfile(true);
   return data || {};
+}
+
+// The JWT owner is rechecked by every SECURITY DEFINER RPC. Pin the local
+// identity/revision too, so a late game response never affects a new account.
+async function learnerRPC(name, payload) {
+  const sb = await requireClient();
+  const owner = currentUser?.id, revision = authRevision;
+  if (!owner) throw new Error('Sign in to save learning progress.');
+  const { data, error } = await sb.rpc(name, payload);
+  if (error) throw error;
+  if (currentUser?.id !== owner || authRevision !== revision) throw new Error('Account changed. Please sign in again.');
+  return data || {};
+}
+export async function startTopicGame(topicId, gameType) {
+  if (!['word_match', 'speed_vocabulary', 'sentence_scramble'].includes(gameType)) throw new Error('Unsupported mini-game.');
+  return learnerRPC('start_topic_game', { p_topic_id: String(topicId || ''), p_game_type: gameType });
+}
+export async function answerSpeedQuestion(sessionId, questionIndex, choice) {
+  if (!Number.isInteger(questionIndex) || questionIndex < 0 || !Number.isInteger(choice) || choice < 0 || choice > 2) throw new Error('Invalid speed answer.');
+  return learnerRPC('answer_speed_question', { p_session_id: sessionId, p_question_index: questionIndex, p_choice: choice });
+}
+export async function submitTopicGame(sessionId, answers) {
+  const owner = currentUser?.id;
+  const result = await learnerRPC('submit_topic_game', { p_session_id: sessionId, p_answers: answers });
+  await loadProfile(true);
+  if (currentUser?.id !== owner) throw new Error('Account changed. Please sign in again.');
+  return result;
+}
+export async function refreshDailyStreak() {
+  const result = await learnerRPC('update_daily_streak');
+  if (profile && profile.id === currentUser?.id) {
+    profile = { ...profile, current_streak: result.current_streak, last_active_date: result.last_active_date };
+    emit();
+  }
+  return result;
 }
 
 /* Server derives the reward from the completed topic or saved mock result;

@@ -9,9 +9,10 @@
 - Listening/Reading/Writing/Speaking yakunlanganda va timer tugaganda avtomatik saqlash.
 - **Results** oynasida Supabase natijalari, yangilash/qayta urinish tugmasi.
 - Yangi qurilmada akkauntga kirganda bulutdagi natijalar local keshga yuklanadi; dashboard va testning yakunlangan holati ham tiklanadi.
-- Tarmoq/SQL xatosida local natijalar yo'qolmaydi. Saqlanmagan versiyalar qayta kirganda, internet qaytganda yoki **Yangilash / Qayta urinish** bilan yuboriladi.
+- Tarmoq/SQL xatosida local mock natijalar yo'qolmaydi. Saqlanmagan versiyalar qayta kirganda, internet qaytganda yoki **Yangilash / Qayta urinish** bilan yuboriladi.
+- 40-mavzuli Roadmap, 120 mini-o‘yin, ketma-ket unlock, UTC Daily Streak, serverda beriladigan coins va global leaderboard.
 
-> Integratsiya kodi tayyor, ammo Supabase loyihasi avtomatik yaratilmaydi. Demo login butunlay olib tashlangan. Quyidagi sozlashsiz sayt ochiladi, lekin **login/ro‘yxatdan o‘tish va mock testni boshlash bloklanadi**. Test savollari avvalgidek `data.js`, `content2.js`, `content3.js`, `content4.js` fayllarida; bu ish faqat akkaunt va natijalarni ulaydi.
+> Integratsiya kodi tayyor, ammo Supabase loyihasi avtomatik yaratilmaydi. Demo login butunlay olib tashlangan. Quyidagi sozlashsiz sayt ochiladi, lekin **login/ro‘yxatdan o‘tish va mock testni boshlash bloklanadi**. Mock savollari `data.js`, `content2.js`, `content3.js`, `content4.js` fayllarida qoladi. Roadmap kontenti Supabase `topics` jadvalidan olinadi; guest preview uchun quiz kalitlarisiz public katalog bor. Mehmon birinchi mavzuning mini-o‘yinlarini real rewards/progress’siz sinab ko‘ra oladi.
 
 ## 1. Kutubxonalarni o'rnatish
 
@@ -67,19 +68,77 @@ Har foydalanuvchi/test uchun **bitta satr** saqlanadi — mavjud saytning bir ma
 
 1. `supabase/migrations/202610050001_admin.sql` — admin profillar/RLS, test JSON jadvallari.
 2. `supabase/migrations/202610050002_media_storage.sql` — `ielts-media` bucket va Storage object policies.
-3. `supabase/migrations/202610060001_roadmap_gamification.sql`
-4. `supabase/migrations/202610060002_ai_cache.sql` — AI javoblari uchun **7 kunlik** kesh (`public.ai_cache`). — `profiles.coins`, 12 ta seed mavzu (har birida 5 savol), maxfiy javob kalitlari, foydalanuvchi progressi, tanga ledger'i va leaderboard RPC'lari.
+3. `supabase/migrations/202610060001_roadmap_gamification.sql` — dastlabki 12 mavzu, `profiles.coins`, quiz kalitlari, progress, immutable coin ledger va leaderboard.
+4. `supabase/migrations/202610060002_ai_cache.sql` — AI javoblari uchun **7 kunlik** kesh (`public.ai_cache`).
+5. `supabase/migrations/202610060003_interactive_learning.sql` — 40 mavzu / 200 quiz savoli / 120 mini-o‘yin, `game_data`, streak, sequential unlock va server game grader’lari.
+
+**Avvalgi migratsiyalar bazangizda allaqachon qo‘llangan bo‘lsa, faqat yangi `202610060003_interactive_learning.sql` ni bajaring.** U eski 12 mavzuning ID’larini saqlaydi, har bosqichga 7 tadan yangi mavzu qo‘shadi; mavjud progress, balans va ledger o‘chirilmaydi. SQL faylda seed ham bor, alohida JSON import shart emas. Bu repo o‘zgarishlari hosted Supabase’ga avtomatik qo‘llanmaydi.
 
 Admin panel MP3, xarita/reja va Writing Task 1 rasmlarini brauzerdan Supabase Storage’ga yuboradi. Bucket public read (learner `<audio>`/`<img>` uchun), lekin insert/update/delete faqat authenticated `public.is_admin()` orqali ruxsat etiladi. Maksimal fayl 50 MB; ruxsat etilgan media MIME turi bucket’da cheklangan. **Service-role kaliti talab qilinmaydi va browserga berilmaydi.** `ADMIN.md` da UI, kontent JSON shakli va xatolarni hal qilish bo‘yicha yo‘riqnoma bor.
 
-### Roadmap, tangalar va leaderboard
+### Interaktiv Roadmap, tangalar va leaderboard
 
-- `#/roadmap` da A1→A2, A2→B1, B1→B2, B2→C1 bosqichlari va har birida uchta namunaviy mavzu bor. Har bir mavzu qisqa konspekt, ChatGPT/Claude uchun nusxalashga tayyor prompt va 5 savolli viktorinani ko‘rsatadi.
-- `topics.questions` faqat savol va variantlarni saqlaydi. Javob kalitlari `topic_answer_keys` jadvalida; authenticated client bu jadvalni o‘qiy olmaydi. `submit_topic_quiz` javoblarni serverda tekshiradi, eng yaxshi foizni saqlaydi va 80%+ natijada mavzuni yakunlaydi.
-- `public.add_user_coins(p_source, p_reference)` **miqdorni client'dan qabul qilmaydi**: roadmap mukofotini mavzu jadvalidan, mock mukofotini joriy foydalanuvchining saqlangan Listening/Reading band'idan hisoblaydi. `coin_transactions` unikalligi bir mavzu yoki test bo‘limiga qayta tanga berilishining oldini oladi.
-- Mavzu mukofotlari: A1–A2 = 10, A2–B1 = 20, B1–B2 = 35, B2–C1 = 50 tanga. Har bir Listening/Reading mock bandi uchun: 5.5–6.5 = 30, 7.0–8.0 = 60, 8.5–9.0 = 100 tanga.
-- `get_leaderboard` faqat display name, avatar, jami tanga, daraja belgisi va rank'ni beradi; email'lar oshkor qilinmaydi. Profil tangalarini client to‘g‘ridan-to‘g‘ri o‘zgartira olmaydi.
-- Coin mukofotlari virtual gamification ballari, pul yoki to‘lov vositasi emas. Mock bandlari mashq uchun bo‘lib, mavjud client-side scoring modelida proctoring qilinmaydi; rasmiy/stakes reyting uchun server-side test sessiyasi va javob tekshiruvi alohida kerak.
+#### Katalog va ochilish tartibi
+
+- `#/roadmap` da **A1→A2, A2→B1, B1→B2, B2→C1** bosqichlarining har birida **10 tadan** tayyor mavzu bor. Konspekt, AI-tutor prompti, 5 savolli quiz va uchta mini-o‘yin har bir mavzuga ulangan.
+- Yangi foydalanuvchiga faqat birinchi mavzu ochiq. `submit_topic_quiz` **80%+** natijani serverda tekshiradi va keyingi mavzuni ochadi; barcha oldingi mavzular tugatilmaguncha keyingi bosqich ham qulflangan. Mini-o‘yin yakuni mastery quiz o‘rnini bosmaydi.
+- Eski versiyada tugatilgan mavzular qayta ko‘rish uchun ochiq qoladi; yangi mavzular bo‘yicha progress bar yangidan hisoblanadi. Ochiq yo‘l bo‘yicha davom etish uchun yangi qo‘shilgan oldingi mavzularni ham tugating.
+- `topics.questions` faqat savol va variantlarni saqlaydi. `topic_answer_keys` va `topic_game_keys` client rollariga yopiq. `topics.game_data` o‘yin uchun public so‘zlar, ma’nolar, variantlar va scramble materiallarini saqlaydi; server scoring kalitlari alohida.
+
+#### Qo‘shilgan schema
+
+| Jadval / ustun | Vazifasi |
+| --- | --- |
+| `profiles.current_streak integer NOT NULL DEFAULT 0` | Joriy ketma-ket mashq kunlari |
+| `profiles.last_active_date date` | Oxirgi tekshirilgan faollikning UTC sanasi |
+| `topics.game_data jsonb NOT NULL DEFAULT '{}'` | Uchta mini-o‘yin kontenti |
+| `learning_activity` | Har user/UTC kuniga bitta verified activity marker |
+| `user_game_progress` | User/topic/game bo‘yicha eng yaxshi foiz, completion, attempts, oxirgi o‘yin/reward sanasi |
+| `topic_game_keys` | Private speed javoblari va scramble tartiblari |
+| `topic_game_sessions` | Private, user’ga bog‘langan session, server deadline, savollar oqimi, points/combo va idempotent result |
+
+Progress/activity/ledger’ni foydalanuvchi faqat o‘ziniki bo‘lsa o‘qiy oladi; yozish/o‘chirish client’ga berilmagan. `profiles.coins`, `current_streak`, `last_active_date` to‘g‘ridan-to‘g‘ri o‘zgartirilmaydi. Ism/avatar tahrirlash huquqi qoladi.
+
+#### RPC va o‘yin mukofotlari
+
+| RPC | Client yuboradigan ma’lumot |
+| --- | --- |
+| `is_topic_unlocked(p_topic_id text)` | Mavzu ID; owner `auth.uid()` orqali olinadi |
+| `submit_topic_quiz(p_topic_id text, p_answers jsonb)` | Quiz javoblari; score/reward yuborilmaydi |
+| `start_topic_game(p_topic_id text, p_game_type text)` | `word_match`, `speed_vocabulary` yoki `sentence_scramble` |
+| `answer_speed_question(p_session_id uuid, p_question_index integer, p_choice integer)` | Faqat server bergan savol indeksi va 0–2 variant indeksi |
+| `submit_topic_game(p_session_id uuid, p_answers jsonb)` | Match/scramble indekslari; speed score server session’dan olinadi |
+| `update_daily_streak()` | Argumentsiz; mavjud verified faollikni o‘qiydi va eskirgan streak’ni normallashtiradi |
+| `get_leaderboard(p_limit integer)` | Eng ko‘p 100 public rank; email/UUID chiqarilmaydi |
+
+- **Word Match:** 5 juft / 10 kartochka. Har bir indeks aynan bir marta ishlatilishi, barcha juftlar to‘g‘ri bo‘lishi kerak; **+10 coins**.
+- **Sentence Scramble:** 3 ta gap. Har bir gapdagi barcha so‘z indekslari aynan bir marta ishlatiladi; takroriy bir xil so‘zlar ham qo‘llanadi. Uchala gap to‘g‘ri bo‘lsa **+15 coins**.
+- **Speed Vocabulary:** serverda **60 soniyalik deadline**, random savollar oqimi va har savolda 3 variant. To‘g‘ri javob `100` points, 4 soniya ichida qo‘shimcha `50`, combo bonusi esa `25 × min(combo − 1, 4)`. Noto‘g‘ri javob combo’ni uzadi. Kamida **5 ta to‘g‘ri javob va 60% accuracy** kerak; reward `5 + min(10, floor(points / 400))`, ya’ni **5–15 coins**. Client’ning elapsed/points/combo/coin qiymatlari ishonch manbai emas.
+- Har bir user/topic/game uchun **UTC kuniga bitta** coin reward. Yangi same-day replay mashq uchun davom etadi, ammo reward `0`. Ertasi kuni yangi round yana reward olishi mumkin.
+- O‘sha session/answer qayta yuborilsa idempotent: qo‘shimcha points, attempts, coin yoki yangi kunning activity’sini yaratmaydi. Qarama-qarshi yoki noto‘g‘ri tartibli speed replay rad etiladi. Match/scramble session’i 30 daqiqadan keyin tugaydi; speed javoblari 60 soniyadan keyin qabul qilinmaydi.
+- Session private kontent + key hash’iga bog‘langan. Hatto faqat private kalit yangilansa ham davom etayotgan round qayta grading qilinmaydi — yangi round boshlash so‘raladi. Rewards profil lock’i va unique ledger bilan bir tranzaksiyada yoziladi.
+- Mavzu quiz mukofoti **bir martalik**: A1–A2 `10`, A2–B1 `20`, B1–B2 `35`, B2–C1 `50`. Listening/Reading mock bandlari: 5.5–6.5 `30`, 7.0–8.0 `60`, 8.5–9.0 `100` coins.
+- `add_user_coins(p_source, p_reference)` client’dan miqdor olmaydi. Game credit’ni bu RPC orqali to‘g‘ridan-to‘g‘ri olish mumkin emas; faqat game grader ledger yozadi.
+
+#### Daily Streak: login emas, tugatilgan mashq
+
+Kun chegarasi **00:00 UTC**, foydalanuvchi qurilmasining mahalliy yarim tuni emas:
+
+1. To‘liq topshirilgan quiz yoki yakunlangan o‘yin verified daily activity yaratadi. O‘yin/quiz pass chegarasiga yetmagan haqiqiy urinish ham faollik; umuman javobsiz speed round hisoblanmaydi.
+2. Oxirgi mashq kecha bo‘lsa `current_streak + 1`, undan eski bo‘lsa `1`. Bugun yana tugatish sanani/streak’ni oshirmaydi.
+3. Login, profile refresh, `update_daily_streak()` yoki leaderboard ko‘rish o‘zidan-o‘zi faollik bermaydi. Bir to‘liq UTC kuni mashqsiz o‘tsa, ko‘rsatiladigan streak `0`; refresh RPC profildagi eskirgan qiymatni ham `0` qiladi.
+4. Yangi, baholangan mock bo‘limi ham faollik bo‘ladi (past band bo‘lsa ham). Tarixiy sync va hali AI bahosi chiqmagan Writing/Speaking faollikni sun’iy oshirmaydi.
+5. Header wallet/🔥 va leaderboard effective streak’ni ko‘rsatadi. Focus/visibility/UTC kun almashishida profil yangilanadi; offline holatda ham frontend eski sanani hisoblab yolg‘on streak ko‘rsatmaydi.
+
+`record_learning_activity`, `learning_today`, private quiz grader va mock trigger funksiyalarini client chaqira olmaydi. Faqat verified grader/trigger activity yozadi. Guest mashqlar real coins/streak/progress bermaydi.
+
+Coin’lar virtual gamification ballari, pul emas. RLS va server grading reward hisobini himoya qiladi, ammo bu proctoring emas: mashq materiali ochiq, mock bandlari esa mavjud client-side scoring modelidan keladi. Rasmiy/stakes reyting uchun server-side mock test sessiyasi va javob tekshiruvi alohida kerak.
+
+#### Seed’ni saqlash va yangilash
+
+Yagona manba: `scripts/roadmap-seed.js`. `npm run seed:roadmap` shu migration’dagi belgilangan seed blokini va `lib/roadmapContent.js` ni birgalikda generatsiya qiladi. `npm run seed:roadmap:check` va build **40/200/120** sonlarini, private javob kalitlarini hamda SQL/public katalog bir xilligini tekshiradi. Generator, SQL va private quiz kalitlari public build/preview asset allowlist’ga kirmaydi.
+
+Migration qo‘llangandan **keyingi** yangi kontent o‘zgarishlarini yangi SQL migration orqali deploy qiling; Supabase CLI allaqachon qo‘llangan faylni qayta bajarmaydi. Migration’ni SQL Editor’da qayta qo‘llash progress/ledger’ni o‘chirmaydi, lekin o‘zgargan kontent faol session’larni invalid qiladi.
 
 ### AI kesh (7 kunlik TTL) va IELTS guardrails
 
@@ -148,9 +207,22 @@ npm test
 npm run build
 npm run test:auth
 npm run test:roadmap
+npm run test:learning
+npm run seed:roadmap:check
 ```
 
-`tests/supabase.test.js` public config xavfsizligini, PostgreSQL-compatible PGlite ichida mock-results migration/RLS/umumiy band hisobini, offline retry, dublikatlar va account switch holatlarini tekshiradi. `tests/roadmap.test.js` gamification migratsiyasini PGlite'da ishga tushirib, seed savollari, yopiq javob kalitlari, 80% yakunlash chegarasi, coin tier/idempotency va leaderboard maxfiyligini tekshiradi. `tests/auth.test.js` haqiqiy Supabase SDK bilan mock HTTP orqali signup, noto‘g‘ri login, logout va user ID tekshiruvlarini bajaradi. Barcha testlar **jonli Supabase loyihasiga ulanmaydi**.
+`tests/supabase.test.js` public config xavfsizligini, PostgreSQL-compatible PGlite ichida mock-results migration/RLS/umumiy band hisobini, offline retry, dublikatlar va account switch holatlarini tekshiradi. `tests/roadmap.test.js` gamification migratsiyasini PGlite'da ishga tushirib, seed savollari, yopiq javob kalitlari, 80% yakunlash chegarasi, coin tier/idempotency va leaderboard maxfiyligini tekshiradi. `tests/auth.test.js` haqiqiy Supabase SDK bilan mock HTTP orqali signup, noto‘g‘ri login, logout va user ID tekshiruvlarini bajaradi. `tests/learning.test.js` yangi migration’ni PGlite’da bajaradi: 40 ta mavzuning barcha javoblari, RLS/grants, qulflangan mavzu, 3 ta grader, server timer/combo, key-only session invalidation, idempotency, UTC/missed-day streak, eski progressni saqlash va client/SDK lifecycle’larini tekshiradi. Barcha testlar **jonli Supabase loyihasiga ulanmaydi**.
+
+Real-browser suite ixtiyoriy (Playwright Chromium kerak; preview boshqa terminalda ishlasin):
+
+```bash
+npx playwright install --with-deps chromium
+npm run preview
+# boshqa terminal:
+npm run test:learning:browser
+```
+
+Guest va account oqimlari alohida brauzerda ishlaydi. Account oqimida haqiqiy Supabase SDK **test-only HTTP fixture + PGlite SQL/RLS** ga ulanadi: login streak’ni oshirmasligi, game +10 / streak 3→4, quiz +10 / streak o‘zgarmasligi, keyingi topic unlock, leaderboard, session reload va 320px header tekshiriladi. Guest oqimi barcha 40 node, uchta o‘yin, 60s timer/combo/keyboard, Uzbek/light va mobil overflow’ni tekshiradi. Bu hosted Supabase deployment yoki haqiqiy PostgreSQL parallel-load stress testi o‘rnini bosmaydi. Runner parametr va screenshot sozlamalari [README.md](README.md) da.
 
 Loyihangiz sozlangandan keyin qo'lda tekshiring:
 
@@ -165,6 +237,10 @@ Loyihangiz sozlangandan keyin qo'lda tekshiring:
 9. Xuddi shu tugatilgan mavzuni qayta topshirish → progress qolishi, lekin ikkinchi marta coin berilmasligi.
 10. Listening yoki Reading mock bandi 6.0, 7.5, 8.5 bo‘lgan uchta account/test holati → mos ravishda 30, 60, 100 tanga; refresh/retry'da takroriy credit bo‘lmasligi.
 11. `#/leaderboard` → uchta eng yuqori foydalanuvchida oltin/kumush/bronza, joriy foydalanuvchi ajralib turishi va hech qayerda email ko‘rinmasligini tekshirish.
+12. Yangi user’da 40 mavzu / bosqichiga 10: faqat birinchisi ochiq; 4/5 quiz’dan keyin ikkinchisi ochilishi, birinchi bosqichning 10/10 natijasidan keyin A2→B1 boshlanishini tekshirish.
+13. Uchala o‘yinni tugatish → server coins, game progress, profil yonidagi wallet va leaderboard bir xil balans ko‘rsatishi. Same-day replay va save retry qo‘shimcha reward bermasligi.
+14. Login’dan keyin streak o‘zgarmasligi; birinchi yakunlangan mashq oshirishi, ikkinchisi oshirmasligi. Keyingi UTC kuni mashq, bir kun tashlab qaytish va boshqa qurilmadagi profile refresh’ni tekshirish.
+15. Telefon/light tema, kartochka noto‘g‘ri/to‘g‘ri animatsiyasi, speed keyboard/timer, scramble token removal, mute, Escape/Tab va reduced-motion’ni tekshirish. Browser console orqali locked-topic RPC yoki to‘g‘ridan-to‘g‘ri coin/streak UPDATE rad etilishi.
 
 ## Chegaralar
 

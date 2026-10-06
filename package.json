@@ -2,9 +2,9 @@
   "name": "ielts-mock-v2",
   "version": "2.0.0",
   "private": true,
-  "description": "IELTS mock exam web app \u2014 timed Listening/Reading/Writing/Speaking tests, instant band scores, mistake notebook, AI-scored Writing & Speaking feedback and an AI Coach.",
+  "description": "IELTS mock exam web app — timed Listening/Reading/Writing/Speaking tests, instant band scores, mistake notebook, AI-scored Writing & Speaking feedback and an AI Coach.",
   "scripts": {
-    "test": "node tests/api.test.js && node tests/boot.test.js && node tests/premium.test.js && node tests/quiz.test.js && node tests/nav.test.js && node tests/flow.test.js && node tests/test3.test.js && node tests/test4.test.js && node tests/supabase.test.js && node tests/roadmap.test.js && node tests/auth.test.js && node tests/mascot.test.js && node tests/admin.test.js && node tests/generator.test.js && node tests/generatorClient.test.js && node tests/aiGuardrails.test.js",
+    "test": "node tests/api.test.js && node tests/boot.test.js && node tests/premium.test.js && node tests/quiz.test.js && node tests/nav.test.js && node tests/flow.test.js && node tests/test3.test.js && node tests/test4.test.js && node tests/supabase.test.js && node tests/roadmap.test.js && node tests/auth.test.js && node tests/mascot.test.js && node tests/admin.test.js && node tests/generator.test.js && node tests/generatorClient.test.js && node tests/aiGuardrails.test.js && node tests/learning.test.js",
     "test:mascot": "node tests/mascot.test.js",
     "test:admin": "node tests/admin.test.js",
     "test:generator": "node tests/generator.test.js && node tests/generatorClient.test.js",
@@ -24,7 +24,11 @@
     "prepreview": "node scripts/build.js --bundle-only",
     "predev": "node scripts/build.js",
     "test:supabase": "node tests/supabase.test.js",
-    "test:auth": "node tests/auth.test.js"
+    "test:auth": "node tests/auth.test.js",
+    "seed:roadmap": "node scripts/roadmap-seed.js",
+    "seed:roadmap:check": "node scripts/roadmap-seed.js --check",
+    "test:learning": "node tests/learning.test.js",
+    "test:learning:browser": "node tests/learning.browser.test.js"
   },
   "engines": {
     "node": ">=22"
@@ -35,6 +39,7 @@
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.8",
+    "@playwright/test": "^1.63.0",
     "esbuild": "^0.28.2"
   }
 }
