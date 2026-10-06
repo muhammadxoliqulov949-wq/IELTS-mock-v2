@@ -28,6 +28,28 @@ To'liq admin panel (`#/admin`): statistika, foydalanuvchilar boshqaruvi (rol/o'c
 
 O'rnatish va to'liq yo'riqnoma: [ADMIN.md](ADMIN.md) — SQL migratsiya, birinchi admin, xavfsizlik modeli, kontent shakli.
 
+## ✨ 1-Click AI Mock Generator (admin)
+
+`#/admin` → **Mock tests** → **✨ AI orqali yangi Mock yaratish (1-Click IELTS Generator)** — bir tugma bilan
+to'liq IELTS mock test: Listening (4 part, 40 savol, MP3), Reading (3 passage, 40 savol), Writing (Task 1 grafik +
+Task 2 insho), Speaking (Part 1–3 + cue card).
+
+- **48 mavzuli ombor** (`lib/topicPool.js`) + har safar boshqacha savol turi kombinatsiyasi, `temperature: 0.85`
+- **Audio:** Edge TTS (bepul, MP3) → Gemini TTS (WAV) fallback, Supabase Storage `ielts-media` bucket'iga yoziladi
+- **Writing Task 1:** `chartSpec` canvas'da chiziladi va PNG sifatida yuklanadi
+- Natija to'g'ridan-to'g'ri `mock_tests` + `mock_test_meta` ga yoziladi va darhol tahrirlashga ochiladi
+- `GEMINI_API_KEY` bo'lmasa admin aniq xabar ko'radi: *"Iltimos, avval GEMINI_API_KEY sozlang"*
+
+To'liq yo'riqnoma: [ADMIN.md](ADMIN.md) → “4.5 AI Generator”.
+
+## 🛡️ IELTS guardrails va 7 kunlik AI kesh
+
+- **Qat'iy chegara:** barcha AI chaqiruvlariga *"IELTS Murabbiyi"* System Instruction biriktirilgan — dasturlash, siyosat, erkin suhbat yoki umumiy savollar boshqa javobsiz, faqat rad etish jumlasi bilan qaytariladi. Coach sahifasida savol tarmoq chizig'idan **oldin** brauzerda tekshiriladi.
+- **7 kunlik kesh (`public.ai_cache`):** bir xil savol 7 kun ichida qayta berilsa Gemini chaqirilmaydi — javob bazadan olinadi. Muddati o'tgan qator `upsert` bilan yangilanadi. Keshni faqat server ishlatadi (RLS yoqilgan, policy yo'q).
+- 1-Click Generator ataylab keshlanmaydi — har bir mock test boshqacha bo'ladi.
+
+Tafsilotlar: [SUPABASE.md](SUPABASE.md) → “AI kesh (7 kunlik TTL) va IELTS guardrails” va [ADMIN.md](ADMIN.md) → “4.6 AI chegarasi (guardrails) va 7 kunlik kesh”.
+
 ## 🧭 Self-study Roadmap + gamification
 
 `#/roadmap` sahifasida A1→A2 dan B2→C1 gacha to‘rt bosqich, har birida uchta tayyor ingliz tili/IELTS mavzusi, qisqa konspekt, ChatGPT/Claude promptini nusxalash va serverda baholanadigan 5 savolli quiz mavjud. 80%+ natija mavzuni tugatadi va daraja mukofotini bir martagina beradi (10/20/35/50 coins). Mock Listening/Reading bandlari ham 30/60/100 coins tier'lari bilan wallet'ga qo‘shiladi. Header'da coin balansi, `#/leaderboard` da rank, avatar, A1–C1 daraja badge'lari va top-3 medallari ko‘rinadi.
@@ -90,13 +112,16 @@ Nimalar tekshiriladi:
 - `tests/quiz.test.js` — `/api/quiz` endpoint
 - `tests/mascot.test.js` — Bandly: logo, hero, coach, bo'sh holatlar, suzuvchi hamroh, assetlar va tarjimalar
 - `tests/admin.test.js` — admin: guard/redirect, nav ko'rinishi, RLS va SQL invariantlari, muharrir validatsiyasi, XSS
+- `tests/generator.test.js` — AI generator: mavzu ombori, endpoint (har bir skill, kalit xabari, audio), TTS, i18n, wiring
+- `tests/generatorClient.test.js` — generator modal oqimi: generatsiya → media upload → Supabase saqlash → xulosa
+- `tests/aiGuardrails.test.js` — IELTS guardrails (rad etish) va 7 kunlik TTL kesh (PGlite bilan)
 - `tests/roadmap.test.js` — Roadmap SQL/RLS, quiz threshold, duplicate coin rewards, mock reward tiers va leaderboard maxfiyligi
 
 ## ☁️ Deploy (Vercel)
 
 1. Reponi GitHub'ga push qiling
 2. [vercel.com](https://vercel.com) → **New Project** → reponi tanlang
-3. Environment Variables: `GEMINI_API_KEY`
+3. Environment Variables: `GEMINI_API_KEY` (AI baholash, AI Coach va 1-Click AI Mock Generator uchun), `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` (7 kunlik AI kesh uchun)
 4. **Deploy** — `vercel.json` SPA routingni boshqaradi
 
 ## 🧩 Loyiha tuzilishi
@@ -106,7 +131,14 @@ api/
   grade.js       → AI examiner (writing/speaking)
   coach.js       → AI Coach suhbatdoshi
   quiz.js        → AI-generated quiz (local fallback bilan)
+  generate-mock.js → 1-Click AI mock generator endpoint
   .env.example
+lib/
+  aiGuardrails.js → qat'iy IELTS System Instruction + mavzudan tashqari so'rovni rad etish
+  aiCache.js      → 7 kunlik TTL kesh (public.ai_cache)
+  topicPool.js    → 48 IELTS mavzusi + savol turi aralashtirish
+  edgeTts.js      → Edge TTS (MP3) + Gemini TTS (WAV) fallback
+mockGenerator.js → admin UI: 1-Click AI generator modal
 data.js          → Test 1 kontenti
 content2.js      → Test 2, explanations, lessons, vocabulary, quiz (premium pack)
 i18n.js          → en/uz/ru tarjimasi
@@ -118,7 +150,7 @@ manifest.webmanifest + sw.js  → PWA
 assets/          → Bandly maskot assetlari (mascot, mascot-head, favicon, og-mascot)
 icons/           → PWA ikonkalari (mascot-180/192/512, icon.svg)
 admin.js         → Admin panel: mantiqiy qatlam, view, test muharriri (vizual + JSON)
-supabase/migrations/  → SQL: mock_results, admin/RBAC, media Storage, Roadmap/coins/leaderboard va RLS
+supabase/migrations/  → SQL: mock_results, admin/RBAC, media Storage, Roadmap/coins/leaderboard, ai_cache va RLS
 ```
 
 ## ⚠️ Eslatma

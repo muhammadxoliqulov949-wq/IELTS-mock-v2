@@ -97,6 +97,7 @@ Qidiruv, jadval (avatar, ism, email, rol, testlar soni, sana) va amallar:
 - **Your tests** — admin yaratgan testlar. Har biri 4 ta bo'lim (Listening/Reading/Writing/Speaking)
   uchun alohida kontent blokiga ega.
 - **New test** → nomi, identifikator (`test5`, `test6`…), qiyinlik, nashr holati
+- **✨ AI orqali yangi Mock (1-Click IELTS Generator)** → to'liq tayyor testni bir tugma bilan yaratish (4-bo'limga qarang)
 - Har bir bo'lim uchun alohida muharrir; har biri alohida nashr qilinadi
 - Test o'chirilganda uning 4 ta bo'limi ham o'chadi
 
@@ -130,6 +131,88 @@ Listening/Reading savol turlari vizual konstruktorda skill bo‘yicha ajratilgan
 Admin visual builder ichida MP3 yoki rasm tanlaydi. Fayl client’dan Supabase Storage `ielts-media` bucket’iga to‘g‘ridan-to‘g‘ri yuklanadi; `audioUrl` / `imageUrl` public URL bilan avtomatik to‘ldiriladi. Manual public URL maydoni ham bor. O‘quvchiga MP3 Listening’da bir marta ijro qilinadi; Writing Task 1 rasm sifatida ko‘rsatiladi. Eski `transcript` va `chartData` maydonlari saqlanadi — avvalgi testlar speech-synthesis va matnli vizual bilan ishlashda davom etadi.
 
 Supabase Storage RLS’dagi `ielts-media: admins upload/update/delete` siyosatlari haqiqiy ruxsat manbai; UI’dagi rol tekshiruvi faqat interfeys uchun. Public read barcha o‘quvchilarga nashr qilingan media’ni ko‘rishga ruxsat beradi. Bucket limiti 50 MB; MP3 va PNG/JPG/WebP qabul qilinadi.
+
+### 4.5 AI Generator — bir tugma bilan to'liq mock test
+
+`#/admin` → **Mock tests** → **✨ AI orqali yangi Mock (1-Click IELTS Generator)**.
+
+Modal oynada quyidagilar bor:
+
+| Maydon | Izoh |
+| --- | --- |
+| **Test raqami/nomi** | Avtomatik to'ldiriladi — keyingi bo'sh raqam (`Practice Test 6`). Test id `test6` ko'rinishida yaratiladi |
+| **Qiyinlik darajasi** | `Standard IELTS` yoki `Hard` (uzunroq gaplar, zichroq leksika, nozik distraktorlar) |
+| **Ixtiyoriy mavzu yo'nalishi** | Bo'sh qoldirilsa — quyidagi ombordan tanlanadi; to'ldirilsa — butun test shu mavzuda |
+| **Generatsiya qilish** | `Listening → Reading → Writing → Speaking` progress bilan ishlaydi |
+| **Nashr qilish** | Belgilangan bo'lsa test `is_published = true` bilan yoziladi (o'quvchilarga ko'rinadi); belgilanmasa — qoralama |
+
+**Takrorlanishning oldini olish (Dynamic Topic & Diversity Pool).**
+`lib/topicPool.js` ichida **48 ta rasmiy IELTS yo'nalishi** ombori bor (Space exploration, Marine biology,
+Cognitive psychology, Urban architecture, Ancient history, Artificial Intelligence, Agricultural innovations va h.k.).
+Har bir generatsiyada:
+
+- har bir bo'lim uchun `Math.random()` bilan **alohida tasodifiy mavzu** tanlanadi;
+- savol turlari (T/F/NG, Headings, Multiple Choice, Summary fill-in, Table completion…) har safar
+  **boshqacha kombinatsiyada** aralashtiriladi (Listening: 4×10, Reading: 13+14+13 = 40 savol);
+- Gemini so'rovi `temperature: 0.85` bilan yuboriladi — natija har safar boshqacha.
+
+**Format 100% IELTS bo'yicha:** Listening (4 part, 40 savol, 4 to'liq transcript), Reading (3 akademik passage,
+40 savol — javob kaliti va tushuntirish bilan), Writing (Task 1 grafik/jadval + Task 2 insho), Speaking
+(Part 1–3, shu jumladan Part 2 Cue Card).
+
+**Audio (MP3).** Har bir Listening transcript Microsoft'ning bepul **Edge TTS** xizmati orqali MP3 ga
+aylantiriladi (`lib/edgeTts.js`, API kalit kerak emas). Agar Edge javob bermasa, tizim avtomatik
+**Gemini TTS** ga o'tadi (WAV). Audio to'g'ridan-to'g'ri Supabase Storage `ielts-media` bucket'iga,
+adminning o'z tokeni bilan yuklanadi va havola `audioUrl` maydoniga tushadi — boshqa brauzer upload
+yo'li ham ishlaydi (RLS baribir admin'ni tekshiradi). Audio yaratilmasa, transcript saqlanib qoladi va
+admin MP3 ni qo'lda yuklashi mumkin.
+
+**Writing Task 1 diagrammasi.** Model `chartSpec` (tur, nom, o'lchov, label'lar, seriyalar) qaytaradi;
+modal uni brauzerda canvas'da chizib PNG ga aylantiradi va `images/` ga yuklaydi. Rastr ishlamasa,
+`chartData` matn shaklida saqlanadi.
+
+**Saqlash.** To'rt bo'lim ham tayyor bo'lgach, ma'lumotlar mavjud sxema bo'yicha yoziladi:
+`mock_tests` (har bir `test_id × skill` uchun bitta qator) va `mock_test_meta` (nomi, qiyinligi, nashr holati).
+Yozish odatgi admin Supabase chaqiruvlari orqali boradi — PostgreSQL RLS yagona haqiqiy ruxsat manbai.
+
+**Yaratilgandan keyingi natija.** Modal xulosada savollar soni, MP3 soni va diagramma holatini ko'rsatadi,
+har bir bo'limni **darhol ko'rish/tahrirlash** uchun tugmalar beradi (odatgi muharrir ochiladi).
+Formadagi **“Nashr qilish”** katakchasi (odatda belgilangan) testni o'quvchilarga ko'rinadimi yoki
+qoralama sifatida saqlanadini boshqaradi; qo'lda tuzilgan yangi testdan farqi — bir tugma bilan
+yaratilgan test darhol muharrirga uzatiladi. Agar test id allaqachon mavjud bo'lsa, modal
+ogohlantiradi: generatsiya natijasi mavjud bo'limlarning ustiga yoziladi.
+
+**`GEMINI_API_KEY` kiritilmagan bo'lsa** endpoint aniq xabar qaytaradi:
+*"Iltimos, avval GEMINI_API_KEY sozlang — AI generator ishga tushishi uchun Gemini API kaliti kerak."*
+Va qayerdan olish ko'rsatiladi (https://aistudio.google.com/apikey → Vercel → Settings → Environment Variables).
+
+So'ng sahifani yangilang — yangi test test tanlash oynasida paydo bo'ladi.
+
+### 4.6 AI chegarasi (guardrails) va 7 kunlik kesh
+
+Generator va boshqa AI xizmatlar (Coach, Writing/Speaking baholash, Quiz) **faqat IELTS va ingliz tili** doirasida ishlaydi.
+
+**Guardrails (`lib/aiGuardrails.js`).** Har bir Gemini chaqiruviga qat'iy **System Instruction** biriktiriladi — model o'zini faqat *"IELTS Murabbiyi"* sifatida tutadi. IELTS/ingliz tiliga aloqasi bo'lmagan so'rov (dasturlash, siyosat, erkin suhbat, umumiy savollar) boshqa hech qanday javobsiz, faqat quyidagi aniq jumla bilan rad etiladi:
+
+> Kechirasiz, men faquq IELTS va inglng tiliga doir savollarga yordak bera olaman.
+
+Bu qatlam to'rttala endpointda ham bor: `api/generate-mock.js`, `api/coach.js`, `api/grade.js`, `api/quiz.js`. Coach sahifasida savol **tarmoq chizig'idan oldin** brauzerda tekshiriladi (`script.js`), shuning uchun mavzudan tashqari xabar serverga ham bormaydi. Guardrails brauzer uchun `public/lib/aiGuardrails.js` ga ko'chiriladi va `sw.js` precache ro'yxatiga kiritilgan.
+
+**7 kunlik kesh (`lib/aiCache.js` + `public.ai_cache`).** Bir xil savol 7 kun ichida qayta berilsa, Gemini umuman chaqirilmaydi — javob ma'lumot bazasidan olinadi:
+
+| Bosqich | Nima sodir bo'ladi |
+| --- | --- |
+| 1 | Savol tozalib (`cleanPrompt`) `sha256` ga aylanadi → `prompt_hash` |
+| 2 | `select` qilinadi. Agar `now() - created_at < interval '7 days'` — keshdagi javob qaytadi, **Gemini chaqirilmaydi** |
+| 3 | Muddati o'tgan bo'lsa Gemini'ga so'rov ketadi va javob `Prefer: resolution=merge-duplicates` bilan qatorga upsert qilinadi — eski qator yangilanadi, 7 kunlik muddat qaytadan boshlanadi |
+
+Kesh kaliti bo'lim va parametrlarga bog'liq: `coach:<savol>|<band>|<weakest>`, `grade:writing:<savol>`, `grade:speaking:<savol>`, `quiz:<mavzu>:<savollar soni>`. Coach javobi oddiy matn, baholash/quiz javoblari esa obyekt sifatida saqlanadi — ikkisi ham qo'llanadi.
+
+**Xavfsizlik.** `ai_cache` jadvalida RLS yoqilgan va **hech qanday policy yo'q**, `anon`/`authenticated` rollardan huquqlar olib tashlangan. Ya'ni keshni faqat server (`SUPABASE_SERVICE_ROLE_KEY`) ishlatadi — brauzer keshga yozolmaydi. Migratsiya: `supabase/migrations/202610060002_ai_cache.sql`, tafsilotlar `SUPABASE.md` → "AI kesh (7 kunlik TTL) va IELTS guardrails".
+
+**Generator keshdan mustasno.** `api/generate-mock.js` ataylab keshlanmaydi — har bir mock test boshqacha bo'lishi kerak.
+
+---
 
 ### JSON shakli va eski testlar bilan moslik
 
@@ -181,6 +264,12 @@ Nashrdan olinsa, keyingi sahifa yangilanishida yo'qoladi.
 | Kirganda dashboard'ga tashlab yuboradi | Rol `admin` emas yoki profil yuklanmagan | `select * from profiles where email = '…';` bilan tekshiring |
 | Jadvallar bo'sh, lekin xato yo'q | RLS hammasini filtrlayapti | `role` ustunini tekshiring; `select public.is_admin();` `true` qaytarishi kerak |
 | Test tanlash oynasida yangi test yo'q | Test yoki uning bo'limi nashr qilinmagan | Ham meta, ham kerakli bo'limlar `Published` bo'lishi kerak |
+| "Iltimos, avval GEMINI_API_KEY sozlang" | Serverda Gemini kaliti yo'q | Vercel → Settings → Environment Variables → `GEMINI_API_KEY` qo'shing va qayta deploy qiling |
+| Listening bo'limida audio yo'q | Edge TTS va Gemini TTS javob bermadi | `audioUrl` bo'sh — muharrirga kirib MP3 ni qo'lda yuklang; transcript saqlangan |
+| AI generator tugmasi ishlamaydi | `mockGenerator.js` / `lib/topicPool.js` yuklanmagan | `index.html` skriptlari va `sw.js` precache ro'yxatini tekshiring |
+| AI IELTS'dan tashqari savolga javob berdi | So'rov guardrails'dan o'tib ketdi | `public/lib/aiGuardrails.js` yuklangani va `api/*` da `withGuardrails` borligini tekshiring; brauzer keshi'ni tozalang |
+| AI har safar bir xil javobni berayapti | Kesh ishlayapti (bu normal) | 7 kunlik kesh — boshqa javob kerak bo'lsa savolni biroz boshqacha yozing yoki `ai_cache` qatorini o'chiring |
+| Kesh ishlamayapti (har safar Gemini chaqiriladi) | `SUPABASE_SERVICE_ROLE_KEY` yoki `202610060002_ai_cache.sql` migratsiyasi yo'q | Migratsiyani qo'llang; server log'ida kesh o'qish/yozish xatosini tekshiring — kesh yozilmasa ham AI javob beraveradi |
 
 ---
 
@@ -191,6 +280,16 @@ supabase/migrations/202610050001_admin.sql   admin jadvallari, RPC, RLS, trigger
 supabase/migrations/202610050002_media_storage.sql  ielts-media bucket + admin-only upload RLS
 supabaseClient.js                            admin API + Supabase Storage media upload
 admin.js                                     panel mantiqiy qatlami + IELTS konstruktor + JSON muharriri
+mockGenerator.js                             admin UI: 1-Click AI generator modal (progress, saqlash, tahrirlash)
+lib/topicPool.js                             48 mavzu + savol turi aralashtirish (brauzer va Node uchun UMD)
+lib/edgeTts.js                               Edge TTS (MP3) + Gemini TTS (WAV) fallback
+api/generate-mock.js                         POST /api/generate-mock — bo'lim va audio generatsiyasi
+tests/generator.test.js                      pool, endpoint, TTS, i18n, wiring testlari
+tests/generatorClient.test.js                modal oqimi: generatsiya → upload → saqlash → xulosa
+lib/aiGuardrails.js                         qat'iy System Instruction + mavzudan tashqari so'rovni rad etish
+lib/aiCache.js                              7 kunlik TTL kesh (sha256 kalit, upsert, xotira nusxasi)
+supabase/migrations/202610060002_ai_cache.sql  public.ai_cache — AI javoblari keshi (RLS, policy yo'q)
+tests/aiGuardrails.test.js                  guardrails + 7 kunlik kesh testlari (PGlite bilan)
 script.js                                    #/admin route, learner runner, audio/image rendering
 styles.css                                   admin builder + media + exam content stillari
 tests/admin.test.js                          guard/RLS, media migratsiyasi, format, validatsiya, XSS testlari

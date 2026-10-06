@@ -7,6 +7,8 @@
  * Requires env var: GEMINI_API_KEY (free key at https://aistudio.google.com/apikey)
  */
 const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
+const guard = require('../lib/aiGuardrails.js');
+const aiCache = require('../lib/aiCache.js');
 
 /* ---------- tiny in-memory rate limiter (per server instance) ---------- */
 const RATE_WINDOW_MS = 60 * 1000;
@@ -68,6 +70,13 @@ module.exports = async function handler(req, res) {
     return;
   }
 
+  /* Strict IELTS boundary (lib/aiGuardrails.js): a clearly out-of-scope
+     question is refused before a Gemini token is spent. */
+  if (guard.isLikelyOffTopic(message)) {
+    res.status(400).json({ error: guard.REFUSAL_MESSAGE, code: guard.OFF_TOPIC });
+    return;
+  }
+
   try {
     const p = profile || {};
     const profileLine = `Candidate profile — latest overall band: ${p.band ?? 'not assessed yet'}; weakest skill: ${p.weakest ?? 'none yet'}; saved mistakes: ${p.mistakeCount ?? 0}.`;
@@ -85,29 +94,40 @@ module.exports = async function handler(req, res) {
     }
     contents.push({ role: 'user', parts: [{ text: message }] });
 
-    const geminiRes = await fetch(`${GEMINI_URL}?key=${process.env.GEMINI_API_KEY}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        system_instruction: { parts: [{ text: `${COACH_SYSTEM}\n\n${profileLine}` }] },
-        contents,
-        generationConfig: { temperature: 0.6, maxOutputTokens: 900 }
-      })
+    /* 7-day TTL cache (public.ai_cache, see lib/aiCache.js): the same
+       question about the same profile is answered straight from the
+       database and Gemini is not called again. */
+    const cacheKey = `coach:${guard.cleanPrompt(message)}|${p.band ?? '-'}|${p.weakest ?? '-'}`;
+    const { data: reply } = await aiCache.withCache(cacheKey, async () => {
+      const geminiRes = await fetch(`${GEMINI_URL}?key=${process.env.GEMINI_API_KEY}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          system_instruction: { parts: [{ text: guard.withGuardrails(`${COACH_SYSTEM}\n\n${profileLine}`) }] },
+          contents,
+          generationConfig: { temperature: 0.6, maxOutputTokens: 900 }
+        })
+      });
+      if (!geminiRes.ok) {
+        const errText = (await geminiRes.text()).slice(0, 400);
+        const err = new Error(`Gemini API error (${geminiRes.status}): ${errText}`);
+        err.status = geminiRes.status;
+        throw err;
+      }
+      const data = await geminiRes.json();
+      const text = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+      if (!text) throw new Error('Coach produced no reply — please try again');
+      return text;
     });
 
-    if (!geminiRes.ok) {
-      const errText = (await geminiRes.text()).slice(0, 400);
-      res.status(geminiRes.status).json({ error: `Gemini API error (${geminiRes.status}): ${errText}` });
-      return;
-    }
-    const data = await geminiRes.json();
-    const reply = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-    if (!reply) {
-      res.status(502).json({ error: 'Coach produced no reply — please try again' });
+    /* The model obeyed the guardrails and refused: hand back the canonical
+       Uzbek sentence rather than whatever wording it invented. */
+    if (guard.looksLikeRefusal(reply)) {
+      res.status(200).json({ reply: guard.REFUSAL_MESSAGE, offTopic: true });
       return;
     }
     res.status(200).json({ reply });
   } catch (err) {
-    res.status(500).json({ error: err?.message || 'Coach error. Please try again.' });
+    res.status(err && err.status ? err.status : 500).json({ error: err?.message || 'Coach error. Please try again.' });
   }
 };

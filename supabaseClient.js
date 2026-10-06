@@ -271,6 +271,19 @@ async function requireAdminClient() {
   return sb;
 }
 
+/* The signed-in user's access token. The AI generator endpoint needs it to
+   upload generated Listening audio into the public "ielts-media" bucket
+   under the admin's own identity — the storage policies (only admins may
+   write) then apply exactly as they do for a browser upload. */
+export async function getAccessToken() {
+  const sb = await requireClient();
+  if (!currentUser) return '';
+  try {
+    const { data } = await sb.auth.getSession();
+    return (data && data.session && data.session.access_token) || '';
+  } catch { return ''; }
+}
+
 /* Overview cards — aggregated in Postgres by public.admin_stats(). */
 export async function adminStats() {
   const sb = await requireAdminClient();
