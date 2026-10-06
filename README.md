@@ -50,11 +50,40 @@ To'liq yo'riqnoma: [ADMIN.md](ADMIN.md) → “4.5 AI Generator”.
 
 Tafsilotlar: [SUPABASE.md](SUPABASE.md) → “AI kesh (7 kunlik TTL) va IELTS guardrails” va [ADMIN.md](ADMIN.md) → “4.6 AI chegarasi (guardrails) va 7 kunlik kesh”.
 
-## 🧭 Self-study Roadmap + gamification
+## 🧭 Interaktiv Roadmap, mini-o‘yinlar va Daily Streak
 
-`#/roadmap` sahifasida A1→A2 dan B2→C1 gacha to‘rt bosqich, har birida uchta tayyor ingliz tili/IELTS mavzusi, qisqa konspekt, ChatGPT/Claude promptini nusxalash va serverda baholanadigan 5 savolli quiz mavjud. 80%+ natija mavzuni tugatadi va daraja mukofotini bir martagina beradi (10/20/35/50 coins). Mock Listening/Reading bandlari ham 30/60/100 coins tier'lari bilan wallet'ga qo‘shiladi. Header'da coin balansi, `#/leaderboard` da rank, avatar, A1–C1 daraja badge'lari va top-3 medallari ko‘rinadi.
+`#/roadmap` — Duolingo uslubidagi ketma-ket o‘quv yo‘li: **40 ta mavzu, 200 ta quiz savoli va 120 ta mini-o‘yin**. Har bir mavzuda **O‘rganish → O‘ynash → Test** tablari, qisqa konspekt va nusxalashga tayyor AI-tutor prompti bor.
 
-Rewards Supabase RPC va idempotent ledger orqali beriladi; brauzer coin miqdorini o‘zi tanlay olmaydi. O‘rnatish tartibi, RLS va leaderboard maxfiylik tafsilotlari: [SUPABASE.md](SUPABASE.md) → “Roadmap, tangalar va leaderboard”.
+| Bosqich | Mavzular | Asosiy yo‘nalishlar |
+| --- | --- | --- |
+| A1 → A2 | 10 | Asosiy zamonlar, kundalik lug‘at, savollar, predloglar, listening asoslari |
+| A2 → B1 | 10 | Artikllar, bog‘lovchilar, present perfect, modallar, pre-intermediate vocabulary |
+| B1 → B2 | 10 | Academic Word List, passive voice, paraphrasing, cohesion, IELTS reading/listening |
+| B2 → C1 | 10 | Inversion, C1 idioms/collocations, hedging, murakkab gaplar va IELTS Task 2 |
+
+Har bir mavzuning uchta o‘yini:
+- **Word Match** — aralashtirilgan 10 ta kartochka / 5 ta so‘z–ma’no jufti; to‘g‘ri juft yashil yonib yo‘qoladi, noto‘g‘risi silkinadi. Mukofot: **+10 coins**.
+- **Speed Vocabulary** — **60 soniya**, har savolda 3 variant, `1`–`3` klaviatura tugmalari, tez javob va ketma-ket to‘g‘ri javob uchun combo bonus. Muvaffaqiyatli natija: **+5–15 coins**.
+- **Sentence Scramble** — bosiladigan so‘z bloklaridan 3 ta darajaga mos gap tuzish; tanlangan blokni qaytarish mumkin. To‘liq to‘g‘ri natija: **+15 coins**.
+
+**Progress:** birinchi mavzu ochiq. 5 savolli mastery quiz’da **80%+** natija keyingi mavzuni ochadi; bosqichlar orasida ham tartib saqlanadi. O‘yinlar mashq va streak uchun, lekin mastery quiz’ni chetlab o‘tmaydi. Oldingi 12 mavzuning ID’lari, progressi va tangalari saqlanadi; avval tugatilgan mavzularni qayta ko‘rish mumkin.
+
+**Streak:** kamida bitta tekshirilgan quiz yoki o‘yin tugatish bir **UTC** kunida faqat bir marta streak’ni oshiradi. Shunchaki login qilish hisoblanmaydi. Bir kun o‘tkazib yuborilsa streak `0`, qayta mashq qilinganda `1` bo‘ladi. 🔥 va coin balansi profil yonida, mobil header’da ham doim ko‘rinadi; Roadmap’da haftalik streak paneli bor.
+
+**Rewards:** har bir topic/o‘yin uchun UTC kuniga bir marta; o‘sha sessiyani qayta yuborish ikkinchi credit bermaydi. Mastery quiz mukofoti alohida, bir martalik **10/20/35/50 coins**. Mock Listening/Reading bandlari ham **30/60/100** tier’lari bilan wallet va `#/leaderboard` ga qo‘shiladi. Miqdor, tezlik, combo va javoblar Supabase’da hisoblanadi — client coin miqdorini tanlay olmaydi. Bu mashq uchun virtual ballar, proctored imtihon yoki pul emas.
+
+Glassmorphism, dark/light tema, EN/UZ/RU interfeys, keyboard/focus qo‘llovi, reduced-motion va Web Audio API pop/ding ovozlari (mute bilan) mavjud. Mehmon birinchi mavzuning o‘yinlarini sinab ko‘ra oladi, ammo real coin/streak/progress saqlanmaydi va yangi mavzu ochilmaydi.
+
+**O‘rnatish:** avvalgi migratsiyalardan keyin `supabase/migrations/202610060003_interactive_learning.sql` ni qo‘llang. Faylda 40 ta tayyor seed, `topics.game_data`, streak ustunlari, RLS va grader/reward RPC’lari bor. To‘liq tartib: [SUPABASE.md](SUPABASE.md) → “Interaktiv Roadmap, tangalar va leaderboard”. Kodni deploy qilishning o‘zi hosted bazaga migratsiya qo‘llamaydi.
+
+Kontentning yagona manbasi — `scripts/roadmap-seed.js`:
+
+```bash
+npm run seed:roadmap        # SQL seed va public katalogni birga yangilash
+npm run seed:roadmap:check  # 40 mavzu / 200 savol / 120 o‘yin va kalitlarni tekshirish
+```
+
+Public katalog `lib/roadmapContent.js` mehmon mashqi uchun ishlatiladi; private quiz kalitlari va generator production public build’ga chiqarilmaydi. Kelajakda kontent o‘zgarsa, mavjud hosted baza uchun yangi migration ham tayyorlang — eski migration’ni tahrirlash `db push` orqali uni qayta qo‘llamaydi.
 
 ## ✨ Imkoniyatlar
 
@@ -67,7 +96,7 @@ Rewards Supabase RPC va idempotent ledger orqali beriladi; brauzer coin miqdorin
 - **Mistake notebook** — har bir xato javob saqlanadi (sizning javobingiz vs to'g'ri javob)
 
 ### Premium/talim
-- **Roadmap + gamification** — A1–C1 bosqichlari, mavzu konspektlari va AI promptlari, serverda baholanadigan quizlar, tangalar hamda global leaderboard.
+- **Roadmap + gamification** — 40 mavzu / 4 bosqich, 120 mini-o‘yin, mastery quiz’lar, qulflangan ketma-ket progress, Daily Streak, coins va global leaderboard.
 - **Dashboard** — overall band, band trend (SVG grafik), haftalik faollik, shaxsiy 6 kunlik reja
 - **Full mock** — Listening → Reading → Writing → Speaking bitta sessiyada, combined result
 - **Mini lessons** — Writing/Reading/Listening/Speaking/Vocabulary uchun 6 ta qisqa dars
@@ -103,6 +132,8 @@ Yoki Vercel CLI bilan: `npm run dev`. Node.js 22+ kerak.
 
 ```bash
 npm test
+npm run seed:roadmap:check
+npm run build
 ```
 
 Nimalar tekshiriladi:
@@ -115,7 +146,22 @@ Nimalar tekshiriladi:
 - `tests/generator.test.js` — AI generator: mavzu ombori, endpoint (har bir skill, kalit xabari, audio), TTS, i18n, wiring
 - `tests/generatorClient.test.js` — generator modal oqimi: generatsiya → media upload → Supabase saqlash → xulosa
 - `tests/aiGuardrails.test.js` — IELTS guardrails (rad etish) va 7 kunlik TTL kesh (PGlite bilan)
-- `tests/roadmap.test.js` — Roadmap SQL/RLS, quiz threshold, duplicate coin rewards, mock reward tiers va leaderboard maxfiyligi
+- `tests/roadmap.test.js` — eski gamification migration’i, quiz threshold, duplicate coin rewards, mock reward tiers va leaderboard maxfiyligi
+- `tests/learning.test.js` — 40 ta seed, uchta o‘yin, global unlock, UTC streak, server timer/combo, RLS, idempotency, kontent o‘zgarishi, account switch, guest va real SDK HTTP fixture’lari
+
+Ixtiyoriy **haqiqiy brauzer** testlari (alohida terminalda preview server ishlasin):
+
+```bash
+npx playwright install --with-deps chromium
+npm run preview
+# boshqa terminal:
+npm run test:learning:browser
+# bitta oqimni tekshirish:
+npm run test:learning:browser -- --guest
+npm run test:learning:browser -- --account
+```
+
+`tests/learning.browser.test.js` desktop / 390px / 320px, uchta guest o‘yin, klaviatura, Uzbek/light tema, real SDK login, coin/streak yangilanishi, quiz unlock va leaderboard’ni tekshiradi. Account oqimi **PGlite’dagi haqiqiy SQL/RLS + intercepted HTTP** ishlatadi; jonli Supabase’ga ulanmaydi. `PLAYWRIGHT_BASE_URL` boshqa preview manzilini, `PLAYWRIGHT_EXECUTABLE_PATH` mavjud Chromium binary’sini, `PLAYWRIGHT_CHROMIUM_ARGS` JSON argumentlar ro‘yxatini tanlaydi. `LEARNING_SCREENSHOT_DIR` berilsa screenshot’lar yoziladi; cache/ignored papkani tanlang va binary/screenshot’larni Git’ga qo‘shmang.
 
 ## ☁️ Deploy (Vercel)
 
@@ -136,8 +182,13 @@ api/
 lib/
   aiGuardrails.js → qat'iy IELTS System Instruction + mavzudan tashqari so'rovni rad etish
   aiCache.js      → 7 kunlik TTL kesh (public.ai_cache)
-  topicPool.js    → 48 IELTS mavzusi + savol turi aralashtirish
+  topicPool.js    → AI mock generator uchun 48 IELTS mavzusi + savol turi aralashtirish
+  learningPath.js → UTC streak, unlock, shuffle, scoring va SVG helpers
+  roadmapContent.js → generated public 40-mavzuli katalog (quiz kalitlarisiz)
   edgeTts.js      → Edge TTS (MP3) + Gemini TTS (WAV) fallback
+scripts/roadmap-seed.js → 40 mavzu va private kalitlar uchun seed generator
+miniGames.js     → Word Match / Speed Vocabulary / Sentence Scramble controller
+learning.css     → Roadmap va o‘yinlar glass UI, mobile, light/dark, reduced-motion
 mockGenerator.js → admin UI: 1-Click AI generator modal
 data.js          → Test 1 kontenti
 content2.js      → Test 2, explanations, lessons, vocabulary, quiz (premium pack)
@@ -150,7 +201,7 @@ manifest.webmanifest + sw.js  → PWA
 assets/          → Bandly maskot assetlari (mascot, mascot-head, favicon, og-mascot)
 icons/           → PWA ikonkalari (mascot-180/192/512, icon.svg)
 admin.js         → Admin panel: mantiqiy qatlam, view, test muharriri (vizual + JSON)
-supabase/migrations/  → SQL: mock_results, admin/RBAC, media Storage, Roadmap/coins/leaderboard, ai_cache va RLS
+supabase/migrations/  → SQL: mock_results, admin/RBAC, media Storage, 40-mavzuli Roadmap/games/streak/coins/leaderboard, ai_cache va RLS
 ```
 
 ## ⚠️ Eslatma

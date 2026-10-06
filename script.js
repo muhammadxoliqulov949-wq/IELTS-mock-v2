@@ -5,6 +5,7 @@ const SERVICES = window.IELTS_SERVICES;
 const I18N = window.IELTS_I18N || { t: (k) => k, current: () => 'en', setLang() {} };
 const t = (k) => I18N.t(k);
 const CLOUD = window.IELTS_CLOUD || null;
+const LEARNING = window.IELTS_LEARNING_PATH || null;
 const STORAGE = 'ielts-v2-store';
 /* Local storage is a results cache, never an authentication authority.
    Only Supabase's restored/verified session can activate an account. */
@@ -169,10 +170,13 @@ const ROADMAP_STAGES = [
   { id: 'B1-B2', title: 'roadmap_stage_b1b2', name: 'roadmap_stage_b1b2_name', hint: 'roadmap_stage_b1b2_hint' },
   { id: 'B2-C1', title: 'roadmap_stage_b2c1', name: 'roadmap_stage_b2c1_name', hint: 'roadmap_stage_b2c1_hint' }
 ];
-let roadmapState = {
-  topics: [], progress: {}, activeStage: 'A1-A2', loadedUser: null,
-  loading: false, error: '', submitError: '', topicId: null, answers: [], result: null, saving: false
-};
+function freshRoadmapState() {
+  return { topics: [], progress: {}, games: {}, activeStage: 'A1-A2', stageChosen: false, loadedUser: null,
+    loading: false, error: '', submitError: '', topicId: null, lessonTab: 'learn', answers: [], result: null, saving: false };
+}
+let roadmapState = freshRoadmapState();
+let roadmapQuizRevision = 0;
+let lastRoadmapTrigger = null;
 let leaderboardState = { rows: [], loading: false, error: '', loadedUser: null };
 function currentCoins() {
   const state = CLOUD && CLOUD.getState ? CLOUD.getState() : null;
@@ -199,6 +203,50 @@ function applyPrefs() {
   }
 }
 const t2 = (k, vars) => (I18N.t2 ? I18N.t2(k, vars) : t(k));
+const roadmapGames = window.IELTS_MINI_GAMES ? window.IELTS_MINI_GAMES.create({
+  cloud: CLOUD, t, t2,
+  isSignedIn: cloudUserActive, getOwner: () => store.user && store.user.id,
+  getTopic: () => roadmapTopics().find(topic => topic.id === roadmapState.topicId),
+  canPlay: roadmapTopicUnlocked,
+  getProgress: (topicId, type) => roadmapState.games[`${topicId}:${type}`],
+  onQuiz: () => { roadmapState.lessonTab = 'quiz'; render(); },
+  onComplete: (result, topicId, type) => {
+    const previous = roadmapState.games[`${topicId}:${type}`] || {};
+    roadmapState.games[`${topicId}:${type}`] = {
+      ...previous, topic_id: topicId, game_type: type,
+      best_score: Math.max(Number(previous.best_score) || 0, Number(result.score_percentage) || 0),
+      is_completed: previous.is_completed || !!result.is_completed
+    };
+    applyLearningResult(result);
+    leaderboardState.loadedUser = null;
+    if (Number(result.coins_awarded) > 0) celebrateCoinReward(result.coins_awarded, currentCoins());
+    else render();
+  }
+}) : null;
+function learningIcon(name, cls) { return LEARNING ? LEARNING.icon(name, cls) : '<span aria-hidden="true">' + ({ lock: '🔒', check: '✓', speed: '◷', trophy: '🏆', arrow: '→', book: '▤', flame: '🔥', coin: '🪙' }[name] || '✦') + '</span>'; }
+function learnerProfile() { return store.user || {}; }
+function currentStreak() {
+  if (LEARNING) return LEARNING.effectiveStreak(learnerProfile());
+  const last = Date.parse(String(learnerProfile().last_active_date || '') + 'T00:00:00Z');
+  const age = Math.floor(Date.now() / 86400000) - Math.floor(last / 86400000);
+  return age >= 0 && age <= 1 ? Math.max(0, Number(learnerProfile().current_streak) || 0) : 0;
+}
+function dailyGoalDone() {
+  if (LEARNING) return LEARNING.activeToday(learnerProfile());
+  return learnerProfile().last_active_date === new Date().toISOString().slice(0, 10);
+}
+function applyLearningResult(result) {
+  if (!store.user) return;
+  const profile = CLOUD && CLOUD.getState && CLOUD.getState().profile;
+  const latest = profile && profile.id === store.user.id ? profile : result;
+  store.user = { ...store.user,
+    coins: Math.max(0, Number(latest.coins ?? result.coins_balance ?? store.user.coins) || 0),
+    current_streak: Number(latest.current_streak ?? result.current_streak) || 0,
+    last_active_date: latest.last_active_date ?? result.last_active_date ?? null
+  };
+  if (activeUser && activeUser.id === store.user.id) activeUser = { ...activeUser, ...store.user };
+}
+
 function esc(v) { return String(v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[c])); }
 function notify(msg) { toast.textContent = msg; toast.classList.add('show'); setTimeout(() => toast.classList.remove('show'), 2400); }
 function fmtTime(seconds) { const m = Math.floor(Math.max(0, seconds) / 60); const s = Math.max(0, seconds) % 60; return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`; }
@@ -360,6 +408,7 @@ function shell(body, active) {
       <button class="icon-btn" data-toggle-theme aria-label="Toggle theme" title="${store.theme === 'light' ? t('theme_dark') : t('theme_light')}">${store.theme === 'light' ? '☀' : '☾'}</button>
       <button class="icon-btn lang-btn" data-toggle-lang aria-label="Switch language" title="EN / UZ / RU">${langShort}</button>
       ${user ? `<div class="nav-user">
+        <a class="daily-streak ${dailyGoalDone() ? 'is-active' : ''}" href="#/roadmap" data-daily-streak aria-label="${esc(t2('streak_nav_label', { n: currentStreak() }))}" title="${esc(t('streak_label'))}"><span aria-hidden="true">${learningIcon('flame')}</span><strong>${currentStreak()}</strong></a>
         <span class="coin-wallet" data-coin-wallet role="status" aria-live="polite" aria-label="${esc(t('coins_balance_label'))}: ${esc(formatCoins(currentCoins()))}" title="${esc(t('coins_balance_label'))}"><span aria-hidden="true">🪙</span><strong>${esc(formatCoins(currentCoins()))}</strong></span>
         <button class="user-chip" id="userChip" aria-expanded="false" aria-haspopup="true">
           ${user.picture ? `<img src="${esc(user.picture)}" alt=""/>` : `<span class="avatar">${esc(firstName[0].toUpperCase())}</span>`}
@@ -1572,13 +1621,23 @@ function bindDocOnce() {
 
   /* Escape closes menus and the lesson modal */
   document.addEventListener('keydown', (e) => {
+    if (e.key === 'Tab' && roadmapState.topicId) {
+      const modal = document.querySelector('.roadmap-modal');
+      if (modal && modal.querySelectorAll) {
+        const focusable = [...modal.querySelectorAll('button:not([disabled]), a[href], input:not([disabled]), textarea, summary, [tabindex="0"]')]
+          .filter(el => el.getClientRects && el.getClientRects().length);
+        const first = focusable[0], last = focusable[focusable.length - 1];
+        if (first && e.shiftKey && (document.activeElement === first || document.activeElement?.id === 'roadmapModalTitle')) { e.preventDefault(); last.focus(); }
+        else if (last && !e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+      }
+    }
     if (e.key !== 'Escape') return;
     const mm = document.querySelector('#mobileMenu');
     if (mm) mm.classList.remove('open');
     const hb = document.querySelector('#hamburgerBtn');
     if (hb) hb.setAttribute('aria-expanded', 'false');
     if (lessonModalId) { lessonModalId = null; render(); }
-    if (roadmapState.topicId) { roadmapState.topicId = null; roadmapState.answers = []; roadmapState.result = null; roadmapState.submitError = ''; roadmapState.saving = false; render(); }
+    if (roadmapState.topicId) closeRoadmapTopic();
   });
 }
 
@@ -1857,88 +1916,143 @@ function gamificationGate() {
 
 async function loadRoadmapData(force = false) {
   if (!CLOUD || typeof CLOUD.loadRoadmap !== 'function' || !cloudUserActive()) return;
-  const owner = store.user.id;
-  if (!force && roadmapState.loadedUser === owner) return;
-  if (roadmapState.loading) return;
-  roadmapState.loading = true;
-  roadmapState.error = '';
+  const owner = store.user.id, view = roadmapState;
+  if (!force && view.loadedUser === owner) return;
+  if (view.loading) return;
+  view.loading = true; view.error = '';
+  if (force && route() === '/roadmap') render();
   try {
     const data = await CLOUD.loadRoadmap();
-    if (!store.user || store.user.id !== owner) return;
+    if (!store.user || store.user.id !== owner || roadmapState !== view) return;
     const stageOrder = new Map(ROADMAP_STAGES.map((stage, i) => [stage.id, i]));
-    roadmapState.topics = (data.topics || []).slice().sort((a, b) =>
+    view.topics = (data.topics || []).slice().sort((a, b) =>
       (stageOrder.get(a.stage) ?? 99) - (stageOrder.get(b.stage) ?? 99)
-      || Number(a.order_index || 0) - Number(b.order_index || 0));
-    roadmapState.progress = Object.fromEntries((data.progress || []).map(row => [row.topic_id, row]));
-    roadmapState.loadedUser = owner;
+      || Number(a.order_index || 0) - Number(b.order_index || 0) || String(a.id).localeCompare(String(b.id), 'en'));
+    view.progress = Object.fromEntries((data.progress || []).map(row => [row.topic_id, row]));
+    view.games = Object.fromEntries((data.games || []).map(row => [`${row.topic_id}:${row.game_type}`, row]));
+    if (!view.loadedUser && !view.stageChosen) {
+      const next = nextRoadmapTopic();
+      if (next) view.activeStage = next.stage;
+    }
+    view.loadedUser = owner;
   } catch (error) {
-    if (store.user && store.user.id === owner) roadmapState.error = String(error.message || t('roadmap_load_error'));
+    if (store.user && store.user.id === owner && roadmapState === view) view.error = String(error.message || t('roadmap_load_error'));
   } finally {
-    if (store.user && store.user.id === owner) roadmapState.loading = false;
-    if (route() === '/roadmap' && store.user && store.user.id === owner) render();
+    if (roadmapState === view) view.loading = false;
+    if (route() === '/roadmap' && store.user && store.user.id === owner && roadmapState === view) render();
   }
 }
 
 function roadmapTopicProgress(id) {
-  const progress = roadmapState.progress[id];
+  const progress = cloudUserActive() ? roadmapState.progress[id] : null;
   return {
     score: Math.max(0, Math.min(100, Number(progress && progress.score_percentage) || 0)),
     completed: !!(progress && progress.is_completed)
   };
 }
 
-function roadmapTopicCard(topic) {
-  const progress = roadmapTopicProgress(topic.id);
-  const firstLine = String(topic.summary || '').split(/\n/)[0];
-  return `<article class="test-card roadmap-topic-card ${progress.completed ? 'is-complete' : ''}">
-    <div class="roadmap-topic-top"><span class="roadmap-topic-stage">${esc(topic.stage)}</span>
-      ${progress.completed ? `<span class="roadmap-complete-badge"><span aria-hidden="true">✓</span> ${esc(t('roadmap_completed'))}</span>` : ''}
-    </div>
-    <h3>${esc(topic.title)}</h3><p class="micro roadmap-summary-preview">${esc(firstLine)}</p>
-    <div class="roadmap-topic-meta"><span class="roadmap-reward">🪙 <strong>+${esc(topic.reward_coins)}</strong> ${esc(t('roadmap_coins'))}</span>
-      <span class="micro">${esc(t('roadmap_mastery'))} <strong>${progress.score}%</strong></span>
-    </div>
-    <div class="roadmap-progress" role="progressbar" aria-label="${esc(t('roadmap_mastery'))}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${progress.score}"><i style="width:${progress.score}%"></i></div>
-    <button class="btn ${progress.completed ? 'btn-ghost' : 'btn-primary'} btn-sm" data-roadmap-open="${esc(topic.id)}">${esc(progress.completed ? t('roadmap_review_topic') : t('roadmap_start_topic'))} ↗</button>
-  </article>`;
+function roadmapTopics() {
+  // Guest content is a public catalogue, never an authentication fallback.
+  return cloudUserActive() ? roadmapState.topics : (window.IELTS_ROADMAP_CONTENT || roadmapState.topics || []);
 }
-
+function roadmapTopicUnlocked(id) {
+  const topics = roadmapTopics();
+  if (LEARNING) return LEARNING.isUnlocked(id, topics, cloudUserActive() ? roadmapState.progress : {});
+  const index = topics.findIndex(topic => topic.id === id);
+  return index >= 0 && (roadmapTopicProgress(id).completed || topics.slice(0, index).every(topic => roadmapTopicProgress(topic.id).completed));
+}
+function nextRoadmapTopic() {
+  const topics = roadmapTopics();
+  return topics.find(topic => !roadmapTopicProgress(topic.id).completed && roadmapTopicUnlocked(topic.id)) || null;
+}
+function roadmapGameCount(topicId) {
+  return ['word_match', 'speed_vocabulary', 'sentence_scramble'].filter(type => roadmapState.games?.[`${topicId}:${type}`]?.is_completed).length;
+}
+function roadmapTopicCard(topic, index) {
+  const progress = roadmapTopicProgress(topic.id), unlocked = roadmapTopicUnlocked(topic.id);
+  const next = nextRoadmapTopic(), current = next && next.id === topic.id;
+  const firstLine = String(topic.summary || '').split(/\n/)[0];
+  const icons = ['book', 'bolt', 'flag', 'match', 'scramble', 'book', 'star', 'arrow', 'speed', 'trophy'];
+  const nodeIcon = progress.completed ? 'check' : unlocked ? icons[index % icons.length] : 'lock';
+  const states = `${progress.completed ? 'is-complete' : ''} ${current ? 'is-current' : ''} ${!unlocked ? 'is-locked' : ''}`;
+  return `<li class="roadmap-path-item ${states}">
+    <div class="roadmap-node-wrap"><button class="roadmap-path-node" data-roadmap-open="${esc(topic.id)}" ${unlocked ? '' : 'disabled'} aria-label="${esc(topic.title)}${!unlocked ? ' · ' + esc(t('roadmap_locked')) : ''}" title="${esc(unlocked ? topic.title : t('roadmap_unlock_hint'))}">${learningIcon(nodeIcon)}</button><span class="roadmap-node-number">${String(index + 1).padStart(2, '0')}</span></div>
+    <article class="test-card roadmap-topic-card ${states}">
+      <div class="roadmap-topic-top"><span class="roadmap-topic-stage">${esc(t2('roadmap_lesson_number', { n: index + 1 }))}</span>${current ? `<span class="roadmap-current-badge">${esc(t('roadmap_current_badge'))}</span>` : progress.completed ? `<span class="roadmap-complete-badge">✓ ${esc(t('roadmap_completed'))}</span>` : `<span class="roadmap-lock-label">${learningIcon('lock')} ${esc(t('roadmap_locked'))}</span>`}</div>
+      <h3>${esc(topic.title)}</h3><p class="micro roadmap-summary-preview">${esc(firstLine)}</p>
+      <div class="roadmap-topic-footer"><span class="roadmap-reward">🪙 +${esc(topic.reward_coins)}</span><span class="roadmap-game-count">${learningIcon('match')} ${esc(roadmapGameCount(topic.id) ? t2('roadmap_game_progress', { n: roadmapGameCount(topic.id) }) : t('roadmap_games_available'))}</span>
+        ${unlocked ? `<button class="roadmap-topic-action" data-roadmap-open="${esc(topic.id)}" aria-label="${esc(progress.completed ? t('roadmap_review_topic') : t('roadmap_start_topic'))}: ${esc(topic.title)}">${esc(progress.completed ? t('roadmap_review_topic') : t('roadmap_start_topic'))} ${learningIcon('arrow')}</button>` : ''}
+      </div>
+      ${progress.score ? `<div class="roadmap-progress" role="progressbar" aria-label="${esc(t('roadmap_mastery'))}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${progress.score}"><i style="width:${progress.score}%"></i></div>` : ''}
+    </article>
+  </li>`;
+}
+function streakCardHtml() {
+  const streak = currentStreak(), done = dailyGoalDone();
+  const week = LEARNING ? LEARNING.streakWeek(learnerProfile()) : [];
+  const locale = store.lang === 'uz' ? 'uz-UZ' : store.lang === 'ru' ? 'ru-RU' : 'en-US';
+  return `<section class="glass streak-card"><div class="streak-card-top"><span class="eyebrow">${esc(t('streak_label'))}</span><span class="streak-status-dot ${done ? 'is-done' : ''}"></span></div>
+    <div class="streak-flame-scene" aria-hidden="true"><i></i><span>${learningIcon('flame')}</span><b>✦</b><em>✧</em></div>
+    <div class="streak-card-count"><strong>${streak}</strong><span>${esc(t2('streak_days', { n: streak }).replace(String(streak), '').trim())}</span></div><h3>${esc(t(streak ? 'streak_active_title' : 'streak_start_title'))}</h3><p class="micro">${esc(t('streak_hint'))}</p>
+    <div class="streak-week" aria-label="${esc(t('streak_label'))}">${week.map(day => {
+      const label = new Intl.DateTimeFormat(locale, { weekday: 'short', timeZone: 'UTC' }).format(day.date);
+      return `<div class="streak-day ${day.done ? 'is-done' : ''} ${day.today ? 'is-today' : ''}" title="${esc(new Intl.DateTimeFormat(locale, { timeZone: 'UTC' }).format(day.date))}${day.today ? ' · ' + esc(t('streak_today')) : ''}"><span>${esc(label)}</span><i>${day.done ? learningIcon('check') : '·'}</i></div>`;
+    }).join('')}</div><div class="daily-goal ${done ? 'is-done' : ''}"><span>${learningIcon(done ? 'check' : 'bolt')} ${esc(t(done ? 'streak_goal_done' : 'streak_goal_pending'))}</span><strong>${done ? '1' : '0'}/1</strong></div>
+    <p class="streak-reset-note">${esc(t('streak_reset_hint'))}</p><small class="streak-utc-note">${esc(t('streak_utc_note'))}</small>
+  </section>`;
+}
+function roadmapPlaygroundCard(next) {
+  const playable = next || roadmapTopics().find(topic => roadmapTopicUnlocked(topic.id));
+  const types = ['word_match', 'speed_vocabulary', 'sentence_scramble'];
+  const icons = ['match', 'speed', 'scramble'], colors = ['mint', 'amber', 'violet'];
+  return `<section class="glass roadmap-playground-card"><span class="eyebrow">${esc(t('roadmap_play_short'))}</span><h3>${esc(t('game_playground'))}</h3><p class="micro">${esc(t('roadmap_daily_bonus'))}</p>
+    <div class="roadmap-quick-games">${types.map((type, i) => `<button class="roadmap-quick-game game-choice--${colors[i]}" data-roadmap-play="${type}" data-roadmap-topic="${esc(playable?.id || '')}" ${playable ? '' : 'disabled'}><span class="quick-game-icon">${learningIcon(icons[i])}</span><span><strong>${esc(t('game_' + type + '_title'))}</strong><small>${i === 1 ? '60 ' + esc(t('game_seconds')) : i === 0 ? esc(t2('game_pairs_count', { n: 0, total: 5 })) : esc(t2('game_sentence_count', { n: 1, total: 3 }))}</small></span>${learningIcon('arrow')}</button>`).join('')}</div><span class="roadmap-mini-reward">🪙 +5–15 ${esc(t('roadmap_coins'))}</span>
+  </section>`;
+}
 function roadmapPage() {
-  const gated = gamificationGate();
-  if (gated) return gated;
+  const signedIn = cloudUserActive(), topics = roadmapTopics();
   const active = ROADMAP_STAGES.find(stage => stage.id === roadmapState.activeStage) || ROADMAP_STAGES[0];
-  const stageTopics = roadmapState.topics.filter(topic => topic.stage === active.id);
-  const completeCount = roadmapState.topics.filter(topic => roadmapTopicProgress(topic.id).completed).length;
-  const average = roadmapState.topics.length
-    ? Math.round(roadmapState.topics.reduce((sum, topic) => sum + roadmapTopicProgress(topic.id).score, 0) / roadmapState.topics.length)
-    : 0;
-  const stageReward = stageTopics.length ? Number(stageTopics[0].reward_coins) || 0
-    : active.id === 'A1-A2' ? 10 : active.id === 'A2-B1' ? 20 : active.id === 'B1-B2' ? 35 : 50;
-  const stageTabs = ROADMAP_STAGES.map(stage => {
-    const topics = roadmapState.topics.filter(topic => topic.stage === stage.id);
-    const done = topics.filter(topic => roadmapTopicProgress(topic.id).completed).length;
-    return `<button class="roadmap-tab ${stage.id === active.id ? 'active' : ''}" role="tab" aria-selected="${stage.id === active.id}" data-roadmap-stage="${stage.id}">
-      <strong>${esc(t(stage.title))}</strong><span>${esc(t(stage.name))}</span><small>${done}/${topics.length} ${esc(t('roadmap_topics_short'))}</small>
-    </button>`;
+  const stageTopics = topics.filter(topic => topic.stage === active.id);
+  const completeCount = topics.filter(topic => roadmapTopicProgress(topic.id).completed).length;
+  const done = stageTopics.filter(topic => roadmapTopicProgress(topic.id).completed).length;
+  const average = topics.length ? Math.round(topics.reduce((sum, topic) => sum + roadmapTopicProgress(topic.id).score, 0) / topics.length) : 0;
+  const next = nextRoadmapTopic(), stageIndex = ROADMAP_STAGES.indexOf(active), target = active.id.split('-')[1];
+  const stageTabs = ROADMAP_STAGES.map((stage, i) => {
+    const list = topics.filter(topic => topic.stage === stage.id), count = list.filter(topic => roadmapTopicProgress(topic.id).completed).length;
+    const locked = list.length && !list.some(topic => roadmapTopicUnlocked(topic.id));
+    return `<button id="roadmap-stage-${i}" class="roadmap-tab ${stage.id === active.id ? 'active' : ''}" role="tab" aria-selected="${stage.id === active.id}" aria-controls="roadmapStagePanel" tabindex="${stage.id === active.id ? '0' : '-1'}" data-roadmap-stage="${stage.id}"><span class="roadmap-tab-index">${String(i + 1).padStart(2, '0')}${locked ? learningIcon('lock') : count === list.length && count ? learningIcon('check') : ''}</span><strong>${esc(t(stage.title))}</strong><span>${esc(t(stage.name))}</span><small>${count}/${list.length || 10} ${esc(t('roadmap_topics_short'))}</small><i class="roadmap-tab-fill" style="--stage-progress:${count / (list.length || 10) * 100}%"></i></button>`;
   }).join('');
-  let topicList = '';
-  if (roadmapState.error) {
+  let topicList;
+  if (signedIn && roadmapState.error) {
     topicList = `<div class="glass roadmap-state roadmap-state--error" role="alert"><strong>${esc(t('roadmap_load_error'))}</strong><p class="micro">${esc(roadmapState.error)}</p><p class="micro">${esc(t('roadmap_migration_hint'))}</p><button class="btn btn-ghost" data-roadmap-retry>${esc(t('roadmap_retry'))} ↻</button></div>`;
-  } else if (roadmapState.loading || roadmapState.loadedUser !== store.user.id) {
-    topicList = `<div class="glass roadmap-state" role="status">${esc(t('roadmap_loading'))}</div>`;
+  } else if (signedIn && (roadmapState.loading || roadmapState.loadedUser !== store.user.id)) {
+    topicList = `<div class="roadmap-path-skeleton" role="status"><p>${esc(t('roadmap_loading'))}</p>${Array.from({ length: 3 }, () => '<div><i></i><span></span></div>').join('')}</div>`;
   } else if (!stageTopics.length) {
     topicList = `<div class="glass roadmap-state"><p class="micro">${esc(t('roadmap_empty'))}</p><button class="btn btn-ghost" data-roadmap-retry>${esc(t('roadmap_retry'))} ↻</button></div>`;
   } else {
-    topicList = `<div class="roadmap-topic-grid">${stageTopics.map(roadmapTopicCard).join('')}</div>`;
+    topicList = `<ol class="roadmap-path">${stageTopics.map(roadmapTopicCard).join('')}</ol><div class="roadmap-stage-finish ${done === stageTopics.length ? 'is-complete' : ''}"><span>${learningIcon('trophy')}</span><div><strong>${esc(done === stageTopics.length ? t('roadmap_stage_complete') : t2('roadmap_stage_finish', { level: target }))}</strong><small>${esc(t('roadmap_stage_browse'))}</small></div></div>`;
   }
-  return shell(`<section class="section roadmap-page">
-    <div class="section-header roadmap-header"><div><div class="eyebrow">${esc(t('roadmap_eyebrow'))}</div><h1 style="margin:8px 0 6px">${esc(t('roadmap_title'))}</h1><p class="micro">${esc(t('roadmap_subtitle'))}</p></div>
-      <div class="roadmap-wallet-summary glass"><span class="wallet-coin" aria-hidden="true">🪙</span><div><strong>${esc(formatCoins(currentCoins()))}</strong><span>${esc(t('coins_balance_label'))}</span></div></div>
+  return shell(`<section class="section roadmap-page learning-page">
+    <div class="learning-breadcrumb"><span>${learningIcon('flag')} ${esc(t('nav_roadmap'))}</span><a href="#/leaderboard">${learningIcon('trophy')} ${esc(t('nav_leaderboard'))} ↗</a></div>
+    <div class="learning-hero"><div><div class="eyebrow">${esc(t('roadmap_eyebrow'))}</div><h1>${esc(t('roadmap_title'))}<span class="learning-title-spark" aria-hidden="true">✦</span></h1><p>${esc(t('roadmap_subtitle'))}</p><div class="learning-stats"><span><strong>40</strong> ${esc(t('roadmap_lessons_stat'))}</span><i></i><span><strong>120</strong> ${esc(t('roadmap_games_stat'))}</span><i></i><span><strong>4</strong> ${esc(t('roadmap_levels_stat'))}</span></div></div>
+      <div class="roadmap-wallet-summary glass"><span class="wallet-coin" aria-hidden="true">${learningIcon('coin')}</span><div><strong>${esc(formatCoins(currentCoins()))}</strong><span>${esc(t('coins_balance_label'))}</span></div><span class="learning-wallet-divider"></span><span class="wallet-fire" aria-hidden="true">${learningIcon('flame')}</span><div><strong>${currentStreak()}</strong><span>${esc(t('streak_label'))}</span></div></div>
     </div>
-    <div class="roadmap-overview glass"><div><span>${esc(t('roadmap_overall_progress'))}</span><strong>${average}%</strong></div><div class="roadmap-overview-bar"><i style="width:${average}%"></i></div><p class="micro">${completeCount}/${roadmapState.topics.length} ${esc(t('roadmap_topics_completed'))}</p></div>
-    <div class="roadmap-tabs" role="tablist" aria-label="${esc(t('roadmap_levels'))}">${stageTabs}</div>
-    <div class="roadmap-stage-heading"><div><div class="eyebrow">${esc(t(active.title))}</div><h2>${esc(t(active.name))}</h2><p class="micro">${esc(t(active.hint))}</p></div><span class="roadmap-stage-reward">🪙 +${esc(stageReward)} ${esc(t('roadmap_each_topic'))}</span></div>
-    ${topicList}
+    ${!signedIn ? `<div class="learning-preview-banner"><span class="preview-banner-icon">${learningIcon('star')}</span><div><strong>${esc(t('roadmap_preview_title'))}</strong><p>${esc(t('roadmap_preview_hint'))}</p></div><a class="btn btn-ghost btn-sm" href="#/login">${esc(t('roadmap_preview_cta'))} →</a></div>` : ''}
+    <div class="learning-layout"><main class="learning-main">
+      <div class="roadmap-overview glass"><div><span>${esc(t('roadmap_overall_progress'))}</span><strong>${average}%</strong></div><div class="roadmap-overview-bar"><i style="width:${average}%"></i></div><p class="micro">${completeCount}/${topics.length || 40} ${esc(t('roadmap_topics_completed'))}</p></div>
+      <div class="roadmap-tabs" role="tablist" aria-label="${esc(t('roadmap_levels'))}">${stageTabs}</div>
+      <section id="roadmapStagePanel" role="tabpanel" aria-labelledby="roadmap-stage-${stageIndex}">
+        <div class="roadmap-stage-heading"><div><div class="eyebrow">${esc(t('roadmap_path_title'))} · ${esc(t(active.title))}</div><h2>${esc(t(active.name))}</h2><p class="micro">${esc(t(active.hint))}</p></div><span class="roadmap-stage-counter">${done}<small> / ${stageTopics.length || 10}</small></span></div>
+        <div class="roadmap-map-legend"><span><i class="legend-dot current"></i>${esc(t('roadmap_legend_current'))}</span><span><i class="legend-dot completed"></i>${esc(t('roadmap_legend_complete'))}</span><span><i class="legend-dot locked"></i>${esc(t('roadmap_legend_locked'))}</span></div>
+        ${topicList}
+      </section>
+    </main><aside class="learning-sidebar">${streakCardHtml()}
+      ${roadmapPlaygroundCard(next)}
+      <section class="roadmap-milestone glass"><div class="milestone-symbol">${learningIcon('flag')}</div><div><span class="eyebrow">${esc(t('roadmap_milestone'))}</span><h3>${next ? esc(next.stage.split('-')[1]) : 'C1'}</h3><p class="micro">${esc(t(next ? 'roadmap_milestone_hint' : 'roadmap_all_mastered'))}</p></div>
+        ${next ? `<button class="btn btn-primary" data-roadmap-open="${esc(next.id)}">${esc(t(completeCount ? 'roadmap_continue' : 'roadmap_begin'))} ${learningIcon('arrow')}</button>` : ''}
+      </section>
+      <div class="learning-companion-note">${mascotAvatar()}<p>${esc(t('mascot_tip_roadmap'))}</p></div>
+    </aside></div>
   </section>`, 'roadmap');
 }
 
@@ -1973,43 +2087,83 @@ function roadmapQuizResultHtml(topic) {
 }
 
 function roadmapTopicModalHtml() {
-  const topic = roadmapState.topics.find(item => item.id === roadmapState.topicId);
-  if (!topic) return '';
-  const progress = roadmapTopicProgress(topic.id);
-  const questions = Array.isArray(topic.questions) ? topic.questions : [];
+  const topic = roadmapTopics().find(item => item.id === roadmapState.topicId);
+  if (!topic || !roadmapTopicUnlocked(topic.id)) return '';
+  const progress = roadmapTopicProgress(topic.id), questions = Array.isArray(topic.questions) ? topic.questions : [];
+  const tab = roadmapState.lessonTab || 'learn', next = nextRoadmapTopic();
   return `<div class="modal-backdrop roadmap-modal-backdrop" id="roadmapBackdrop">
-    <div class="modal glass roadmap-modal" role="dialog" aria-modal="true" aria-labelledby="roadmapModalTitle">
+    <div class="modal glass roadmap-modal learning-modal" role="dialog" aria-modal="true" aria-labelledby="roadmapModalTitle">
       <button class="modal-close" data-roadmap-close aria-label="${esc(t('modal_close'))}">×</button>
-      <div class="test-meta"><span>${esc(topic.stage)}</span><span>🪙 +${esc(topic.reward_coins)} ${esc(t('roadmap_coins'))}</span>${progress.completed ? `<span class="roadmap-complete-badge">✓ ${esc(t('roadmap_completed'))}</span>` : ''}</div>
-      <h2 id="roadmapModalTitle">${esc(topic.title)}</h2>
-      <section class="roadmap-cheatsheet"><h3>${esc(t('roadmap_cheatsheet'))}</h3><div>${esc(topic.summary).replace(/\r?\n/g, '<br>')}</div></section>
-      <section class="roadmap-ai-block"><div><div class="eyebrow">${esc(t('roadmap_ai_practice'))}</div><h3>${esc(t('roadmap_ai_title'))}</h3><p class="micro">${esc(t('roadmap_ai_hint'))}</p></div>
-        <textarea class="roadmap-prompt" readonly aria-label="${esc(t('roadmap_ai_prompt'))}">${esc(topic.ai_prompt)}</textarea>
-        <button class="btn btn-ghost btn-sm" data-roadmap-copy="${esc(topic.id)}">${esc(t('roadmap_copy_prompt'))} ⧉</button>
+      <div class="learning-modal-meta"><span class="roadmap-topic-stage">${esc(topic.stage.replace('-', ' → '))}</span><span class="roadmap-reward">🪙 +${esc(topic.reward_coins)} ${esc(t('roadmap_coins'))}</span>${progress.completed ? `<span class="roadmap-complete-badge">✓ ${esc(t('roadmap_completed'))}</span>` : ''}</div>
+      <h2 id="roadmapModalTitle" tabindex="-1">${esc(topic.title)}</h2><p class="learning-modal-subtitle">${esc(t('roadmap_games_available'))} <span>·</span> ${questions.length} ${esc(t('roadmap_questions_short'))}</p>
+      <div class="lesson-navigation" role="tablist" aria-label="${esc(topic.title)}">${['learn', 'play', 'quiz'].map((item, i) => `<button id="lesson-tab-${item}" role="tab" aria-selected="${tab === item}" aria-controls="lesson-panel-${item}" tabindex="${tab === item ? '0' : '-1'}" class="lesson-tab ${tab === item ? 'active' : ''}" data-roadmap-lesson-tab="${item}">${learningIcon(['book', 'match', 'star'][i])}${esc(t('roadmap_' + item + '_tab'))}</button>`).join('')}</div>
+      <section id="lesson-panel-learn" class="lesson-panel" role="tabpanel" aria-labelledby="lesson-tab-learn" ${tab !== 'learn' ? 'hidden' : ''}>
+        <section class="roadmap-cheatsheet"><h3>${learningIcon('book')} ${esc(t('roadmap_cheatsheet'))}</h3><div>${esc(topic.summary).replace(/\r?\n/g, '<br>')}</div></section>
+        <details class="roadmap-ai-details"><summary>${learningIcon('bolt')} ${esc(t('roadmap_ai_title'))}<span>+</span></summary><section class="roadmap-ai-block"><div><div class="eyebrow">${esc(t('roadmap_ai_practice'))}</div><p class="micro">${esc(t('roadmap_ai_hint'))}</p></div><textarea class="roadmap-prompt" readonly aria-label="${esc(t('roadmap_ai_prompt'))}">${esc(topic.ai_prompt)}</textarea><button class="btn btn-ghost btn-sm" data-roadmap-copy="${esc(topic.id)}">${esc(t('roadmap_copy_prompt'))} ⧉</button></section></details>
+        <div class="lesson-guide-cta"><span>${esc(t('game_lobby_hint'))}</span><button class="btn btn-primary" data-roadmap-lesson-tab="play">${esc(t('roadmap_play_tab'))} ${learningIcon('arrow')}</button></div>
       </section>
-      <section class="roadmap-quiz"><div class="roadmap-quiz-head"><div><div class="eyebrow">${esc(t('roadmap_quiz'))}</div><h3>${esc(t('roadmap_quiz_hint'))}</h3></div><span class="pill">${questions.length} ${esc(t('roadmap_questions_short'))}</span></div>
+      <section id="lesson-panel-play" class="lesson-panel" role="tabpanel" aria-labelledby="lesson-tab-play" ${tab !== 'play' ? 'hidden' : ''}><div id="roadmapGameArea">${roadmapGames ? roadmapGames.html(topic) : `<p>${esc(t('game_not_available'))}</p>`}</div></section>
+      <section id="lesson-panel-quiz" class="lesson-panel roadmap-quiz" role="tabpanel" aria-labelledby="lesson-tab-quiz" ${tab !== 'quiz' ? 'hidden' : ''}>
+        <div class="roadmap-quiz-head"><div><div class="eyebrow">${esc(t('roadmap_quiz'))}</div><h3>${esc(t('roadmap_quiz_hint'))}</h3></div><span class="pill">80%+</span></div>
         ${progress.score ? `<p class="micro">${esc(t('roadmap_best_score'))}: <strong>${progress.score}%</strong></p>` : ''}
         <div class="roadmap-question-list">${questions.map(roadmapQuestionHtml).join('')}</div>
         ${roadmapState.submitError ? `<p class="roadmap-submit-error" role="alert">${esc(roadmapState.submitError)}</p>` : ''}
         ${roadmapQuizResultHtml(topic)}
-        <div class="roadmap-actions"><button class="btn btn-primary" data-roadmap-submit ${roadmapState.saving ? 'disabled' : ''}>${esc(t(roadmapState.saving ? 'roadmap_submitting' : 'roadmap_submit'))} ${roadmapState.saving ? '…' : '↗'}</button><button class="btn btn-ghost" data-roadmap-close>${esc(t('modal_close'))}</button></div>
+        ${cloudUserActive() ? `<div class="roadmap-actions"><button class="btn btn-primary" data-roadmap-submit ${roadmapState.saving ? 'disabled' : ''}>${esc(t(roadmapState.saving ? 'roadmap_submitting' : 'roadmap_submit'))} ${roadmapState.saving ? '…' : '↗'}</button>${progress.completed && next && next.id !== topic.id ? `<button class="btn btn-ghost" data-roadmap-next="${esc(next.id)}">${esc(t('roadmap_next_topic'))} ${learningIcon('arrow')}</button>` : ''}</div>` : `<div class="lesson-quiz-gate"><p>${esc(t('roadmap_quiz_guest'))}</p><a class="btn btn-primary" href="#/login">${esc(t('nav_login'))} →</a></div>`}
       </section>
     </div>
   </div>`;
 }
-
+function openRoadmapTopic(id, tab = 'learn', gameType = null) {
+  const topic = roadmapTopics().find(item => item.id === id);
+  if (!topic || !roadmapTopicUnlocked(id)) { notify(t('roadmap_unlock_hint')); return; }
+  if (roadmapGames) roadmapGames.reset();
+  roadmapQuizRevision++;
+  roadmapState.topicId = id; roadmapState.lessonTab = tab;
+  roadmapState.activeStage = topic.stage; roadmapState.stageChosen = true;
+  roadmapState.answers = []; roadmapState.result = null; roadmapState.submitError = ''; roadmapState.saving = false;
+  lastRoadmapTrigger = id;
+  render();
+  document.querySelector('#roadmapModalTitle')?.focus?.({ preventScroll: true });
+  if (gameType && roadmapGames) void roadmapGames.start(gameType);
+}
+function closeRoadmapTopic() {
+  if (roadmapGames) roadmapGames.reset();
+  roadmapQuizRevision++;
+  roadmapState.topicId = null; roadmapState.answers = []; roadmapState.result = null;
+  roadmapState.submitError = ''; roadmapState.saving = false; roadmapState.lessonTab = 'learn';
+  render();
+  if (lastRoadmapTrigger) document.querySelector(`[data-roadmap-open="${lastRoadmapTrigger}"]`)?.focus?.({ preventScroll: true });
+}
+function setRoadmapLessonTab(tab) {
+  if (!['learn', 'play', 'quiz'].includes(tab)) return;
+  if (roadmapState.lessonTab === 'play' && tab !== 'play' && roadmapGames) roadmapGames.reset();
+  roadmapState.lessonTab = tab; render();
+  document.querySelector(`#lesson-tab-${tab}`)?.focus?.({ preventScroll: true });
+}
 function bindRoadmap() {
-  document.querySelectorAll('[data-roadmap-stage]').forEach(button => button.onclick = () => {
-    roadmapState.activeStage = button.dataset.roadmapStage;
-    render();
+  document.querySelectorAll('[data-roadmap-stage]').forEach(button => {
+    button.onclick = () => { roadmapState.activeStage = button.dataset.roadmapStage; roadmapState.stageChosen = true; render(); document.querySelector(`[data-roadmap-stage="${roadmapState.activeStage}"]`)?.focus?.({ preventScroll: true }); };
+    button.onkeydown = event => {
+      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+      event.preventDefault();
+      const index = ROADMAP_STAGES.findIndex(stage => stage.id === roadmapState.activeStage);
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? 3 : (index + (event.key === 'ArrowRight' ? 1 : 3)) % 4;
+      roadmapState.activeStage = ROADMAP_STAGES[next].id; roadmapState.stageChosen = true; render();
+      document.querySelector(`[data-roadmap-stage="${roadmapState.activeStage}"]`)?.focus?.({ preventScroll: true });
+    };
   });
-  document.querySelectorAll('[data-roadmap-open]').forEach(button => button.onclick = () => {
-    roadmapState.topicId = button.dataset.roadmapOpen;
-    roadmapState.answers = [];
-    roadmapState.result = null;
-    roadmapState.submitError = '';
-    roadmapState.saving = false;
-    render();
+  document.querySelectorAll('[data-roadmap-open]').forEach(button => button.onclick = () => openRoadmapTopic(button.dataset.roadmapOpen));
+  document.querySelectorAll('[data-roadmap-next]').forEach(button => button.onclick = () => openRoadmapTopic(button.dataset.roadmapNext));
+  document.querySelectorAll('[data-roadmap-play]').forEach(button => button.onclick = () => openRoadmapTopic(button.dataset.roadmapTopic, 'play', button.dataset.roadmapPlay));
+  document.querySelectorAll('[data-roadmap-lesson-tab]').forEach(button => {
+    button.onclick = () => setRoadmapLessonTab(button.dataset.roadmapLessonTab);
+    button.onkeydown = event => {
+      if (!['ArrowLeft', 'ArrowRight'].includes(event.key) || button.getAttribute?.('role') !== 'tab') return;
+      event.preventDefault();
+      const tabs = ['learn', 'play', 'quiz'], index = tabs.indexOf(roadmapState.lessonTab);
+      setRoadmapLessonTab(tabs[(index + (event.key === 'ArrowRight' ? 1 : 2)) % 3]);
+    };
   });
   document.querySelectorAll('[data-roadmap-retry]').forEach(button => button.onclick = () => loadRoadmapData(true));
   document.querySelectorAll('[data-roadmap-choice]').forEach(input => input.onchange = () => {
@@ -2017,72 +2171,56 @@ function bindRoadmap() {
     const group = input.closest('.roadmap-options');
     if (group) group.querySelectorAll('.roadmap-option').forEach(label => label.classList.toggle('selected', label.contains(input) && input.checked));
   });
-  document.querySelectorAll('[data-roadmap-answer]').forEach(input => input.oninput = () => {
-    roadmapState.answers[Number(input.dataset.roadmapAnswer)] = input.value;
-  });
+  document.querySelectorAll('[data-roadmap-answer]').forEach(input => input.oninput = () => { roadmapState.answers[Number(input.dataset.roadmapAnswer)] = input.value; });
   document.querySelectorAll('[data-roadmap-copy]').forEach(button => button.onclick = async () => {
-    const topic = roadmapState.topics.find(item => item.id === button.dataset.roadmapCopy);
+    const topic = roadmapTopics().find(item => item.id === button.dataset.roadmapCopy);
     if (!topic) return;
     try {
-      if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) {
-        await navigator.clipboard.writeText(topic.ai_prompt);
-      } else {
-        const area = document.createElement('textarea');
-        area.value = topic.ai_prompt;
-        area.setAttribute('readonly', '');
-        area.style.position = 'fixed'; area.style.opacity = '0';
+      if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) await navigator.clipboard.writeText(topic.ai_prompt);
+      else {
+        const area = document.createElement('textarea'); area.value = topic.ai_prompt;
+        area.setAttribute('readonly', ''); area.style.position = 'fixed'; area.style.opacity = '0';
         document.body.appendChild(area); area.select();
-        const copied = document.execCommand && document.execCommand('copy');
-        area.remove();
+        const copied = document.execCommand && document.execCommand('copy'); area.remove();
         if (!copied) throw new Error('Clipboard unavailable');
       }
       notify(t('roadmap_prompt_copied'));
     } catch { notify(t('roadmap_copy_failed')); }
   });
-  document.querySelectorAll('[data-roadmap-close]').forEach(button => button.onclick = () => {
-    roadmapState.topicId = null; roadmapState.answers = []; roadmapState.result = null; roadmapState.submitError = ''; roadmapState.saving = false; render();
-  });
+  document.querySelectorAll('[data-roadmap-close]').forEach(button => button.onclick = closeRoadmapTopic);
   const backdrop = document.querySelector('#roadmapBackdrop');
-  if (backdrop) backdrop.onclick = event => {
-    if (event.target === backdrop) {
-      roadmapState.topicId = null; roadmapState.answers = []; roadmapState.result = null; roadmapState.submitError = ''; roadmapState.saving = false; render();
-    }
-  };
+  if (backdrop) backdrop.onclick = event => { if (event.target === backdrop) closeRoadmapTopic(); };
   const submit = document.querySelector('[data-roadmap-submit]');
   if (submit) submit.onclick = async () => {
-    if (roadmapState.saving) return;
-    const topic = roadmapState.topics.find(item => item.id === roadmapState.topicId);
-    if (!topic) return;
+    if (roadmapState.saving || !cloudUserActive()) return;
+    const topic = roadmapTopics().find(item => item.id === roadmapState.topicId);
+    if (!topic || !roadmapTopicUnlocked(topic.id)) return;
     const answers = topic.questions.map((_, index) => String(roadmapState.answers[index] ?? '').trim());
     if (answers.length !== 5 || answers.some(answer => !answer)) return notify(t('roadmap_answer_all'));
     if (!CLOUD || typeof CLOUD.submitRoadmapQuiz !== 'function') return notify(t('gamification_unavailable'));
-    const owner = store.user && store.user.id;
-    roadmapState.submitError = '';
-    roadmapState.saving = true; render();
+    const owner = store.user.id, view = roadmapState, revision = ++roadmapQuizRevision;
+    const sameAccount = () => cloudUserActive() && store.user.id === owner && roadmapState === view;
+    const sameLesson = () => sameAccount() && view.topicId === topic.id && roadmapQuizRevision === revision;
+    view.submitError = ''; view.saving = true; render();
     try {
       const result = await CLOUD.submitRoadmapQuiz(topic.id, answers);
-      if (!store.user || store.user.id !== owner || roadmapState.topicId !== topic.id) return;
-      roadmapState.result = result;
+      if (!sameAccount()) return;
+      if (sameLesson()) { view.result = result; view.saving = false; }
       const previous = roadmapTopicProgress(topic.id);
-      roadmapState.progress[topic.id] = {
-        topic_id: topic.id,
-        score_percentage: Math.max(previous.score, Number(result.best_score_percentage ?? result.score_percentage) || 0),
-        is_completed: previous.completed || !!result.is_completed
-      };
-      roadmapState.saving = false;
+      view.progress[topic.id] = { topic_id: topic.id, score_percentage: Math.max(previous.score, Number(result.best_score_percentage ?? result.score_percentage) || 0), is_completed: previous.completed || !!result.is_completed };
+      applyLearningResult(result); leaderboardState.loadedUser = null;
+      if (roadmapGames && result.is_completed) { roadmapGames.prepareAudio(); roadmapGames.sound('success'); }
       await loadRoadmapData(true);
-      if (Number(result.coins_awarded) > 0) celebrateCoinReward(result.coins_awarded, result.coins_balance);
-      render();
+      if (sameAccount() && Number(result.coins_awarded) > 0) celebrateCoinReward(result.coins_awarded, currentCoins());
     } catch (error) {
-      if (store.user && store.user.id === owner) {
-        roadmapState.submitError = String(error.message || t('roadmap_submit_error'));
-        notify(t('roadmap_submit_error'));
-      }
+      if (sameLesson()) { view.submitError = String(error.message || t('roadmap_submit_error')); notify(t('roadmap_submit_error')); }
     } finally {
-      if (store.user && store.user.id === owner) { roadmapState.saving = false; render(); }
+      if (sameLesson()) { view.saving = false; render(); }
+      else if (sameAccount() && route() === '/roadmap') render();
     }
   };
-  if (cloudUserActive() && roadmapState.loadedUser !== store.user.id && !roadmapState.loading) loadRoadmapData();
+  if (roadmapGames) roadmapGames.bind();
+  if (cloudUserActive() && roadmapState.loadedUser !== store.user.id && !roadmapState.loading && !roadmapState.error) loadRoadmapData();
 }
 
 function celebrateCoinReward(amount, balance) {
@@ -2091,7 +2229,7 @@ function celebrateCoinReward(amount, balance) {
     store.user = { ...store.user, coins: Math.max(0, Number(balance) || 0) };
     if (activeUser && activeUser.id === store.user.id) activeUser = { ...activeUser, coins: store.user.coins };
   }
-  if (earned > 0) notify(t2('coins_earned_toast', { n: formatCoins(earned) }));
+  if (earned > 0) { leaderboardState.loadedUser = null; leaderboardState.error = ''; notify(t2('coins_earned_toast', { n: formatCoins(earned) })); }
   render();
   setTimeout(() => {
     const wallet = document.querySelector('[data-coin-wallet]');
@@ -2152,7 +2290,7 @@ function leaderboardPage() {
     content = `<div class="glass roadmap-state"><p class="micro">${esc(t('leaderboard_empty'))}</p></div>`;
   } else {
     content = `<div class="glass leaderboard-table-wrap"><table class="leaderboard-table">
-      <thead><tr><th>${esc(t('leaderboard_rank'))}</th><th>${esc(t('leaderboard_learner'))}</th><th>${esc(t('leaderboard_coins'))}</th><th>${esc(t('leaderboard_level'))}</th></tr></thead>
+      <thead><tr><th>${esc(t('leaderboard_rank'))}</th><th>${esc(t('leaderboard_learner'))}</th><th>${esc(t('leaderboard_coins'))}</th><th>${esc(t('leaderboard_level'))}</th><th>${esc(t('leaderboard_streak'))}</th></tr></thead>
       <tbody>${leaderboardState.rows.map(row => {
         const place = Number(row.rank_position) || 0;
         const medal = place === 1 ? '🥇' : place === 2 ? '🥈' : place === 3 ? '🥉' : '';
@@ -2163,7 +2301,7 @@ function leaderboardPage() {
           <td><span class="leaderboard-rank"><span class="leaderboard-medal" aria-label="${place === 1 ? esc(t('leaderboard_gold')) : place === 2 ? esc(t('leaderboard_silver')) : place === 3 ? esc(t('leaderboard_bronze')) : ''}">${medal}</span>${place}</span></td>
           <td><span class="leaderboard-person">${avatar ? `<img src="${esc(avatar)}" alt="" loading="lazy"/>` : `<span class="leaderboard-avatar" aria-hidden="true">${esc(name.trim().charAt(0).toUpperCase() || '?')}</span>`}<span><strong>${esc(name)}</strong>${me ? `<small>${esc(t('leaderboard_you'))}</small>` : ''}</span></span></td>
           <td><span class="leaderboard-coins">🪙 ${esc(formatCoins(row.coins))}</span></td>
-          <td><span class="roadmap-level-badge">${esc(localizeLeaderboardBadge(row.level_badge))}</span></td>
+          <td><span class="roadmap-level-badge">${esc(localizeLeaderboardBadge(row.level_badge))}</span></td><td><span class="leaderboard-streak">🔥 ${Math.max(0, Number(row.current_streak) || 0)}</span></td>
         </tr>`;
       }).join('')}</tbody>
     </table></div>`;
@@ -2179,7 +2317,7 @@ function leaderboardPage() {
 
 function bindLeaderboard() {
   document.querySelectorAll('[data-leaderboard-retry]').forEach(button => button.onclick = () => loadLeaderboardData(true));
-  if (cloudUserActive() && leaderboardState.loadedUser !== store.user.id && !leaderboardState.loading) loadLeaderboardData();
+  if (cloudUserActive() && leaderboardState.loadedUser !== store.user.id && !leaderboardState.loading && !leaderboardState.error) loadLeaderboardData();
 }
 
 /* ---------------- VOCABULARY ---------------- */
@@ -2328,6 +2466,27 @@ function adminPage() {
 function render() {
   applyPrefs();
   const r = route();
+  const modalScroll = document.querySelector('.roadmap-modal')?.scrollTop || 0;
+  // Profile/wallet refreshes must not steal keyboard focus during a game.
+  const focused = document.activeElement;
+  let modalFocus = null;
+  if (focused?.closest?.('.roadmap-modal')) {
+    if (/^[a-zA-Z][\w-]*$/.test(focused.id || '')) modalFocus = '#' + focused.id;
+    else for (const attribute of [
+      'data-speed-answer', 'data-match-card', 'data-scramble-word', 'data-scramble-remove',
+      'data-scramble-check', 'data-scramble-next', 'data-scramble-clear', 'data-roadmap-lesson-tab',
+      'data-game-start', 'data-game-sound', 'data-game-back', 'data-game-retry-answer',
+      'data-game-replay', 'data-game-retry', 'data-game-quiz', 'data-roadmap-close'
+    ]) {
+      const value = focused.getAttribute(attribute);
+      if (value !== null && /^[\w-]*$/.test(value)) { modalFocus = `[${attribute}="${value}"]`; break; }
+    }
+  }
+  if (r !== '/roadmap' && roadmapState.topicId) {
+    if (roadmapGames) roadmapGames.reset();
+    roadmapQuizRevision++;
+    roadmapState.topicId = null; roadmapState.answers = []; roadmapState.result = null; roadmapState.saving = false;
+  }
   let html;
   if (r === '/') html = home();
   else if (r === '/mock' || r === '/fullmock') html = mockHub();
@@ -2355,7 +2514,14 @@ function render() {
   const adminModal = window.IELTS_ADMIN && window.IELTS_ADMIN.modalHtml ? window.IELTS_ADMIN.modalHtml() : '';
   if (adminModal) html += adminModal;
   app.innerHTML = html;
+  if (document.body && document.body.style) document.body.style.overflow = r === '/roadmap' && roadmapState.topicId ? 'hidden' : '';
   bind();
+  const modal = document.querySelector('.roadmap-modal');
+  if (modal) {
+    modal.scrollTop = modalScroll;
+    const target = modalFocus && modal.querySelector(modalFocus);
+    if (target && !target.disabled) target.focus({ preventScroll: true });
+  }
   initReveal();
   if (r === '/results' && CLOUD) scheduleCloudSync();
   const msgBox = document.querySelector('#coach-messages');
@@ -2405,7 +2571,9 @@ function applyCloudUser(user) {
   if (!user && !store.user) return;
   clearDynamicTests();
   cloudRows = []; cloudLastLoad = 0; cloudStatus = 'idle'; cloudError = '';
-  roadmapState = { topics: [], progress: {}, activeStage: 'A1-A2', loadedUser: null, loading: false, error: '', submitError: '', topicId: null, answers: [], result: null, saving: false };
+  if (roadmapGames) roadmapGames.reset();
+  roadmapQuizRevision++;
+  roadmapState = freshRoadmapState();
   leaderboardState = { rows: [], loading: false, error: '', loadedUser: null };
   if (user) {
     const metadata = user.user_metadata || {};
@@ -2414,7 +2582,8 @@ function applyCloudUser(user) {
       id: user.id, email: user.email || '',
       name: cloudProfile?.name || metadata.name || metadata.full_name || user.email?.split('@')[0] || 'User',
       picture: cloudProfile?.avatar_url || metadata.avatar_url || '',
-      coins: Number(cloudProfile?.coins) || 0, auth: 'supabase'
+      coins: Number(cloudProfile?.coins) || 0, current_streak: Number(cloudProfile?.current_streak) || 0,
+      last_active_date: cloudProfile?.last_active_date || null, auth: 'supabase'
     });
   } else signOut();
   render();
@@ -2552,27 +2721,31 @@ if (CLOUD) {
       go('/login');
       setAuthNotice('error', oauthError);
     }
+    let publishedIdentity = `${CLOUD.getState().user?.id || ''}:${CLOUD.getState().isAdmin || false}`;
     CLOUD.subscribe(state => {
       if (state.status !== 'ready') return;
       applyCloudUser(state.user);
       const profile = state.profile;
       if (state.user && profile && store.user && store.user.id === state.user.id) {
-        const before = `${store.user.coins || 0}:${store.user.name || ''}:${store.user.picture || ''}`;
+        const before = `${store.user.coins || 0}:${store.user.current_streak || 0}:${store.user.last_active_date || ''}:${store.user.name || ''}:${store.user.picture || ''}`;
         store.user = {
           ...store.user,
           name: profile.name || store.user.name,
           picture: profile.avatar_url || store.user.picture,
-          coins: Number(profile.coins) || 0
+          coins: Number(profile.coins) || 0,
+          current_streak: Number(profile.current_streak) || 0,
+          last_active_date: profile.last_active_date || null
         };
         if (activeUser && activeUser.id === state.user.id) activeUser = { ...activeUser, ...store.user };
-        const after = `${store.user.coins || 0}:${store.user.name || ''}:${store.user.picture || ''}`;
+        const after = `${store.user.coins || 0}:${store.user.current_streak || 0}:${store.user.last_active_date || ''}:${store.user.name || ''}:${store.user.picture || ''}`;
         if (before !== after) render();
       }
       afterOAuthReturn();
       /* The admin role is read here rather than from the auth listener so a
          profile request is never left in flight while the page is closing. */
       if (CLOUD.loadProfile) CLOUD.loadProfile();
-      loadDynamicTests();
+      const identity = `${state.user?.id || ''}:${state.isAdmin || false}`;
+      if (identity !== publishedIdentity) { publishedIdentity = identity; loadDynamicTests(); }
     });
     const state = CLOUD.getState();
     if (state.status === 'ready') { applyCloudUser(state.user); afterOAuthReturn(); }
@@ -2580,4 +2753,16 @@ if (CLOUD) {
     render();
   });
   window.addEventListener('online', () => syncCloudResults(true));
+  let streakDay = new Date().toISOString().slice(0, 10);
+  const refreshLearningDay = () => {
+    if (roadmapGames) roadmapGames.tick();
+    if (!cloudUserActive() || typeof CLOUD.loadProfile !== 'function') return;
+    const today = new Date().toISOString().slice(0, 10);
+    if (today !== streakDay) { streakDay = today; render(); }
+    // readProfile also normalizes the UTC streak; refresh the remote wallet too.
+    CLOUD.loadProfile(true).catch(() => { /* Display computes expiry even offline. */ });
+  };
+  window.addEventListener('focus', refreshLearningDay);
+  if (document.addEventListener) document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshLearningDay(); });
+  setInterval(() => { if (!document.hidden && new Date().toISOString().slice(0, 10) !== streakDay) refreshLearningDay(); }, 60000);
 }
