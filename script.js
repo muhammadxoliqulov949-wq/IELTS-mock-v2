@@ -1288,6 +1288,16 @@ function bind() {
       if (!text) return;
       store.coachMessages.push({ role: 'user', text });
       save(); render();
+      /* Strict IELTS boundary (lib/aiGuardrails.js): an obviously
+         out-of-scope question is refused here, before any network call,
+         with the exact sentence the server would have answered with. */
+      const guard = (typeof window !== 'undefined' && window.IELTS_GUARDRAILS) || null;
+      if (guard && guard.isLikelyOffTopic(text)) {
+        store.coachMessages.push({ role: 'ai', text: guard.REFUSAL_MESSAGE, offTopic: true });
+        input.value = '';
+        save(); render();
+        return;
+      }
       coachSending = true;
       try {
         const res = await fetch('/api/coach', {

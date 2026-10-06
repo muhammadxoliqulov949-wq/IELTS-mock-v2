@@ -10,6 +10,8 @@
  * the preview still works without a key.
  */
 const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
+const guard = require('../lib/aiGuardrails.js');
+const aiCache = require('../lib/aiCache.js');
 
 const RATE_WINDOW_MS = 60 * 1000;
 const RATE_MAX = 20;
@@ -49,7 +51,7 @@ async function callGemini(topic, count) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      system_instruction: { parts: [{ text: 'You are an IELTS quiz generator. Return ONLY JSON: { questions: [{ prompt, options:[4 strings], answer: index(0-3), explanation }] }' }] },
+      system_instruction: { parts: [{ text: guard.withGuardrails('You are an IELTS quiz generator. Return ONLY JSON: { questions: [{ prompt, options:[4 strings], answer: index(0-3), explanation }] }') }] },
       contents: [{ role: 'user', parts: [{ text: `Generate ${count} IELTS multiple-choice questions about ${topic || 'exam strategy'}.` }] }],
       generationConfig: { temperature: 0.4, maxOutputTokens: 800 }
     })
@@ -73,9 +75,24 @@ module.exports = async (req, res) => {
     const topic = String(body.topic || '').slice(0, 40);
     const count = Math.max(1, Math.min(8, Number(body.count) || 4));
 
+    /* Strict IELTS boundary: a non-IELTS topic is refused outright instead
+       of being answered from the local bank (lib/aiGuardrails.js). */
+    if (guard.isLikelyOffTopic(topic)) {
+      res.status(400).json({ ok: false, error: guard.REFUSAL_MESSAGE, code: guard.OFF_TOPIC });
+      return;
+    }
+
     let questions;
     if (process.env.GEMINI_API_KEY) {
-      try { questions = await callGemini(topic, count); }
+      try {
+        /* 7-day TTL cache: the same topic+count round is served from
+           public.ai_cache, Gemini is only called on a miss. */
+        const { data } = await aiCache.withCache(
+          `quiz:${guard.cleanPrompt(topic) || 'exam strategy'}:${count}`,
+          () => callGemini(topic, count)
+        );
+        questions = data;
+      }
       catch { questions = pickLocal(topic, count); }
     } else {
       questions = pickLocal(topic, count);

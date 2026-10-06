@@ -188,6 +188,30 @@ Va qayerdan olish ko'rsatiladi (https://aistudio.google.com/apikey → Vercel �
 
 So'ng sahifani yangilang — yangi test test tanlash oynasida paydo bo'ladi.
 
+### 4.6 AI chegarasi (guardrails) va 7 kunlik kesh
+
+Generator va boshqa AI xizmatlar (Coach, Writing/Speaking baholash, Quiz) **faqat IELTS va ingliz tili** doirasida ishlaydi.
+
+**Guardrails (`lib/aiGuardrails.js`).** Har bir Gemini chaqiruviga qat'iy **System Instruction** biriktiriladi — model o'zini faqat *"IELTS Murabbiyi"* sifatida tutadi. IELTS/ingliz tiliga aloqasi bo'lmagan so'rov (dasturlash, siyosat, erkin suhbat, umumiy savollar) boshqa hech qanday javobsiz, faqat quyidagi aniq jumla bilan rad etiladi:
+
+> Kechirasiz, men faquq IELTS va inglng tiliga doir savollarga yordak bera olaman.
+
+Bu qatlam to'rttala endpointda ham bor: `api/generate-mock.js`, `api/coach.js`, `api/grade.js`, `api/quiz.js`. Coach sahifasida savol **tarmoq chizig'idan oldin** brauzerda tekshiriladi (`script.js`), shuning uchun mavzudan tashqari xabar serverga ham bormaydi. Guardrails brauzer uchun `public/lib/aiGuardrails.js` ga ko'chiriladi va `sw.js` precache ro'yxatiga kiritilgan.
+
+**7 kunlik kesh (`lib/aiCache.js` + `public.ai_cache`).** Bir xil savol 7 kun ichida qayta berilsa, Gemini umuman chaqirilmaydi — javob ma'lumot bazasidan olinadi:
+
+| Bosqich | Nima sodir bo'ladi |
+| --- | --- |
+| 1 | Savol tozalib (`cleanPrompt`) `sha256` ga aylanadi → `prompt_hash` |
+| 2 | `select` qilinadi. Agar `now() - created_at < interval '7 days'` — keshdagi javob qaytadi, **Gemini chaqirilmaydi** |
+| 3 | Muddati o'tgan bo'lsa Gemini'ga so'rov ketadi va javob `Prefer: resolution=merge-duplicates` bilan qatorga upsert qilinadi — eski qator yangilanadi, 7 kunlik muddat qaytadan boshlanadi |
+
+Kesh kaliti bo'lim va parametrlarga bog'liq: `coach:<savol>|<band>|<weakest>`, `grade:writing:<savol>`, `grade:speaking:<savol>`, `quiz:<mavzu>:<savollar soni>`. Coach javobi oddiy matn, baholash/quiz javoblari esa obyekt sifatida saqlanadi — ikkisi ham qo'llanadi.
+
+**Xavfsizlik.** `ai_cache` jadvalida RLS yoqilgan va **hech qanday policy yo'q**, `anon`/`authenticated` rollardan huquqlar olib tashlangan. Ya'ni keshni faqat server (`SUPABASE_SERVICE_ROLE_KEY`) ishlatadi — brauzer keshga yozolmaydi. Migratsiya: `supabase/migrations/202610060002_ai_cache.sql`, tafsilotlar `SUPABASE.md` → "AI kesh (7 kunlik TTL) va IELTS guardrails".
+
+**Generator keshdan mustasno.** `api/generate-mock.js` ataylab keshlanmaydi — har bir mock test boshqacha bo'lishi kerak.
+
 ---
 
 ### JSON shakli va eski testlar bilan moslik
@@ -243,6 +267,9 @@ Nashrdan olinsa, keyingi sahifa yangilanishida yo'qoladi.
 | "Iltimos, avval GEMINI_API_KEY sozlang" | Serverda Gemini kaliti yo'q | Vercel → Settings → Environment Variables → `GEMINI_API_KEY` qo'shing va qayta deploy qiling |
 | Listening bo'limida audio yo'q | Edge TTS va Gemini TTS javob bermadi | `audioUrl` bo'sh — muharrirga kirib MP3 ni qo'lda yuklang; transcript saqlangan |
 | AI generator tugmasi ishlamaydi | `mockGenerator.js` / `lib/topicPool.js` yuklanmagan | `index.html` skriptlari va `sw.js` precache ro'yxatini tekshiring |
+| AI IELTS'dan tashqari savolga javob berdi | So'rov guardrails'dan o'tib ketdi | `public/lib/aiGuardrails.js` yuklangani va `api/*` da `withGuardrails` borligini tekshiring; brauzer keshi'ni tozalang |
+| AI har safar bir xil javobni berayapti | Kesh ishlayapti (bu normal) | 7 kunlik kesh — boshqa javob kerak bo'lsa savolni biroz boshqacha yozing yoki `ai_cache` qatorini o'chiring |
+| Kesh ishlamayapti (har safar Gemini chaqiriladi) | `SUPABASE_SERVICE_ROLE_KEY` yoki `202610060002_ai_cache.sql` migratsiyasi yo'q | Migratsiyani qo'llang; server log'ida kesh o'qish/yozish xatosini tekshiring — kesh yozilmasa ham AI javob beraveradi |
 
 ---
 
@@ -259,6 +286,10 @@ lib/edgeTts.js                               Edge TTS (MP3) + Gemini TTS (WAV) f
 api/generate-mock.js                         POST /api/generate-mock — bo'lim va audio generatsiyasi
 tests/generator.test.js                      pool, endpoint, TTS, i18n, wiring testlari
 tests/generatorClient.test.js                modal oqimi: generatsiya → upload → saqlash → xulosa
+lib/aiGuardrails.js                         qat'iy System Instruction + mavzudan tashqari so'rovni rad etish
+lib/aiCache.js                              7 kunlik TTL kesh (sha256 kalit, upsert, xotira nusxasi)
+supabase/migrations/202610060002_ai_cache.sql  public.ai_cache — AI javoblari keshi (RLS, policy yo'q)
+tests/aiGuardrails.test.js                  guardrails + 7 kunlik kesh testlari (PGlite bilan)
 script.js                                    #/admin route, learner runner, audio/image rendering
 styles.css                                   admin builder + media + exam content stillari
 tests/admin.test.js                          guard/RLS, media migratsiyasi, format, validatsiya, XSS testlari

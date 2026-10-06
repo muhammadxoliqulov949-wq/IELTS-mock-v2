@@ -35,7 +35,12 @@
 'use strict';
 
 const { buildPlan } = require('../lib/topicPool.js');
+const guard = require('../lib/aiGuardrails.js');
 const tts = require('../lib/edgeTts.js');
+/* NOTE: this endpoint deliberately does NOT use lib/aiCache.js. A cached
+ * mock section would replay the very same paper the pool just randomised
+ * itself to avoid — the generator's whole promise is that every run
+ * differs. Grade, Coach and Quiz are the cached endpoints. */
 
 const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
 const MODEL = 'gemini-2.5-flash';
@@ -708,6 +713,20 @@ module.exports = async function handler(req, res) {
     ? body.plan
     : buildPlan({ difficulty: body.difficulty, topic: body.topic });
 
+  /* Strict IELTS boundary (lib/aiGuardrails.js). The admin may type any
+     theme into the modal, so an obviously out-of-scope one is refused with
+     the same sentence the other AI endpoints use. The 48 pool themes all
+     pass this check — tests/aiGuardrails.test.js pins that. */
+  if (guard.isLikelyOffTopic([body.topic, body.label].filter(Boolean).join('\n'))) {
+    res.status(400).json({
+      ok: false,
+      code: guard.OFF_TOPIC,
+      error: guard.REFUSAL_MESSAGE,
+      message: guard.REFUSAL_MESSAGE
+    });
+    return;
+  }
+
   const prompts = {
     listening: () => ({ system: listeningSystem(plan), max: 8192 }),
     reading: () => ({ system: readingSystem(plan), max: 8192 }),
@@ -728,7 +747,7 @@ module.exports = async function handler(req, res) {
       'Now write the complete ' + skill.toUpperCase() + ' section as one JSON object.'
     ].join('\n');
 
-    const { parsed, usage } = await callGemini(system, userContent, max);
+    const { parsed, usage } = await callGemini(guard.withGuardrails(system), userContent, max);
 
     const payload = skill === 'listening' ? normalizeListening(parsed, plan)
       : skill === 'reading' ? normalizeReading(parsed, plan)

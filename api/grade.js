@@ -9,6 +9,8 @@
  * Requires env var: GEMINI_API_KEY (free key at https://aistudio.google.com/apikey)
  */
 const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
+const guard = require('../lib/aiGuardrails.js');
+const aiCache = require('../lib/aiCache.js');
 
 /* ---------- tiny in-memory rate limiter (per server instance) ---------- */
 const RATE_WINDOW_MS = 60 * 1000;
@@ -176,6 +178,18 @@ module.exports = async function handler(req, res) {
     return;
   }
 
+  /* Strict IELTS boundary (lib/aiGuardrails.js): anything that clearly
+     belongs to another domain is refused before a Gemini call is made. */
+  const scopeText = [
+    prompt, response,
+    ...(Array.isArray(tasks) ? tasks.flatMap((t) => [t && t.prompt, t && t.response]) : []),
+    ...(Array.isArray(parts) ? parts.flatMap((p) => ((p && p.qa) || []).flatMap((qa) => [qa && qa.q, qa && qa.a])) : [])
+  ].filter(Boolean).join('\n');
+  if (guard.isLikelyOffTopic(scopeText)) {
+    res.status(400).json({ error: guard.REFUSAL_MESSAGE, code: guard.OFF_TOPIC });
+    return;
+  }
+
   try {
     if (mode === 'writing') {
       const list = (Array.isArray(tasks) && tasks.length) ? tasks : [{ title: 'Task', prompt, response }];
@@ -191,7 +205,12 @@ module.exports = async function handler(req, res) {
         return;
       }
       const userContent = clean.map((t) => `TASK: ${t.title}\nOFFICIAL MINIMUM: ${t.minWords} words\nTASK PROMPT:\n${t.prompt}${t.criteria ? `\n\nASSESSMENT CRITERIA / NOTES:\n${t.criteria}` : ''}\n\nCANDIDATE RESPONSE:\n${t.response}`).join('\n\n---\n\n');
-      const parsed = await callGemini(WRITING_SYSTEM, userContent.slice(0, 12000), 3000);
+      /* 7-day TTL cache (public.ai_cache): the same graded answer is not
+         re-sent to Gemini when the candidate asks again. */
+      const { data: parsed } = await aiCache.withCache(
+        `grade:writing:${guard.cleanPrompt(userContent).slice(0, 4000)}`,
+        () => callGemini(guard.withGuardrails(WRITING_SYSTEM), userContent.slice(0, 12000), 3000)
+      );
       res.status(200).json(normalizeWriting(parsed, clean.length));
       return;
     }
@@ -207,7 +226,11 @@ module.exports = async function handler(req, res) {
       res.status(400).json({ error: 'Please record at least one answer first.' });
       return;
     }
-    const parsed = await callGemini(SPEAKING_SYSTEM, userContent.slice(0, 9000), 2000);
+    /* 7-day TTL cache — identical transcripts are marked once. */
+    const { data: parsed } = await aiCache.withCache(
+      `grade:speaking:${guard.cleanPrompt(userContent).slice(0, 4000)}`,
+      () => callGemini(guard.withGuardrails(SPEAKING_SYSTEM), userContent.slice(0, 9000), 2000)
+    );
     res.status(200).json(normalizeSpeaking(parsed));
   } catch (err) {
     res.status(500).json({ error: err?.message || 'Grading failed. Please try again.' });

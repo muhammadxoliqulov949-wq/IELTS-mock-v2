@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const root = path.join(__dirname, '..');
 const staticFiles = [
-  'index.html', 'styles.css', 'script.js', 'admin.js', 'mockGenerator.js', 'lib/topicPool.js', 'data.js', 'content2.js',
+  'index.html', 'styles.css', 'script.js', 'admin.js', 'mockGenerator.js', 'lib/topicPool.js', 'lib/aiGuardrails.js', 'data.js', 'content2.js',
   'content3.js', 'content4.js', 'i18n.js', 'services.js', 'supabase.bundle.js',
   'manifest.webmanifest', 'sw.js', 'robots.txt', 'sitemap.xml'
 ];

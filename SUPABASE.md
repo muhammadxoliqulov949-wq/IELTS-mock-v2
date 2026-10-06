@@ -67,7 +67,8 @@ Har foydalanuvchi/test uchun **bitta satr** saqlanadi — mavjud saytning bir ma
 
 1. `supabase/migrations/202610050001_admin.sql` — admin profillar/RLS, test JSON jadvallari.
 2. `supabase/migrations/202610050002_media_storage.sql` — `ielts-media` bucket va Storage object policies.
-3. `supabase/migrations/202610060001_roadmap_gamification.sql` — `profiles.coins`, 12 ta seed mavzu (har birida 5 savol), maxfiy javob kalitlari, foydalanuvchi progressi, tanga ledger'i va leaderboard RPC'lari.
+3. `supabase/migrations/202610060001_roadmap_gamification.sql`
+4. `supabase/migrations/202610060002_ai_cache.sql` — AI javoblari uchun **7 kunlik** kesh (`public.ai_cache`). — `profiles.coins`, 12 ta seed mavzu (har birida 5 savol), maxfiy javob kalitlari, foydalanuvchi progressi, tanga ledger'i va leaderboard RPC'lari.
 
 Admin panel MP3, xarita/reja va Writing Task 1 rasmlarini brauzerdan Supabase Storage’ga yuboradi. Bucket public read (learner `<audio>`/`<img>` uchun), lekin insert/update/delete faqat authenticated `public.is_admin()` orqali ruxsat etiladi. Maksimal fayl 50 MB; ruxsat etilgan media MIME turi bucket’da cheklangan. **Service-role kaliti talab qilinmaydi va browserga berilmaydi.** `ADMIN.md` da UI, kontent JSON shakli va xatolarni hal qilish bo‘yicha yo‘riqnoma bor.
 
@@ -79,6 +80,31 @@ Admin panel MP3, xarita/reja va Writing Task 1 rasmlarini brauzerdan Supabase St
 - Mavzu mukofotlari: A1–A2 = 10, A2–B1 = 20, B1–B2 = 35, B2–C1 = 50 tanga. Har bir Listening/Reading mock bandi uchun: 5.5–6.5 = 30, 7.0–8.0 = 60, 8.5–9.0 = 100 tanga.
 - `get_leaderboard` faqat display name, avatar, jami tanga, daraja belgisi va rank'ni beradi; email'lar oshkor qilinmaydi. Profil tangalarini client to‘g‘ridan-to‘g‘ri o‘zgartira olmaydi.
 - Coin mukofotlari virtual gamification ballari, pul yoki to‘lov vositasi emas. Mock bandlari mashq uchun bo‘lib, mavjud client-side scoring modelida proctoring qilinmaydi; rasmiy/stakes reyting uchun server-side test sessiyasi va javob tekshiruvi alohida kerak.
+
+### AI kesh (7 kunlik TTL) va IELTS guardrails
+
+`202610060002_ai_cache.sql` quyidagilarni yaratadi:
+
+| Ustun | Tur | Izoh |
+| --- | --- | --- |
+| `id` | `uuid` primary key | `gen_random_uuid()` bilan avtomatik |
+| `prompt_hash` | `text` | Foydalanuvchi savolining tozalangan matnining sha256 xeshi — **unique index** (upsert kaliti) |
+| `response_json` | `jsonb` | AI'ning aynan o'sha javobi (Coach'da oddiy matn ham bo'lishi mumkin) |
+| `created_at` | `timestamptz default now()` | Yozilgan vaqti — 7 kundan eski qatorlar eskirgan deb hisoblanadi |
+
+Ishlash tartibi (`lib/aiCache.js`):
+
+1. Savol tozalib `sha256` ga aylanadi → `prompt_hash`.
+2. `select` qilinadi. Agar `now() - created_at < interval '7 days'` bo'lsa, **Gemini chaqirilmaydi** va keshdagi javob qaytariladi.
+3. Aks holda Gemini'ga so'rov yuboriladi va javob `Prefer: resolution=merge-duplicates` bilan qatorga **upsert** qilinadi — eski qator yangulanadi (va uning 7 kunlik muddati qaytadan boshlanadi).
+
+Xavfsizlik: jadvalda **hech qanday policy yo'q**, RLS yoqilgan. Ya'ni brauzerdan keluvchi `anon`/`authenticated` rollari keshni o'qiyolishi ham yozishi ham mumkin emas — faqat server (`SUPABASE_SERVICE_ROLE_KEY`, RLS'ni chetlab o'tadi) ishlatadi. Bu keshga zararli javob yozib qo'yishning oldini oladi.
+
+Guardrails (`lib/aiGuardrails.js`): har bir Gemini chaqiruviga **System Instruction** ilova qilinadi — model o'zini faqat *"IELTS Murabbiyi"* sifatida tutadi va IELTS/ingliz tilidan boshqa mavzuda (dasturlash, siyosat, erkin suhbat, umumiy savollar) quyidagi jumla bilan rad etadi:
+
+> Kechirasiz, men faquq IELTS va inglng tiliga doir savollarga yordak bera olaman.
+
+Boshqa savollar `api/grade.js`, `api/coach.js`, `api/quiz.js` va `api/generate-mock.js` da bir xil ishlaydi; Coach sahifasida savol **tarmoq chizig'idan oldin** brauzerda tekshiriladi.
 
 SQL funksiyalarni ishlatish uchun Supabase project'ga migratsiyalarni qo‘llab, sayt environment'iga `SUPABASE_URL` va `SUPABASE_ANON_KEY` kiriting. Roadmap progress va wallet kirgan foydalanuvchi bo‘yicha saqlanadi.
 
