@@ -1,10 +1,10 @@
 /* Navigation regression test.
  *
  * Verifies the focused nav structure:
- *  - exactly 3 primary links centred in the top bar (Mock Test, Results, AI Coach)
+ *  - exactly 4 primary links centred in the top bar (Mock Test, Roadmap, Results, AI Coach)
  *  - the remaining features live behind the hamburger menu, not the top bar
  *  - user chip (with sign-out button) renders when logged in
- *  - hamburger + menu always present; desktop menu hides the 3 primaries
+ *  - hamburger + menu always present; desktop menu hides the 4 primaries
  *  - footer is translated and carries the year + disclaimer
  *  - lesson modal can be opened/closed
  */
@@ -72,17 +72,18 @@ try {
   const html = document.querySelector('#app').innerHTML;
 
   const navLinksBlock = (html.match(/<div class="nav-links">([\s\S]*?)<\/div>\s*<div class="nav-actions">/) || [])[1] || '';
-  check('nav: exactly 3 primary links in the top bar (Mock/Results/Coach)',
-    (navLinksBlock.match(/<a /g) || []).length === 3
-    && navLinksBlock.includes('#/mock') && navLinksBlock.includes('#/results') && navLinksBlock.includes('#/coach')
+  check('nav: exactly 4 primary links in the top bar (Mock/Roadmap/Results/Coach)',
+    (navLinksBlock.match(/<a /g) || []).length === 4
+    && navLinksBlock.includes('#/mock') && navLinksBlock.includes('#/roadmap') && navLinksBlock.includes('#/results') && navLinksBlock.includes('#/coach')
     && !navLinksBlock.includes('#/dashboard') && !navLinksBlock.includes('#/fullmock')
     && !navLinksBlock.includes('#/settings') && !navLinksBlock.includes('#/vocabulary'));
   check('nav: no "More" dropdown in the top bar', !html.includes('id="moreMenu"') && !html.includes('nav-more-btn'));
   check('nav: hamburger present with remaining features in menu', html.includes('id="hamburgerBtn"')
     && html.includes('id="mobileMenu"') && html.includes('mm-rest')
+    && /mm-primaries[\s\S]*#\/roadmap/.test(html)
     && /mm-rest[\s\S]*#\/settings/.test(html) && /mm-rest[\s\S]*#\/vocabulary/.test(html) && /mm-rest[\s\S]*#\/quiz/.test(html)
     && /mm-rest[\s\S]*#\/dashboard/.test(html) && /mm-rest[\s\S]*#\/mistakes/.test(html) && /mm-rest[\s\S]*#\/lessons/.test(html)
-    && /mm-rest[\s\S]*#\/roadmap/.test(html) && /mm-rest[\s\S]*#\/leaderboard/.test(html));
+    && /mm-rest[\s\S]*#\/leaderboard/.test(html));
   check('nav: user chip with dropdown sign-out (no confirm dialog)', html.includes('id="userChip"')
     && html.includes('user-menu') && html.includes('Aziz') && !html.includes('confirm('));
   check('nav: user picture escaped (XSS-safe)', !html.includes('src="https://example.com/a"b.png"'));

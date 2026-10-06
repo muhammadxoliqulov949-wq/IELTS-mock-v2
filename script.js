@@ -374,13 +374,13 @@ function navLinks(active) {
   return {
     primary: [
       { key: 'mock', label: t('nav_mock'), active: isMock },
+      { key: 'roadmap', label: t('nav_roadmap'), active: active === 'roadmap' },
       { key: 'results', label: t('nav_results'), active: active === 'results' },
       { key: 'coach', label: t('nav_coach'), active: active === 'coach' }
     ],
     rest: [
       ...(isAdminUser() ? [{ key: 'admin', label: '⚙ ' + t('admin_title'), active: active === 'admin' }] : []),
       { key: 'dashboard', label: t('nav_dashboard'), active: active === 'dashboard' },
-      { key: 'roadmap', label: t('nav_roadmap'), active: active === 'roadmap' },
       { key: 'leaderboard', label: t('nav_leaderboard'), active: active === 'leaderboard' },
       { key: 'mistakes', label: t('nav_mistakes'), active: active === 'mistakes' },
       { key: 'lessons', label: t('nav_lessons'), active: active === 'lessons' },
