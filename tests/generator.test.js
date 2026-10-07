@@ -3,9 +3,9 @@
  *
  * What must never silently break:
  *   • the topic/diversity pool (≥40 topics, per-section picks, shuffled
- *     question-type mixes, temperature 0.85 reaching Gemini)
+ *     question-type mixes, temperature 0.85 reaching Groq)
  *   • the generator endpoint (shape of every one of the four skills,
- *     the GEMINI_API_KEY message an admin actually sees, audio mode)
+ *     the GROQ_API_KEY message an admin actually sees, audio mode)
  *   • the TTS module (Sec-MS-GEC vectors, WAV wrapping, frame parsing,
  *     and a full Edge-TTS round trip against a local mock endpoint)
  *   • the wiring (button in the admin panel, scripts loaded, service
@@ -106,10 +106,12 @@ gecVectors.forEach(([unix, ticks, hash]) => {
 });
 check('tts: Sec-MS-GEC-Version is the current Chromium handshake', tts.GEC_VERSION === '1-143.0.3650.75');
 
-const wav = tts.pcmToWav(Buffer.alloc(4800), 24000);
-check('tts: WAV wrapper writes a valid RIFF/WAVE header',
-  wav.slice(0, 4).toString() === 'RIFF' && wav.slice(8, 12).toString() === 'WAVE'
-  && wav.length === 44 + 4800 && wav.readUInt32LE(24) === 24000 && wav.readUInt16LE(22) === 1);
+check('tts: speaker labels are stripped so the engine never reads them aloud',
+  tts.stripSpeakerLabels('Woman: Good morning, how can I help you?') === 'Good morning, how can I help you?'
+  && !tts.stripSpeakerLabels('TUTOR: Let us look at your essay.').includes('TUTOR:')
+  && tts.stripSpeakerLabels('Good morning. Woman: How can I help you?') === 'Good morning. How can I help you?');
+check('tts: ordinary punctuation is left intact',
+  tts.stripSpeakerLabels('There are three options: bus, tram or bike.').includes('three options: bus'));
 
 const chunks = tts.chunkText('One. Two! Three? ' + 'y'.repeat(5000), 2400);
 check('tts: long transcripts are chunked within the request limit',
@@ -343,35 +345,35 @@ function speakingAnswer() {
   await handler({ method: 'GET', headers: {} }, r);
   check('api: only POST is allowed', r.statusCode === 405);
 
-  delete process.env.GEMINI_API_KEY;
+  delete process.env.GROQ_API_KEY;
   r = makeRes();
   await handler(req({ skill: 'listening' }), r);
-  check('api: without GEMINI_API_KEY the admin sees the setup message',
-    r.statusCode === 500 && r.body.code === 'GEMINI_KEY_MISSING'
-    && /Iltimos, avval GEMINI_API_KEY sozlang/.test(r.body.message)
-    && /aistudio\.google\.com/.test(r.body.hint));
+  check('api: without GROQ_API_KEY the admin sees the setup message',
+    r.statusCode === 500 && r.body.code === 'GROQ_KEY_MISSING'
+    && /Iltimos, avval GROQ_API_KEY sozlang/.test(r.body.message)
+    && /console\.groq\.com/.test(r.body.hint));
 
-  process.env.GEMINI_API_KEY = 'fake-key';
+  process.env.GROQ_API_KEY = 'fake-key';
   r = makeRes();
   await handler(req({ skill: 'underwater-basket-weaving' }), r);
   check('api: an unknown skill is rejected', r.statusCode === 400 && /Unknown skill/.test(r.body.error));
 
-  /* --- 4.4 every skill, with the Gemini call captured --- */
+  /* --- 4.4 every skill, with the Groq call captured --- */
   const calls = [];
   global.fetch = async (url, options) => {
-    calls.push({ url: String(url), body: JSON.parse(options.body) });
+    calls.push({ url: String(url), body: JSON.parse(options.body), headers: (options && options.headers) || {} });
     return {
       ok: true,
       json: async () => ({
-        candidates: [{ content: { parts: [{ text: JSON.stringify(pendingAnswer) }] } }],
-        usageMetadata: { totalTokenCount: 1234 }
+        choices: [{ message: { content: JSON.stringify(pendingAnswer) } }],
+        usage: { total_tokens: 1234 }
       })
     };
   };
 
   const skills = [
-    ['listening', listeningAnswer(), 8192],
-    ['reading', readingAnswer(), 8192],
+    ['listening', listeningAnswer(), 4096],
+    ['reading', readingAnswer(), 4096],
     ['writing', writingAnswer(), 4096],
     ['speaking', speakingAnswer(), 4096]
   ];
@@ -399,12 +401,16 @@ function speakingAnswer() {
     saved[skill] = payload;
 
     const request = calls[calls.length - 1];
-    check('api: ' + skill + ' asks Gemini with temperature 0.85',
-      request.body.generationConfig.temperature === 0.85
-      && request.body.generationConfig.maxOutputTokens === maxTokens
-      && request.body.generationConfig.responseMimeType === 'application/json');
+    check('api: ' + skill + ' asks Groq with temperature 0.85',
+      request.body.model === 'llama-3.3-70b-versatile'
+      && request.body.temperature === 0.85
+      && request.body.max_tokens === maxTokens
+      && request.body.response_format.type === 'json_object');
+    check('api: ' + skill + ' posts to the Groq chat endpoint with the API key',
+      request.url === 'https://api.groq.com/openai/v1/chat/completions'
+      && request.headers.Authorization === 'Bearer fake-key');
     check('api: ' + skill + ' sends the planned topic to the model',
-      request.body.contents[0].parts[0].text.includes(r.body.plan.topics[skill]));
+      request.body.messages.some(m => m.role === 'user' && String(m.content).includes(r.body.plan.topics[skill])));
 
     const problems = adminInternal.validatePayload(skill, payload);
     check('api: ' + skill + ' passes the admin editor validator', problems.length === 0);
@@ -467,20 +473,18 @@ function speakingAnswer() {
 
   /* --- 4.6 audio mode: upload through the forwarded admin token --- */
   const uploaded = [];
+  /* the Edge TTS protocol itself is covered in 4.7 against a local mock;
+     here the engine is stubbed (same module instance the handler uses, via
+     the real require cache) so the upload branching stays deterministic */
+  const realSynthesize = tts.synthesize;
+  tts.synthesize = async () => ({
+    buffer: Buffer.alloc(2048, 1), mime: 'audio/mpeg', ext: 'mp3', source: 'edge-tts'
+  });
   global.fetch = async (url, options) => {
     const target = String(url);
     if (target.includes('/storage/v1/object/')) {
       uploaded.push({ url: target, contentType: options.headers['Content-Type'], bytes: options.body.length });
       return { ok: true, json: async () => ({}) };
-    }
-    if (target.includes('generativelanguage.googleapis.com')) {
-      const pcm = Buffer.alloc(2400);
-      return {
-        ok: true,
-        json: async () => ({
-          candidates: [{ content: { parts: [{ inlineData: { mimeType: 'audio/L16;codec=pcm;rate=24000', data: pcm.toString('base64') } }] } }]
-        })
-      };
     }
     throw new Error('network unreachable');
   };
@@ -493,34 +497,24 @@ function speakingAnswer() {
     accessToken: 'admin-jwt'
   }, '10.0.0.99'), r);
   check('api: audio mode returns a recording', r.statusCode === 200 && r.body.ok && !!r.body.audio);
-  check('api: audio mode reports the engine used',
-    ['edge-tts', 'gemini-tts'].includes(r.body.audio && r.body.audio.source));
+  check('api: audio mode reports the Edge TTS engine',
+    r.body.audio && r.body.audio.source === 'edge-tts');
   check('api: the recording is uploaded to the ielts-media bucket under the part name',
     uploaded.length === 1
     && /\/storage\/v1\/object\/ielts-media\/audio\/test6-listening-part2-/.test(uploaded[0].url)
-    && ['audio/mpeg', 'audio/wav'].includes(uploaded[0].contentType));
+    && uploaded[0].contentType === 'audio/mpeg');
 
-  /* Gemini fallback: Edge unreachable → Gemini TTS → WAV */
-  const pcm = Buffer.alloc(2400);
-  global.fetch = async (url, options) => {
-    if (String(url).includes('generativelanguage.googleapis.com')) {
-      return {
-        ok: true,
-        json: async () => ({
-          candidates: [{ content: { parts: [{ inlineData: { mimeType: 'audio/L16;codec=pcm;rate=24000', data: pcm.toString('base64') } }] } }]
-        })
-      };
-    }
-    throw new Error('network unreachable');
-  };
-  const fallback = await tts.synthesize('A transcript that must fall back to Gemini TTS.', {
-    endpoint: 'ws://127.0.0.1:1/edge/v1',
-    transport: 'raw',
-    rejectUnauthorized: false
-  });
-  check('tts: falls back to Gemini TTS (WAV) when Edge is unreachable',
-    fallback.source === 'gemini-tts' && fallback.mime === 'audio/wav'
-    && fallback.buffer.slice(0, 4).toString() === 'RIFF');
+  /* an unreachable engine fails loudly with TTS_FAILED, not silently */
+  tts.synthesize = async () => { throw new Error('Edge TTS: network unreachable'); };
+  r = makeRes();
+  await handler(req({
+    mode: 'audio', testId: 'test6', partNumber: 1,
+    transcript: 'Woman: This transcript cannot be synthesised because the engine is down.',
+    accessToken: 'admin-jwt'
+  }, '10.0.0.98'), r);
+  check('tts: an unreachable engine answers 502 TTS_FAILED (the transcript is kept)',
+    r.statusCode === 502 && r.body.code === 'TTS_FAILED');
+  tts.synthesize = realSynthesize;
 
   /* --- 4.7 the local mock Edge endpoint (both transports) --- */
   const server = await mockEdgeServer();

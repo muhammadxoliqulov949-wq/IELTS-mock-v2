@@ -441,7 +441,7 @@
     return blocks.reduce((sum, b) => sum + ((b && b.questions && b.questions.length) || 0), 0);
   }
 
-  /* ---------- Listening audio (Edge/Gemini TTS → Supabase Storage) ---------- */
+  /* ---------- Listening audio (Edge TTS → Supabase Storage) ---------- */
   async function generateAudio(payload, testId) {
     const parts = Array.isArray(payload.parts) ? payload.parts : [];
     let uploaded = 0;
@@ -479,7 +479,6 @@
           part.audioPath = result.path;
           uploaded++;
         }
-        if (audio.source === 'gemini-tts') note = t('admin_ai_audio_note_wav', 'Gemini TTS (WAV)');
       } catch (err) {
         note = t('admin_ai_audio_note_failed', 'ayniya qismda audio yaratilmadi — transcript saqlandi');
         /* a missing recording must never kill the whole test */

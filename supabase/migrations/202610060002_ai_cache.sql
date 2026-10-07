@@ -8,8 +8,8 @@
 -- The API helper (lib/aiCache.js) does the whole dance:
 --   1. sha256 of the cleaned question            -> prompt_hash
 --   2. select the row; if now() - created_at < interval '7 days'
---      the stored response_json is returned and Gemini is never called
---   3. otherwise Gemini answers and the row is UPSERTED, so the old
+--      the stored response_json is returned and Groq is never called
+--   3. otherwise Groq answers and the row is UPSERTED, so the old
 --      entry is refreshed and its 7-day window starts again
 -- ============================================================
 
@@ -42,7 +42,7 @@ alter table public.ai_cache enable row level security;
 
 revoke all on public.ai_cache from anon, authenticated;
 
-comment on table  public.ai_cache            is '7-day TTL cache for Gemini responses; written and read by the serverless API only.';
+comment on table  public.ai_cache            is '7-day TTL cache for Groq responses; written and read by the serverless API only.';
 comment on column public.ai_cache.prompt_hash is 'sha256 of the cleaned user question; unique, upserted by the API.';
-comment on column public.ai_cache.response_json is 'The exact JSON payload the API would otherwise have asked Gemini for.';
+comment on column public.ai_cache.response_json is 'The exact JSON payload the API would otherwise have asked Groq for.';
 comment on column public.ai_cache.created_at  is 'Write time. Rows older than 7 days are treated as expired and refreshed on the next request.';

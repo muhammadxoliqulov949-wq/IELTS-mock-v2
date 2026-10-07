@@ -35,17 +35,17 @@ to'liq IELTS mock test: Listening (4 part, 40 savol, MP3), Reading (3 passage, 4
 Task 2 insho), Speaking (Part 1–3 + cue card).
 
 - **48 mavzuli ombor** (`lib/topicPool.js`) + har safar boshqacha savol turi kombinatsiyasi, `temperature: 0.85`
-- **Audio:** Edge TTS (bepul, MP3) → Gemini TTS (WAV) fallback, Supabase Storage `ielts-media` bucket'iga yoziladi
+- **Audio:** Edge TTS (bepul, MP3), Supabase Storage `ielts-media` bucket'iga yoziladi
 - **Writing Task 1:** `chartSpec` canvas'da chiziladi va PNG sifatida yuklanadi
 - Natija to'g'ridan-to'g'ri `mock_tests` + `mock_test_meta` ga yoziladi va darhol tahrirlashga ochiladi
-- `GEMINI_API_KEY` bo'lmasa admin aniq xabar ko'radi: *"Iltimos, avval GEMINI_API_KEY sozlang"*
+- `GROQ_API_KEY` bo'lmasa admin aniq xabar ko'radi: *"Iltimos, avval GROQ_API_KEY sozlang"*
 
 To'liq yo'riqnoma: [ADMIN.md](ADMIN.md) → “4.5 AI Generator”.
 
 ## 🛡️ IELTS guardrails va 7 kunlik AI kesh
 
 - **Qat'iy chegara:** barcha AI chaqiruvlariga *"IELTS Murabbiyi"* System Instruction biriktirilgan — dasturlash, siyosat, erkin suhbat yoki umumiy savollar boshqa javobsiz, faqat rad etish jumlasi bilan qaytariladi. Coach sahifasida savol tarmoq chizig'idan **oldin** brauzerda tekshiriladi.
-- **7 kunlik kesh (`public.ai_cache`):** bir xil savol 7 kun ichida qayta berilsa Gemini chaqirilmaydi — javob bazadan olinadi. Muddati o'tgan qator `upsert` bilan yangilanadi. Keshni faqat server ishlatadi (RLS yoqilgan, policy yo'q).
+- **7 kunlik kesh (`public.ai_cache`):** bir xil savol 7 kun ichida qayta berilsa Groq chaqirilmaydi — javob bazadan olinadi. Muddati o'tgan qator `upsert` bilan yangilanadi. Keshni faqat server ishlatadi (RLS yoqilgan, policy yo'q).
 - 1-Click Generator ataylab keshlanmaydi — har bir mock test boshqacha bo'ladi.
 
 Tafsilotlar: [SUPABASE.md](SUPABASE.md) → “AI kesh (7 kunlik TTL) va IELTS guardrails” va [ADMIN.md](ADMIN.md) → “4.6 AI chegarasi (guardrails) va 7 kunlik kesh”.
@@ -116,7 +116,7 @@ cd IELTS-mock-v2
 # API kalitini sozlang (majburiy emas — local fallback bor)
 npm ci
 cp .env.example .env
-# .env ga SUPABASE_URL, SUPABASE_ANON_KEY va ixtiyoriy GEMINI_API_KEY kiriting
+# .env ga SUPABASE_URL, SUPABASE_ANON_KEY va ixtiyoriy GROQ_API_KEY kiriting
 
 npm run preview
 # → http://localhost:3000
@@ -126,7 +126,7 @@ Yoki Vercel CLI bilan: `npm run dev`. Node.js 22+ kerak.
 
 **Supabase sozlash:** SQL jadval/RLS, Auth, environment va deploy bo'yicha to'liq yo'riqnoma: [SUPABASE.md](SUPABASE.md). SQL faylni Supabase'da qo'llamasdan cloud saqlash ishlamaydi.
 
-**Muhim:** AI baholash va AI Coach uchun `GEMINI_API_KEY` kerak. Kubernetes/`/api/quiz` esa kalit yo'q bo'lsa ham local savol bankidan ishlaydi.
+**Muhim:** AI baholash va AI Coach uchun `GROQ_API_KEY` kerak. Kubernetes/`/api/quiz` esa kalit yo'q bo'lsa ham local savol bankidan ishlaydi.
 
 ## 🧪 Testlar
 
@@ -167,7 +167,7 @@ npm run test:learning:browser -- --account
 
 1. Reponi GitHub'ga push qiling
 2. [vercel.com](https://vercel.com) → **New Project** → reponi tanlang
-3. Environment Variables: `GEMINI_API_KEY` (AI baholash, AI Coach va 1-Click AI Mock Generator uchun), `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` (7 kunlik AI kesh uchun). Ixtiyoriy: `GEMINI_MODEL` (standart `gemini-3.8-flash` — model nomi o'zgarsa kodni tahrirlamasdan shu yerda almashtirasiz) va `GEMINI_TTS_MODELS` (Listening audio uchun TTS modellari ro'yxati)
+3. Environment Variables: `GROQ_API_KEY` (AI baholash, AI Coach va 1-Click AI Mock Generator uchun), `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` (7 kunlik AI kesh uchun). Ixtiyoriy: `GROQ_MODEL` (standart `llama-3.3-70b-versatile` — model nomi o'zgarsa kodni tahrirlamasdan shu yerda almashtirasiz)
 4. **Deploy** — `vercel.json` SPA routingni boshqaradi
 
 ## 🧩 Loyiha tuzilishi
@@ -185,7 +185,7 @@ lib/
   topicPool.js    → AI mock generator uchun 48 IELTS mavzusi + savol turi aralashtirish
   learningPath.js → UTC streak, unlock, shuffle, scoring va SVG helpers
   roadmapContent.js → generated public 40-mavzuli katalog (quiz kalitlarisiz)
-  edgeTts.js      → Edge TTS (MP3) + Gemini TTS (WAV) fallback
+  edgeTts.js      → Edge TTS (MP3)
 scripts/roadmap-seed.js → 40 mavzu va private kalitlar uchun seed generator
 miniGames.js     → Word Match / Speed Vocabulary / Sentence Scramble controller
 learning.css     → Roadmap va o‘yinlar glass UI, mobile, light/dark, reduced-motion
