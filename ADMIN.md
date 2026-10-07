@@ -182,6 +182,8 @@ qoralama sifatida saqlanadini boshqaradi; qo'lda tuzilgan yangi testdan farqi �
 yaratilgan test darhol muharrirga uzatiladi. Agar test id allaqachon mavjud bo'lsa, modal
 ogohlantiradi: generatsiya natijasi mavjud bo'limlarning ustiga yoziladi.
 
+Model id **`lib/geminiModel.js`** da bir joyda saqlanadi (standart `gemini-3.8-flash`). Google modelga kirishni cheklasa yoki nomini almashtirsa, `GEMINI_MODEL` muhit o'zgaruvchisini o'zgartirish kifoya — kodni tahrirlash shart emas.
+
 **`GEMINI_API_KEY` kiritilmagan bo'lsa** endpoint aniq xabar qaytaradi:
 *"Iltimos, avval GEMINI_API_KEY sozlang — AI generator ishga tushishi uchun Gemini API kaliti kerak."*
 Va qayerdan olish ko'rsatiladi (https://aistudio.google.com/apikey → Vercel → Settings → Environment Variables).
@@ -265,6 +267,7 @@ Nashrdan olinsa, keyingi sahifa yangilanishida yo'qoladi.
 | Jadvallar bo'sh, lekin xato yo'q | RLS hammasini filtrlayapti | `role` ustunini tekshiring; `select public.is_admin();` `true` qaytarishi kerak |
 | Test tanlash oynasida yangi test yo'q | Test yoki uning bo'limi nashr qilinmagan | Ham meta, ham kerakli bo'limlar `Published` bo'lishi kerak |
 | "Iltimos, avval GEMINI_API_KEY sozlang" | Serverda Gemini kaliti yo'q | Vercel → Settings → Environment Variables → `GEMINI_API_KEY` qo'shing va qayta deploy qiling |
+| `Gemini API error (404): … is no longer available to new users` | Kalit yangi, Google esa eski model id'ga kirishni yopgan | Endpoint javobidagi ko'rsatmani bajaring: Vercel → Environment Variables → `GEMINI_MODEL=gemini-3.8-flash` qo'shib qayta deploy qiling (yoki `lib/geminiModel.js` dagi standartni yangilang). Model ro'yxati: https://ai.google.dev/gemini-api/docs/models |
 | Listening bo'limida audio yo'q | Edge TTS va Gemini TTS javob bermadi | `audioUrl` bo'sh — muharrirga kirib MP3 ni qo'lda yuklang; transcript saqlangan |
 | AI generator tugmasi ishlamaydi | `mockGenerator.js` / `lib/topicPool.js` yuklanmagan | `index.html` skriptlari va `sw.js` precache ro'yxatini tekshiring |
 | AI IELTS'dan tashqari savolga javob berdi | So'rov guardrails'dan o'tib ketdi | `public/lib/aiGuardrails.js` yuklangani va `api/*` da `withGuardrails` borligini tekshiring; brauzer keshi'ni tozalang |

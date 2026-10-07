@@ -167,7 +167,7 @@ npm run test:learning:browser -- --account
 
 1. Reponi GitHub'ga push qiling
 2. [vercel.com](https://vercel.com) → **New Project** → reponi tanlang
-3. Environment Variables: `GEMINI_API_KEY` (AI baholash, AI Coach va 1-Click AI Mock Generator uchun), `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` (7 kunlik AI kesh uchun)
+3. Environment Variables: `GEMINI_API_KEY` (AI baholash, AI Coach va 1-Click AI Mock Generator uchun), `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` (7 kunlik AI kesh uchun). Ixtiyoriy: `GEMINI_MODEL` (standart `gemini-3.8-flash` — model nomi o'zgarsa kodni tahrirlamasdan shu yerda almashtirasiz) va `GEMINI_TTS_MODELS` (Listening audio uchun TTS modellari ro'yxati)
 4. **Deploy** — `vercel.json` SPA routingni boshqaradi
 
 ## 🧩 Loyiha tuzilishi
