@@ -16,7 +16,7 @@ Quyidagi kritik kamchiliklar tuzatildi (testlar bilan tasdiqlandi, `npm test`):
 
 | # | Muammo | Holat |
 |---|---|---|
-| 1 | AI Coach endpoint yo'q (`/api/coach` → 501) | ✅ `api/coach.js` yozildi (Gemini, profil + suhbat tarixi bilan) |
+| 1 | AI Coach endpoint yo'q (`/api/coach` → 501) | ✅ `api/coach.js` yozildi (AI, profil + suhbat tarixi bilan) |
 | 2 | Deploy tayyorgarligi yo'q | ✅ `package.json`, `vercel.json`, `README.md`, `api/.env.example` qo'shildi |
 | 3 | Writing Task 1/2 bitta band bilan baholanardi | ✅ Endi har bir task alohida baholanadi, umumiy = T1×⅓ + T2×⅔ |
 | 4 | AI feedback saqlanmasdi | ✅ `store.feedback` — yangi **Results** sahifasida saqlanadi va ko'rsatiladi |
@@ -71,7 +71,7 @@ Juda yaxshi ishlangan MVP (ishchi prototip) — dizayni professional darajada, I
 ### Kritik (birinchilar shularni tuzatish kerak)
 
 1. **AI Coach butunlay ishlamaydi** — `script.js` satr 528 da `/api/coach`'ga so'rov yuboriladi, lekin `api/` papkasida faqat `grade.js` bor. Server 501 qaytaradi. Sayt reklama qiladigan asosiy funksiyalardan biri (bosh sahifa: "talk to an AI coach that builds your next study step") singan.
-2. **Deploy konfiguratsiyasi yo'q** — `package.json`, `vercel.json`, `README`, `.env.example` yo'q. API kaliti (`GEMINI_API_KEY`) bo'lmasa, writing/speaking baholash ishlamaydi va foydalanuvchi "Server is missing GEMINI_API_KEY" qo'pol xatosini ko'radi. Loyihani boshqa odam olib, qanday deploy qilishni bilmaydi.
+2. **Deploy konfiguratsiyasi yo'q** — `package.json`, `vercel.json`, `README`, `.env.example` yo'q. API kaliti (`GROQ_API_KEY`) bo'lmasa, writing/speaking baholash ishlamaydi va foydalanuvchi "GROQ_API_KEY is not set on the server" qo'pol xatosini ko'radi. Loyihani boshqa odam olib, qanday deploy qilishni bilmaydi.
 3. **Writing baholash metodologiyasi noto'g'ri** — Task 1 va Task 2 **bitta** AI so'rovga birlashtirilib, **bitta** umumiy band beriladi. Haqiqiy IELTS'da har bir task alohida band oladi (umumiy = T1×1/3 + T2×2/3). Bu o'quvchiga noto'g'ri baho beradi.
 4. **AI feedback saqlanmaydi** — baholash natijasi (strengths, improvements, criteria) faqat ekranda ko'rinadi. Sahifani yangilasa yoki boshqa bo'limga o'tsa — yo'qoladi. Xuddi shu javobni qayta submit qilsa — qaytadan AI'ga pul/so'rov ketadi.
 
@@ -99,7 +99,7 @@ Juda yaxshi ishlangan MVP (ishchi prototip) — dizayni professional darajada, I
 ## ➕ Qo'shish kerak bo'lgan narsalar (ustuvorlik bilan)
 
 ### Birinchi navbat (MVP'ni ishga yaroqli qilish)
-- [ ] `api/coach.js` — AI Coach endpoint'ini yozish (Gemini, profildan band/zaif tomon/xatolarni qo'shib)
+- [ ] `api/coach.js` — AI Coach endpoint'ini yozish (AI, profildan band/zaif tomon/xatolarni qo'shib)
 - [ ] `package.json` + `vercel.json` + `README.md` (o'rnatish, deploy, `.env` ko'rsatmasi) + `api/.env.example`
 - [ ] Writing'ni Task 1 va Task 2 **alohida** baholash (ikkala band + umumiy)
 - [ ] AI natijalarni `store`'ga saqlash va "Natijalar" sahifasi: band, correct/total, har bir savol bo'yicha review

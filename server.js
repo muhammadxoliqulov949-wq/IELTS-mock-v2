@@ -2,9 +2,9 @@ require('dotenv').config({ quiet: true });
 /* Local preview server (no Vercel needed).
  *
  * - Serves the static site (index.html, styles.css, script.js, data.js, services.js)
- * - Routes /api/grade and /api/coach through the real Vercel handlers.
- *   Without GEMINI_API_KEY they return a clear, friendly message instead of
- *   the raw 501 a plain static server would give.
+ * - Routes /api/grade, /api/coach, /api/quiz and /api/generate-mock through
+ *   the real Vercel handlers. Without GROQ_API_KEY they return a clear,
+ *   friendly message instead of the raw 501 a plain static server would give.
  *
  * Usage: npm run preview   (or: PORT=8080 node server.js)
  */
@@ -118,8 +118,8 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY
     ? 'Supabase settings found — apply the SQL migration and configure Auth (see SUPABASE.md).'
     : 'Supabase not configured — sign-in and mock tests are disabled. See SUPABASE.md.');
-  if (!process.env.GEMINI_API_KEY) {
-    console.log('Note: GEMINI_API_KEY is not set — AI grading/coach will show a setup message.');
-    console.log('Set it (e.g. GEMINI_API_KEY=... npm run preview) to enable real AI.');
+  if (!process.env.GROQ_API_KEY) {
+    console.log('Note: GROQ_API_KEY is not set — AI grading/coach will show a setup message.');
+    console.log('Set it (e.g. GROQ_API_KEY=... npm run preview) to enable real AI.');
   }
 });

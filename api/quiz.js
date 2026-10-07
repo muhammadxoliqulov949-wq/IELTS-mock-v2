@@ -6,10 +6,12 @@
  * Returns:
  *   { ok: true, questions: [{ prompt, options, answer, explanation }] }
  *
- * If GEMINI_API_KEY is not configured, it falls back to a local question bank so
- * the preview still works without a key.
+ * Questions come from the project's single AI module, lib/aiClient.js
+ * (Groq, OpenAI format, max_tokens 4096). If GROQ_API_KEY is not configured
+ * the endpoint falls back to a local question bank so the preview still
+ * works without a key.
  */
-const gemini = require('../lib/geminiModel.js');
+const ai = require('../lib/aiClient.js');
 const guard = require('../lib/aiGuardrails.js');
 const aiCache = require('../lib/aiCache.js');
 
@@ -46,22 +48,14 @@ function pickLocal(topic, count) {
   return pool.sort(() => Math.random() - 0.5).slice(0, Math.min(count, pool.length));
 }
 
-async function callGemini(topic, count) {
-  const res = await fetch(gemini.url(process.env.GEMINI_API_KEY), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      system_instruction: { parts: [{ text: guard.withGuardrails('You are an IELTS quiz generator. Return ONLY JSON: { questions: [{ prompt, options:[4 strings], answer: index(0-3), explanation }] }') }] },
-      contents: [{ role: 'user', parts: [{ text: `Generate ${count} IELTS multiple-choice questions about ${topic || 'exam strategy'}.` }] }],
-      generationConfig: { temperature: 0.4, maxOutputTokens: 800 }
-    })
+async function callModel(topic, count) {
+  const { data } = await ai.chatJson({
+    system: guard.withGuardrails('You are an IELTS quiz generator. Return ONLY JSON: { questions: [{ prompt, options:[4 strings], answer: index(0-3), explanation }] }'),
+    user: `Generate ${count} IELTS multiple-choice questions about ${topic || 'exam strategy'}.`,
+    temperature: 0.4,
+    maxTokens: ai.MAX_TOKENS
   });
-  if (!res.ok) throw new Error(`Gemini unavailable (model ${gemini.model()}, HTTP ${res.status})`);
-  const data = await res.json();
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-  const start = text.indexOf('{'); const end = text.lastIndexOf('}');
-  const parsed = start >= 0 && end > start ? JSON.parse(text.slice(start, end + 1)) : {};
-  const questions = (parsed.questions || []).filter(q => q && q.prompt && Array.isArray(q.options) && q.options.length >= 2);
+  const questions = ((data && data.questions) || []).filter(q => q && q.prompt && Array.isArray(q.options) && q.options.length >= 2);
   if (!questions.length) throw new Error('No valid questions returned');
   return questions.slice(0, count);
 }
@@ -83,13 +77,13 @@ module.exports = async (req, res) => {
     }
 
     let questions;
-    if (process.env.GEMINI_API_KEY) {
+    if (ai.hasKey()) {
       try {
         /* 7-day TTL cache: the same topic+count round is served from
-           public.ai_cache, Gemini is only called on a miss. */
+           public.ai_cache, the model is only called on a miss. */
         const { data } = await aiCache.withCache(
           `quiz:${guard.cleanPrompt(topic) || 'exam strategy'}:${count}`,
-          () => callGemini(topic, count)
+          () => callModel(topic, count)
         );
         questions = data;
       }
@@ -97,7 +91,7 @@ module.exports = async (req, res) => {
     } else {
       questions = pickLocal(topic, count);
     }
-    res.json({ ok: true, source: process.env.GEMINI_API_KEY ? 'ai' : 'local', questions });
+    res.json({ ok: true, source: ai.hasKey() ? 'ai' : 'local', questions });
   } catch (err) {
     res.status(500).json({ error: err.message || 'Quiz generation failed' });
   }

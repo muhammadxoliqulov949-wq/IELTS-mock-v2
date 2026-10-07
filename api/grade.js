@@ -6,9 +6,11 @@
  *  - mode: 'speaking' → body: { mode: 'speaking', parts: [{ title, qa: [{q, a}] }] }
  *                       or legacy { mode: 'speaking', response: '...' }
  *
- * Requires env var: GEMINI_API_KEY (free key at https://aistudio.google.com/apikey)
+ * Requires env var: GROQ_API_KEY (free key at https://console.groq.com/keys).
+ * Every examiner call goes through lib/aiClient.js — the project's single AI
+ * module (Groq, OpenAI format, max_tokens 4096).
  */
-const gemini = require('../lib/geminiModel.js');
+const ai = require('../lib/aiClient.js');
 const guard = require('../lib/aiGuardrails.js');
 const aiCache = require('../lib/aiCache.js');
 
@@ -40,34 +42,16 @@ function clampBand(v) {
 function str(v) { return String(v ?? ''); }
 function list(v) { return Array.isArray(v) ? v.map(String) : []; }
 
-function parseJson(raw) {
-  const s = str(raw).replace(/```(?:json)?/gi, '').trim();
-  try { return JSON.parse(s); } catch { /* fall through */ }
-  const start = s.indexOf('{');
-  const end = s.lastIndexOf('}');
-  if (start >= 0 && end > start) {
-    try { return JSON.parse(s.slice(start, end + 1)); } catch { /* fall through */ }
-  }
-  throw new Error('Could not parse examiner response');
-}
-
-async function callGemini(systemPrompt, userContent, maxTokens = 2500) {
-  const res = await fetch(gemini.url(process.env.GEMINI_API_KEY), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      system_instruction: { parts: [{ text: systemPrompt }] },
-      contents: [{ role: 'user', parts: [{ text: userContent }] }],
-      generationConfig: { temperature: 0.25, maxOutputTokens: maxTokens }
-    })
-  });
-  if (!res.ok) {
-    const errText = (await res.text()).slice(0, 400);
-    throw new Error(`Gemini API error (${res.status}): ${errText}${gemini.modelNotFoundHint(res.status, errText)}`);
-  }
-  const data = await res.json();
-  const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '{}';
-  return parseJson(raw);
+/* One examiner call through the shared Groq module. The prompt asks for
+ * pure JSON, so Groq's JSON object mode is requested and the module parses
+ * the answer (it also copes with a stray ```json fence). */
+function callModel(systemPrompt, userContent, maxTokens = ai.MAX_TOKENS) {
+  return ai.chatJson({
+    system: systemPrompt,
+    user: userContent,
+    temperature: 0.25,
+    maxTokens
+  }).then(({ data }) => data);
 }
 
 /* ---------- prompts ---------- */
@@ -165,10 +149,8 @@ module.exports = async function handler(req, res) {
     res.status(429).json({ error: 'Too many requests — please wait a moment and try again.' });
     return;
   }
-  if (!process.env.GEMINI_API_KEY) {
-    res.status(500).json({
-      error: 'GEMINI_API_KEY is not set on the server. Add it in your hosting environment (Vercel → Settings → Environment Variables) — get a free key at https://aistudio.google.com/apikey'
-    });
+  if (!ai.hasKey()) {
+    res.status(500).json({ error: ai.missingKeyError() });
     return;
   }
 
@@ -179,7 +161,7 @@ module.exports = async function handler(req, res) {
   }
 
   /* Strict IELTS boundary (lib/aiGuardrails.js): anything that clearly
-     belongs to another domain is refused before a Gemini call is made. */
+     belongs to another domain is refused before an AI call is made. */
   const scopeText = [
     prompt, response,
     ...(Array.isArray(tasks) ? tasks.flatMap((t) => [t && t.prompt, t && t.response]) : []),
@@ -206,10 +188,10 @@ module.exports = async function handler(req, res) {
       }
       const userContent = clean.map((t) => `TASK: ${t.title}\nOFFICIAL MINIMUM: ${t.minWords} words\nTASK PROMPT:\n${t.prompt}${t.criteria ? `\n\nASSESSMENT CRITERIA / NOTES:\n${t.criteria}` : ''}\n\nCANDIDATE RESPONSE:\n${t.response}`).join('\n\n---\n\n');
       /* 7-day TTL cache (public.ai_cache): the same graded answer is not
-         re-sent to Gemini when the candidate asks again. */
+         re-sent to the model when the candidate asks again. */
       const { data: parsed } = await aiCache.withCache(
         `grade:writing:${guard.cleanPrompt(userContent).slice(0, 4000)}`,
-        () => callGemini(guard.withGuardrails(WRITING_SYSTEM), userContent.slice(0, 12000), 3000)
+        () => callModel(guard.withGuardrails(WRITING_SYSTEM), userContent.slice(0, 12000), ai.MAX_TOKENS)
       );
       res.status(200).json(normalizeWriting(parsed, clean.length));
       return;
@@ -229,7 +211,7 @@ module.exports = async function handler(req, res) {
     /* 7-day TTL cache — identical transcripts are marked once. */
     const { data: parsed } = await aiCache.withCache(
       `grade:speaking:${guard.cleanPrompt(userContent).slice(0, 4000)}`,
-      () => callGemini(guard.withGuardrails(SPEAKING_SYSTEM), userContent.slice(0, 9000), 2000)
+      () => callModel(guard.withGuardrails(SPEAKING_SYSTEM), userContent.slice(0, 9000), ai.MAX_TOKENS)
     );
     res.status(200).json(normalizeSpeaking(parsed));
   } catch (err) {

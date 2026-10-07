@@ -1,5 +1,5 @@
 'use strict';
-/* Tests for the new /api/quiz endpoint (local fallback when no Gemini key). */
+/* Tests for the /api/quiz endpoint (local fallback when no GROQ_API_KEY). */
 const fs = require('fs');
 const path = require('path').join(__dirname, '..');
 

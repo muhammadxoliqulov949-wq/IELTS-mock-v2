@@ -18,19 +18,25 @@
  * The four skills are generated ONE REQUEST AT A TIME on purpose: the
  * admin modal can then show honest progress (Listening → Reading →
  * Writing → Speaking) and every response stays far below the serverless
- * execution limit, which also keeps the Gemini output token budget
- * comfortable for a 40-question section.
+ * execution limit, which also keeps the output token budget comfortable
+ * for a 40-question section.
+ *
+ * Text generation goes through lib/aiClient.js — the project's single AI
+ * module (Groq, OpenAI format). Writing/Speaking use MAX_TOKENS (4096);
+ * Listening/Reading use SECTION_MAX_TOKENS (8192) because a full
+ * transcript plus 40 questions and explanations does not fit in 4096 and
+ * a cut-off answer would break the JSON payload.
  *
  * Audio: Listening transcripts are synthesised with the free Edge TTS
- * engine (MP3) and, when that is unreachable, with Gemini TTS (WAV) —
- * see lib/edgeTts.js. When the browser forwards the admin's Supabase
- * access token the MP3/WAV is uploaded straight into the public
- * "ielts-media" bucket and the payload comes back with a real audioUrl.
- * Without a token the audio is returned as base64 so the browser can
- * upload it through the existing admin media endpoint (RLS still guards
- * the bucket: only admins may write).
+ * engine (MP3) and, when that is unreachable, with Groq TTS (WAV) — see
+ * lib/edgeTts.js. When the browser forwards the admin's Supabase access
+ * token the MP3/WAV is uploaded straight into the public "ielts-media"
+ * bucket and the payload comes back with a real audioUrl. Without a token
+ * the audio is returned as base64 so the browser can upload it through
+ * the existing admin media endpoint (RLS still guards the bucket: only
+ * admins may write).
  *
- * Requires env var: GEMINI_API_KEY
+ * Requires env var: GROQ_API_KEY
  * =================================================================== */
 'use strict';
 
@@ -42,10 +48,10 @@ const tts = require('../lib/edgeTts.js');
  * itself to avoid — the generator's whole promise is that every run
  * differs. Grade, Coach and Quiz are the cached endpoints. */
 
-/* Model ids live in lib/geminiModel.js (see the note there). This endpoint
- * used to pin a Gemini Flash id in two constants and started returning 404
- * the moment Google restricted that model to keys that already used it. */
-const gemini = require('../lib/geminiModel.js');
+/* The model id and the token budget live in lib/aiClient.js (see the note
+ * there). This endpoint used to pin a provider model id in two constants
+ * and started returning 404 the moment that model was retired. */
+const ai = require('../lib/aiClient.js');
 const MEDIA_BUCKET = 'ielts-media';
 const SKILLS = ['listening', 'reading', 'writing', 'speaking'];
 const TEMPERATURE = 0.85; /* diversity over precision — see ADMIN.md */
@@ -71,45 +77,17 @@ function rateLimited(req) {
 function str(v) { return String(v ?? '').trim(); }
 function num(v, fallback) { const n = Number(v); return Number.isFinite(n) ? n : fallback; }
 
-/* Gemini sometimes wraps JSON in ```json fences or adds a preamble. */
-function parseJson(raw) {
-  const s = String(raw || '').replace(/```(?:json)?/gi, '').trim();
-  try { return JSON.parse(s); } catch { /* fall through */ }
-  const start = s.indexOf('{');
-  const end = s.lastIndexOf('}');
-  if (start >= 0 && end > start) {
-    try { return JSON.parse(s.slice(start, end + 1)); } catch { /* fall through */ }
-  }
-  throw new Error('The model did not return valid JSON');
-}
-
-async function callGemini(systemPrompt, userContent, maxTokens) {
-  const res = await fetch(gemini.url(process.env.GEMINI_API_KEY), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      system_instruction: { parts: [{ text: systemPrompt }] },
-      contents: [{ role: 'user', parts: [{ text: userContent }] }],
-      generationConfig: {
-        temperature: TEMPERATURE,
-        maxOutputTokens: maxTokens,
-        responseMimeType: 'application/json'
-      }
-    })
+/* One section through the shared Groq module. The model is asked for JSON
+ * object mode and the module parses the answer (it also copes with a stray
+ * ```json fence or a one-sentence preamble). */
+async function callModel(systemPrompt, userContent, maxTokens) {
+  const { data, usage } = await ai.chatJson({
+    system: systemPrompt,
+    user: userContent,
+    temperature: TEMPERATURE,
+    maxTokens
   });
-  if (!res.ok) {
-    const body = (await res.text()).slice(0, 400);
-    const err = new Error(`Gemini API error (${res.status}): ${body}${gemini.modelNotFoundHint(res.status, body)}`);
-    err.status = res.status;
-    throw err;
-  }
-  const data = await res.json();
-  const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!raw) {
-    const reason = data?.candidates?.[0]?.finishReason || data?.promptFeedback?.blockReason || 'unknown';
-    throw new Error(`Gemini returned no content (finishReason: ${reason}). Try generating the section again.`);
-  }
-  return { parsed: parseJson(raw), usage: data.usageMetadata || null };
+  return { parsed: data, usage };
 }
 
 /* ------------------------------------------------------------------
@@ -629,15 +607,8 @@ module.exports = async function handler(req, res) {
     res.status(429).json({ ok: false, error: 'Too many generation requests. Wait a few minutes and try again.' });
     return;
   }
-  if (!process.env.GEMINI_API_KEY) {
-    res.status(500).json({
-      ok: false,
-      code: 'GEMINI_KEY_MISSING',
-      error: 'GEMINI_API_KEY is not set on the server.',
-      /* the exact message the admin must see */
-      message: 'Iltimos, avval GEMINI_API_KEY sozlang — AI generator ishga tushishi uchun Gemini API kaliti kerak.',
-      hint: 'Add GEMINI_API_KEY in Vercel → Project → Settings → Environment Variables (free key: https://aistudio.google.com/apikey), then redeploy.'
-    });
+  if (!ai.hasKey()) {
+    res.status(500).json(Object.assign({ ok: false }, ai.missingKey()));
     return;
   }
 
@@ -729,11 +700,14 @@ module.exports = async function handler(req, res) {
     return;
   }
 
+  /* 4096 tokens covers coach/grade/quiz and the Writing & Speaking
+     sections; a 40-question Listening/Reading paper needs the larger
+     SECTION_MAX_TOKENS budget or the JSON would be cut off mid-answer. */
   const prompts = {
-    listening: () => ({ system: listeningSystem(plan), max: 8192 }),
-    reading: () => ({ system: readingSystem(plan), max: 8192 }),
-    writing: () => ({ system: writingSystem(plan), max: 4096 }),
-    speaking: () => ({ system: speakingSystem(plan), max: 4096 })
+    listening: () => ({ system: listeningSystem(plan), max: ai.SECTION_MAX_TOKENS }),
+    reading: () => ({ system: readingSystem(plan), max: ai.SECTION_MAX_TOKENS }),
+    writing: () => ({ system: writingSystem(plan), max: ai.MAX_TOKENS }),
+    speaking: () => ({ system: speakingSystem(plan), max: ai.MAX_TOKENS })
   };
 
   try {
@@ -749,7 +723,7 @@ module.exports = async function handler(req, res) {
       'Now write the complete ' + skill.toUpperCase() + ' section as one JSON object.'
     ].join('\n');
 
-    const { parsed, usage } = await callGemini(guard.withGuardrails(system), userContent, max);
+    const { parsed, usage } = await callModel(guard.withGuardrails(system), userContent, max);
 
     const payload = skill === 'listening' ? normalizeListening(parsed, plan)
       : skill === 'reading' ? normalizeReading(parsed, plan)

@@ -473,7 +473,7 @@ async function waitFor(predicate, label, timeout) {
     if (body.mode !== 'audio') {
       seen += 1;
       if (body.skill === 'reading') {
-        return { ok: false, status: 502, json: async () => ({ ok: false, error: 'Gemini API error (500): overloaded' }) };
+        return { ok: false, status: 502, json: async () => ({ ok: false, error: 'Groq API error (429): rate limit reached' }) };
       }
       return { ok: true, status: 200, json: async () => sectionAnswer(body.skill) };
     }
@@ -484,7 +484,7 @@ async function waitFor(predicate, label, timeout) {
   const stopped = await waitFor(() => !generator.state.running, 'the failed run to stop', 20000);
   check('failure: the run stops', stopped);
   check('failure: the error message is shown to the admin',
-    /Gemini API error/.test(generator.state.error));
+    /Groq API error/.test(generator.state.error));
   check('failure: Reading is marked as failed',
     generator.state.steps.reading === 'error' && generator.state.steps.listening === 'done');
   check('failure: the sections generated before the failure are still saved',
@@ -492,7 +492,7 @@ async function waitFor(predicate, label, timeout) {
   check('failure: no meta row is written for an incomplete test', saved.meta.length === 0);
   check('failure: no editor buttons are offered', !/data-ai-open-editor/.test(backdrop2.innerHTML));
 
-  /* ---------- 5. a missing GEMINI_API_KEY is reported verbatim ---------- */
+  /* ---------- 5. a missing GROQ_API_KEY is reported verbatim ---------- */
   generator.close();
   saved.tests.length = 0;
   generator.open({ testId: 'test11' });
@@ -503,17 +503,17 @@ async function waitFor(predicate, label, timeout) {
   global.fetch = async () => ({
     ok: false, status: 500,
     json: async () => ({
-      ok: false, code: 'GEMINI_KEY_MISSING',
-      error: 'GEMINI_API_KEY is not set on the server.',
-      message: 'Iltimos, avval GEMINI_API_KEY sozlang — AI generator ishga tushishi uchun Gemini API kaliti kerak.',
-      hint: 'Add GEMINI_API_KEY in Vercel → Settings → Environment Variables.'
+      ok: false, code: 'GROQ_KEY_MISSING',
+      error: 'GROQ_API_KEY is not set on the server.',
+      message: 'Iltimos, avval GROQ_API_KEY sozlang — AI funksiyalari ishlashi uchun Groq API kaliti kerak.',
+      hint: 'Add GROQ_API_KEY in Vercel → Project → Settings → Environment Variables (free key: https://console.groq.com/keys), then redeploy.'
     })
   });
   backdrop3.querySelector('[data-ai-generate]').click();
   const stopped2 = await waitFor(() => !generator.state.running, 'the key-missing run to stop', 20000);
   check('key missing: the run stops', stopped2);
   check('key missing: the admin sees the setup instruction',
-    /Iltimos, avval GEMINI_API_KEY sozlang/.test(generator.state.error));
+    /Iltimos, avval GROQ_API_KEY sozlang/.test(generator.state.error));
   check('key missing: nothing is saved', saved.tests.length === 0 && saved.meta.length === 0);
 
   console.log(failed === 0 ? '\nGENERATOR CLIENT TESTS OK ✓' : `\n${failed} GENERATOR CLIENT TEST(S) FAILED`);
