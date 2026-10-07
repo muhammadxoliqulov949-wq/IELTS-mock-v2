@@ -3,9 +3,9 @@
  *
  * What must never silently break:
  *   • the topic/diversity pool (≥40 topics, per-section picks, shuffled
- *     question-type mixes, temperature 0.85 reaching Gemini)
+ *     question-type mixes, temperature 0.85 reaching Groq)
  *   • the generator endpoint (shape of every one of the four skills,
- *     the GEMINI_API_KEY message an admin actually sees, audio mode)
+ *     the GROQ_API_KEY message an admin actually sees, audio mode)
  *   • the TTS module (Sec-MS-GEC vectors, WAV wrapping, frame parsing,
  *     and a full Edge-TTS round trip against a local mock endpoint)
  *   • the wiring (button in the admin panel, scripts loaded, service
@@ -90,6 +90,7 @@ check('diversity: 12 runs produce more than 6 different question-type mixes', mi
 /* 2. TTS module                                                       */
 /* ------------------------------------------------------------------ */
 const tts = require('../lib/edgeTts.js');
+const ai = require('../lib/aiClient.js');
 
 /* golden vectors published for the Sec-MS-GEC algorithm */
 const gecVectors = [
@@ -343,28 +344,29 @@ function speakingAnswer() {
   await handler({ method: 'GET', headers: {} }, r);
   check('api: only POST is allowed', r.statusCode === 405);
 
-  delete process.env.GEMINI_API_KEY;
+  delete process.env.GROQ_API_KEY;
   r = makeRes();
   await handler(req({ skill: 'listening' }), r);
-  check('api: without GEMINI_API_KEY the admin sees the setup message',
-    r.statusCode === 500 && r.body.code === 'GEMINI_KEY_MISSING'
-    && /Iltimos, avval GEMINI_API_KEY sozlang/.test(r.body.message)
-    && /aistudio\.google\.com/.test(r.body.hint));
+  check('api: without GROQ_API_KEY the admin sees the setup message',
+    r.statusCode === 500 && r.body.code === 'GROQ_KEY_MISSING'
+    && /Iltimos, avval GROQ_API_KEY sozlang/.test(r.body.message)
+    && /console\.groq\.com\/keys/.test(r.body.hint));
 
-  process.env.GEMINI_API_KEY = 'fake-key';
+  process.env.GROQ_API_KEY = 'fake-key';
   r = makeRes();
   await handler(req({ skill: 'underwater-basket-weaving' }), r);
   check('api: an unknown skill is rejected', r.statusCode === 400 && /Unknown skill/.test(r.body.error));
 
-  /* --- 4.4 every skill, with the Gemini call captured --- */
+  /* --- 4.4 every skill, with the Groq call captured --- */
   const calls = [];
   global.fetch = async (url, options) => {
     calls.push({ url: String(url), body: JSON.parse(options.body) });
     return {
       ok: true,
+      status: 200,
       json: async () => ({
-        candidates: [{ content: { parts: [{ text: JSON.stringify(pendingAnswer) }] } }],
-        usageMetadata: { totalTokenCount: 1234 }
+        choices: [{ message: { role: 'assistant', content: JSON.stringify(pendingAnswer) }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 900, completion_tokens: 1200, total_tokens: 2100 }
       })
     };
   };
@@ -399,12 +401,15 @@ function speakingAnswer() {
     saved[skill] = payload;
 
     const request = calls[calls.length - 1];
-    check('api: ' + skill + ' asks Gemini with temperature 0.85',
-      request.body.generationConfig.temperature === 0.85
-      && request.body.generationConfig.maxOutputTokens === maxTokens
-      && request.body.generationConfig.responseMimeType === 'application/json');
+    check('api: ' + skill + ' asks Groq with temperature 0.85 and the right token budget',
+      request.body.temperature === 0.85
+      && request.body.max_tokens === maxTokens
+      && request.body.max_tokens >= ai.MAX_TOKENS
+      && request.body.response_format.type === 'json_object'
+      && request.body.model === ai.DEFAULT_MODEL
+      && /api\.groq\.com\/openai\/v1\/chat\/completions/.test(request.url));
     check('api: ' + skill + ' sends the planned topic to the model',
-      request.body.contents[0].parts[0].text.includes(r.body.plan.topics[skill]));
+      request.body.messages.map((m) => m.content).join('\n').includes(r.body.plan.topics[skill]));
 
     const problems = adminInternal.validatePayload(skill, payload);
     check('api: ' + skill + ' passes the admin editor validator', problems.length === 0);
@@ -473,14 +478,8 @@ function speakingAnswer() {
       uploaded.push({ url: target, contentType: options.headers['Content-Type'], bytes: options.body.length });
       return { ok: true, json: async () => ({}) };
     }
-    if (target.includes('generativelanguage.googleapis.com')) {
-      const pcm = Buffer.alloc(2400);
-      return {
-        ok: true,
-        json: async () => ({
-          candidates: [{ content: { parts: [{ inlineData: { mimeType: 'audio/L16;codec=pcm;rate=24000', data: pcm.toString('base64') } }] } }]
-        })
-      };
+    if (target.includes('api.groq.com/openai/v1/audio/speech')) {
+      return { ok: true, status: 200, arrayBuffer: async () => tts.pcmToWav(Buffer.alloc(2400), 24000) };
     }
     throw new Error('network unreachable');
   };
@@ -494,32 +493,26 @@ function speakingAnswer() {
   }, '10.0.0.99'), r);
   check('api: audio mode returns a recording', r.statusCode === 200 && r.body.ok && !!r.body.audio);
   check('api: audio mode reports the engine used',
-    ['edge-tts', 'gemini-tts'].includes(r.body.audio && r.body.audio.source));
+    ['edge-tts', 'groq-tts'].includes(r.body.audio && r.body.audio.source));
   check('api: the recording is uploaded to the ielts-media bucket under the part name',
     uploaded.length === 1
     && /\/storage\/v1\/object\/ielts-media\/audio\/test6-listening-part2-/.test(uploaded[0].url)
     && ['audio/mpeg', 'audio/wav'].includes(uploaded[0].contentType));
 
-  /* Gemini fallback: Edge unreachable → Gemini TTS → WAV */
-  const pcm = Buffer.alloc(2400);
+  /* Groq fallback: Edge unreachable → Orpheus TTS → WAV */
   global.fetch = async (url, options) => {
-    if (String(url).includes('generativelanguage.googleapis.com')) {
-      return {
-        ok: true,
-        json: async () => ({
-          candidates: [{ content: { parts: [{ inlineData: { mimeType: 'audio/L16;codec=pcm;rate=24000', data: pcm.toString('base64') } }] } }]
-        })
-      };
+    if (String(url).includes('api.groq.com/openai/v1/audio/speech')) {
+      return { ok: true, status: 200, arrayBuffer: async () => tts.pcmToWav(Buffer.alloc(2400), 24000) };
     }
     throw new Error('network unreachable');
   };
-  const fallback = await tts.synthesize('A transcript that must fall back to Gemini TTS.', {
+  const fallback = await tts.synthesize('A transcript that must fall back to Groq TTS.', {
     endpoint: 'ws://127.0.0.1:1/edge/v1',
     transport: 'raw',
     rejectUnauthorized: false
   });
-  check('tts: falls back to Gemini TTS (WAV) when Edge is unreachable',
-    fallback.source === 'gemini-tts' && fallback.mime === 'audio/wav'
+  check('tts: falls back to Groq TTS (WAV) when Edge is unreachable',
+    fallback.source === 'groq-tts' && fallback.mime === 'audio/wav'
     && fallback.buffer.slice(0, 4).toString() === 'RIFF');
 
   /* --- 4.7 the local mock Edge endpoint (both transports) --- */

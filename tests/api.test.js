@@ -25,7 +25,7 @@ function makeRes() {
   await grade(req({ mode: 'writing', response: 'hello' }), r);
   console.log('no-key grade:', r.statusCode, '|', r.body.error.slice(0, 40));
 
-  process.env.GEMINI_API_KEY = 'fake';
+  process.env.GROQ_API_KEY = 'fake';
   r = makeRes();
   await grade(req({ mode: 'xxx' }), r);
   console.log('bad mode:', r.statusCode, '|', r.body.error);
@@ -51,13 +51,20 @@ function makeRes() {
     ],
     overallSummary: 'solid'
   };
-  global.fetch = async () => ({ ok: true, json: async () => ({ candidates: [{ content: { parts: [{ text: JSON.stringify(writingPayload) }] } }] }) });
+  /* the OpenAI/Groq answer shape: choices[0].message.content */
+  global.fetch = async () => ({
+    ok: true, status: 200,
+    json: async () => ({ choices: [{ message: { role: 'assistant', content: JSON.stringify(writingPayload) }, finish_reason: 'stop' }] })
+  });
   r = makeRes();
   await grade({ method: 'POST', headers: { 'x-forwarded-for': '9.9.9.9' }, socket: {}, body: { mode: 'writing', tasks: [{ title: 'Task 1', prompt: 'p', response: 'a '.repeat(200) }, { title: 'Task 2', prompt: 'p', response: 'b '.repeat(300) }] } }, r);
   console.log('writing mock:', r.statusCode, '| overall band =', r.body.band, '| tasks =', r.body.tasks.map(t => t.title + ':' + t.band).join(', '));
   console.log('  expected overall = round((6.5/3 + 7*2/3)*2)/2 =', Math.round((6.5 / 3 + 7 * 2 / 3) * 2) / 2);
 
-  global.fetch = async () => ({ ok: true, json: async () => ({ candidates: [{ content: { parts: [{ text: 'Here is your 7-day plan targeting Writing...' }] } }] }) });
+  global.fetch = async () => ({
+    ok: true, status: 200,
+    json: async () => ({ choices: [{ message: { role: 'assistant', content: 'Here is your 7-day plan targeting Writing...' }, finish_reason: 'stop' }] })
+  });
   r = makeRes();
   await coach({ method: 'POST', headers: { 'x-forwarded-for': '8.8.8.8' }, socket: {}, body: { message: 'Make me a plan', profile: { band: 6, weakest: 'writing', mistakeCount: 5 }, history: [{ role: 'user', text: 'hi' }] } }, r);
   console.log('coach mock:', r.statusCode, '| reply:', r.body.reply.slice(0, 45));

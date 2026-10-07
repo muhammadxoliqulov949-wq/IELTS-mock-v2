@@ -28,10 +28,10 @@ Root `.env` fayliga Supabase Dashboard → Project Settings → API dagi qiymatl
 ```dotenv
 SUPABASE_URL=https://YOUR_PROJECT.supabase.co
 SUPABASE_ANON_KEY=YOUR_PUBLIC_ANON_OR_PUBLISHABLE_KEY
-GEMINI_API_KEY=YOUR_OPTIONAL_GEMINI_KEY
+GROQ_API_KEY=YOUR_GROQ_KEY
 ```
 
-`SUPABASE_ANON_KEY` uchun eski `anon` JWT yoki yangi `sb_publishable_...` kalit mos keladi. Bu **ommaviy client kaliti**; himoya kalitni yashirish bilan emas, Auth + RLS orqali ta'minlanadi. **`service_role`, `sb_secret_...`, database paroli yoki Gemini kalitini browserga bermang.** `/api/config` faqat ikkita Supabase public sozlamani chiqaradi va maxfiy Supabase kalitlarini rad etadi.
+`SUPABASE_ANON_KEY` uchun eski `anon` JWT yoki yangi `sb_publishable_...` kalit mos keladi. Bu **ommaviy client kaliti**; himoya kalitni yashirish bilan emas, Auth + RLS orqali ta'minlanadi. **`service_role`, `sb_secret_...`, database paroli yoki Groq kalitini browserga bermang.** `/api/config` faqat ikkita Supabase public sozlamani chiqaradi va maxfiy Supabase kalitlarini rad etadi.
 
 `.env` Git'dan chiqarilgan va preview server uni HTTP orqali bermaydi. Kalitlarni chatga yuborish shart emas; server/hosting environment sozlamalariga kiriting.
 
@@ -154,12 +154,12 @@ Migration qo‘llangandan **keyingi** yangi kontent o‘zgarishlarini yangi SQL 
 Ishlash tartibi (`lib/aiCache.js`):
 
 1. Savol tozalib `sha256` ga aylanadi → `prompt_hash`.
-2. `select` qilinadi. Agar `now() - created_at < interval '7 days'` bo'lsa, **Gemini chaqirilmaydi** va keshdagi javob qaytariladi.
-3. Aks holda Gemini'ga so'rov yuboriladi va javob `Prefer: resolution=merge-duplicates` bilan qatorga **upsert** qilinadi — eski qator yangulanadi (va uning 7 kunlik muddati qaytadan boshlanadi).
+2. `select` qilinadi. Agar `now() - created_at < interval '7 days'` bo'lsa, **Groq chaqirilmaydi** va keshdagi javob qaytariladi.
+3. Aks holda Groq'ga so'rov yuboriladi va javob `Prefer: resolution=merge-duplicates` bilan qatorga **upsert** qilinadi — eski qator yangulanadi (va uning 7 kunlik muddati qaytadan boshlanadi).
 
 Xavfsizlik: jadvalda **hech qanday policy yo'q**, RLS yoqilgan. Ya'ni brauzerdan keluvchi `anon`/`authenticated` rollari keshni o'qiyolishi ham yozishi ham mumkin emas — faqat server (`SUPABASE_SERVICE_ROLE_KEY`, RLS'ni chetlab o'tadi) ishlatadi. Bu keshga zararli javob yozib qo'yishning oldini oladi.
 
-Guardrails (`lib/aiGuardrails.js`): har bir Gemini chaqiruviga **System Instruction** ilova qilinadi — model o'zini faqat *"IELTS Murabbiyi"* sifatida tutadi va IELTS/ingliz tilidan boshqa mavzuda (dasturlash, siyosat, erkin suhbat, umumiy savollar) quyidagi jumla bilan rad etadi:
+Guardrails (`lib/aiGuardrails.js`): har bir AI chaqiruviga **System Instruction** ilova qilinadi — model o'zini faqat *"IELTS Murabbiyi"* sifatida tutadi va IELTS/ingliz tilidan boshqa mavzuda (dasturlash, siyosat, erkin suhbat, umumiy savollar) quyidagi jumla bilan rad etadi:
 
 > Kechirasiz, men faquq IELTS va inglng tiliga doir savollarga yordak bera olaman.
 
@@ -194,7 +194,7 @@ npm run preview
 
 Vercel'da:
 
-- Environment Variables ga `SUPABASE_URL`, `SUPABASE_ANON_KEY`, kerak bo'lsa `GEMINI_API_KEY` qo'shing.
+- Environment Variables ga `SUPABASE_URL`, `SUPABASE_ANON_KEY` va AI funksiyalar uchun `GROQ_API_KEY` qo'shing.
 - Yangi deployment qiling. `vercel.json` `npm run build` va `public` output papkasini sozlaydi.
 - Build faqat public fayllarni `public/` ga nusxalaydi. API'lar root `api/` ichidagi Vercel functions bo'lib qoladi; environment kalitlari statik bundle'ga tikilmaydi.
 
@@ -244,7 +244,7 @@ Loyihangiz sozlangandan keyin qo'lda tekshiring:
 
 ## Chegaralar
 
-- AI baholash uchun Gemini kaliti alohida kerak. AI bahosi chiqmagan bo'lim `NULL`, sun'iy ravishda `0` emas.
+- AI baholash uchun Groq kaliti alohida kerak. AI bahosi chiqmagan bo'lim `NULL`, sun'iy ravishda `0` emas.
 - Sinxronlanmagan natijalar brauzer xotirasida bo'ladi; yuborilguncha browser ma'lumotlarini tozalamang.
 - Test savollari, davom etayotgan javob draftlari, barcha settings/quiz/vocabulary progress va AI Coach chatlari ushbu `mock_results` jadvaliga ko'chirilmagan.
 - Ballar mashq uchun client tomonidan yuboriladi. RLS foydalanuvchilar maxfiyligini himoyalaydi, lekin o'z ballini browser orqali o'zgartirishni cheklovchi proctoring emas. Rasmiy sertifikat/reyting uchun server-side grading va test-session validatsiyasi alohida kerak.

@@ -4,9 +4,11 @@
  * body: { message: string, profile: { band, weakest, mistakeCount }, history: [{role, text}, ...] }
  * returns: { reply: string }
  *
- * Requires env var: GEMINI_API_KEY (free key at https://aistudio.google.com/apikey)
+ * Requires env var: GROQ_API_KEY (free key at https://console.groq.com/keys).
+ * Every answer comes from the project's single AI module, lib/aiClient.js
+ * (Groq, OpenAI format, max_tokens 4096).
  */
-const gemini = require('../lib/geminiModel.js');
+const ai = require('../lib/aiClient.js');
 const guard = require('../lib/aiGuardrails.js');
 const aiCache = require('../lib/aiCache.js');
 
@@ -53,10 +55,8 @@ module.exports = async function handler(req, res) {
     res.status(429).json({ error: 'Too many requests — please wait a moment and try again.' });
     return;
   }
-  if (!process.env.GEMINI_API_KEY) {
-    res.status(500).json({
-      error: 'GEMINI_API_KEY is not set on the server. Add it in your hosting environment (Vercel → Settings → Environment Variables) — get a free key at https://aistudio.google.com/apikey'
-    });
+  if (!ai.hasKey()) {
+    res.status(500).json({ error: ai.missingKeyError() });
     return;
   }
 
@@ -71,7 +71,7 @@ module.exports = async function handler(req, res) {
   }
 
   /* Strict IELTS boundary (lib/aiGuardrails.js): a clearly out-of-scope
-     question is refused before a Gemini token is spent. */
+     question is refused before an AI token is spent. */
   if (guard.isLikelyOffTopic(message)) {
     res.status(400).json({ error: guard.REFUSAL_MESSAGE, code: guard.OFF_TOPIC });
     return;
@@ -81,41 +81,30 @@ module.exports = async function handler(req, res) {
     const p = profile || {};
     const profileLine = `Candidate profile — latest overall band: ${p.band ?? 'not assessed yet'}; weakest skill: ${p.weakest ?? 'none yet'}; saved mistakes: ${p.mistakeCount ?? 0}.`;
 
-    const contents = [];
+    /* OpenAI message format: the module turns this history into
+       [{ role: 'user'|'assistant', content }] messages. */
+    const historyMessages = [];
     if (Array.isArray(history) && history.length) {
       for (const h of history.slice(-10)) {
-        const role = h && h.role === 'user' ? 'user' : 'model';
-        const text = String(h && h.text || '').slice(0, 3000);
+        const role = h && h.role === 'user' ? 'user' : 'assistant';
+        const text = String((h && h.text) || '').slice(0, 3000);
         if (!text) continue;
-        const last = contents[contents.length - 1];
-        if (last && last.role === role) last.parts[0].text += `\n${text}`;
-        else contents.push({ role, parts: [{ text }] });
+        historyMessages.push({ role, content: text });
       }
     }
-    contents.push({ role: 'user', parts: [{ text: message }] });
 
     /* 7-day TTL cache (public.ai_cache, see lib/aiCache.js): the same
        question about the same profile is answered straight from the
-       database and Gemini is not called again. */
+       database and the model is not called again. */
     const cacheKey = `coach:${guard.cleanPrompt(message)}|${p.band ?? '-'}|${p.weakest ?? '-'}`;
     const { data: reply } = await aiCache.withCache(cacheKey, async () => {
-      const geminiRes = await fetch(gemini.url(process.env.GEMINI_API_KEY), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          system_instruction: { parts: [{ text: guard.withGuardrails(`${COACH_SYSTEM}\n\n${profileLine}`) }] },
-          contents,
-          generationConfig: { temperature: 0.6, maxOutputTokens: 900 }
-        })
+      const { text } = await ai.chat({
+        system: guard.withGuardrails(`${COACH_SYSTEM}\n\n${profileLine}`),
+        messages: historyMessages,
+        user: message,
+        temperature: 0.6,
+        maxTokens: ai.MAX_TOKENS
       });
-      if (!geminiRes.ok) {
-        const errText = (await geminiRes.text()).slice(0, 400);
-        const err = new Error(`Gemini API error (${geminiRes.status}): ${errText}${gemini.modelNotFoundHint(geminiRes.status, errText)}`);
-        err.status = geminiRes.status;
-        throw err;
-      }
-      const data = await geminiRes.json();
-      const text = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
       if (!text) throw new Error('Coach produced no reply — please try again');
       return text;
     });
