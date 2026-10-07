@@ -1,5 +1,5 @@
 'use strict';
-/* Tests for the new /api/quiz endpoint (local fallback when no Gemini key). */
+/* Tests for /api/quiz's local fallback when no Groq key is configured. */
 const fs = require('fs');
 const path = require('path').join(__dirname, '..');
 
@@ -16,6 +16,7 @@ function makeRes() {
   const m = { exports: {} };
   fn(m, require, process);
   const handler = m.exports;
+  delete process.env.GROQ_API_KEY;
 
   const req = (body, ip) => ({ method: 'POST', headers: { 'x-forwarded-for': ip || '1.2.3.4' }, socket: {}, body });
 

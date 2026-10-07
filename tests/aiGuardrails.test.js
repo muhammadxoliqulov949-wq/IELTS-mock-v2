@@ -5,16 +5,16 @@
  *  1. Strict IELTS Guardrails (lib/aiGuardrails.js)
  *       • the system instruction pins the model to the "IELTS Murabbiyi"
  *         persona and carries the verbatim Uzbek refusal
- *       • clearly out-of-scope questions are refused BEFORE Gemini runs
+ *       • clearly out-of-scope questions are refused BEFORE Groq runs
  *       • every one of the 48 generator pool themes stays in scope
  *       • a refusal reply is recognised, genuine advice is not
  *       • every endpoint answers OFF_TOPIC with the same sentence
  *  2. 7-Day TTL Database Cache (lib/aiCache.js + public.ai_cache)
  *       • the migration executes on a real Postgres (PGlite) and RLS
  *         locks the table away from anon/authenticated browsers
- *       • a fresh row is returned without calling Gemini
+ *       • a fresh row is returned without calling Groq
  *       • a stale (> 7 days) row is refreshed and upserted, not duplicated
- *       • every failure is fail-open: no key, no table → Gemini is called
+ *       • every failure is fail-open: no key, no table → Groq is called
  * =================================================================== */
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -66,7 +66,7 @@ function testGuardrails() {
   check(merged.startsWith(guard.GUARDRAIL_SYSTEM) && merged.endsWith(task), 'withGuardrails prepends the rules and keeps the task prompt');
   check(guard.withGuardrails('') === guard.GUARDRAIL_SYSTEM, 'withGuardrails handles an empty task prompt');
 
-  /* out of scope → refused before any Gemini token is spent */
+  /* out of scope → refused before any Groq token is spent */
   const offTopic = [
     'Write python code to sort a list',
     'How do I fix a bug in my JavaScript function?',
@@ -204,22 +204,22 @@ async function testMigration() {
 /* --- handler behaviour --------------------------------------------- */
 async function testHandlerCaching() {
   const savedEnv = {
-    KEY: process.env.GEMINI_API_KEY,
+    KEY: process.env.GROQ_API_KEY,
     URL: process.env.SUPABASE_URL,
     ANON: process.env.SUPABASE_ANON_KEY,
     SERVICE: process.env.SUPABASE_SERVICE_ROLE_KEY
   };
   const calls = [];
   const realFetch = global.fetch;
-  const geminiReply = { reply: 'Start Task 2 with a clear position sentence, then develop two body paragraphs.' };
+  const modelReply = { reply: 'Start Task 2 with a clear position sentence, then develop two body paragraphs.' };
 
-  /* a stub that counts Gemini calls and serves the REST endpoints */
-  function stubFetch(gemini, rest) {
+  /* a stub that counts Groq calls and serves the REST endpoints */
+  function stubFetch(modelPayload, rest) {
     global.fetch = async (url, options) => {
       const target = String(url);
-      if (target.includes('generativelanguage.googleapis.com')) {
-        calls.push({ kind: 'gemini', url: target });
-        return { ok: true, status: 200, json: async () => gemini };
+      if (target.includes('api.groq.com/openai/v1/chat/completions')) {
+        calls.push({ kind: 'model', url: target });
+        return { ok: true, status: 200, json: async () => modelPayload };
       }
       calls.push({ kind: 'rest', url: target, method: options && options.method || 'GET', body: options && options.body });
       return rest(target, options);
@@ -227,7 +227,7 @@ async function testHandlerCaching() {
   }
 
   try {
-    process.env.GEMINI_API_KEY = 'fake-key';
+    process.env.GROQ_API_KEY = 'fake-key';
     delete process.env.SUPABASE_URL;
     delete process.env.SUPABASE_SERVICE_ROLE_KEY;
     delete process.env.SUPABASE_ANON_KEY;
@@ -235,7 +235,7 @@ async function testHandlerCaching() {
 
     const coach = makeHandler('api/coach.js');
 
-    /* ---- 2a. a fresh cached row answers without Gemini ---- */
+    /* ---- 2a. a fresh cached row answers without Groq ---- */
     const question = 'How do I write an overview for Writing Task 1?';
     const hash = aiCache.hashPrompt(`coach:${guard.cleanPrompt(question)}|-|-`);
     aiCache._memory.set(hash, { response_json: 'CACHED ANSWER', created_at: new Date().toISOString() });
@@ -243,20 +243,20 @@ async function testHandlerCaching() {
     let r = makeRes();
     await coach(req({ message: question, profile: {}, history: [] }), r);
     check(r.statusCode === 200 && r.body.reply === 'CACHED ANSWER', 'a question already in the 7-day cache is answered from the database');
-    check(calls.filter((c) => c.kind === 'gemini').length === 0, 'Gemini is not called at all on a cache hit');
+    check(calls.filter((c) => c.kind === 'model').length === 0, 'Groq is not called at all on a cache hit');
 
-    /* ---- 2b. an expired row falls through to Gemini and is refreshed ---- */
+    /* ---- 2b. an expired row falls through to Groq and is refreshed ---- */
     const expired = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString();
     aiCache._memory.set(hash, { response_json: 'STALE ANSWER', created_at: expired });
     const restWrites = [];
     stubFetch(
-      { candidates: [{ content: { parts: [{ text: geminiReply.reply }] } }] },
+      { choices: [{ finish_reason: 'stop', message: { content: modelReply.reply } }] },
       () => { restWrites.push(true); return { ok: true, status: 200, json: async () => [] }; }
     );
     r = makeRes();
     await coach(req({ message: question, profile: {}, history: [] }), r);
-    check(r.statusCode === 200 && r.body.reply === geminiReply.reply, 'a row older than 7 days is refreshed from Gemini');
-    check(calls.filter((c) => c.kind === 'gemini').length === 1, 'exactly one Gemini call is made after a stale row');
+    check(r.statusCode === 200 && r.body.reply === modelReply.reply, 'a row older than 7 days is refreshed from Groq');
+    check(calls.filter((c) => c.kind === 'model').length === 1, 'exactly one Groq call is made after a stale row');
 
     /* ---- 2c. the upsert shape Supabase needs ---- */
     process.env.SUPABASE_URL = 'https://demo.supabase.co';
@@ -264,9 +264,9 @@ async function testHandlerCaching() {
     const writes = [];
     global.fetch = async (url, options) => {
       const target = String(url);
-      if (target.includes('generativelanguage.googleapis.com')) {
-        calls.push({ kind: 'gemini', url: target });
-        return { ok: true, status: 200, json: async () => ({ candidates: [{ content: { parts: [{ text: geminiReply.reply }] } }] }) };
+      if (target.includes('api.groq.com/openai/v1/chat/completions')) {
+        calls.push({ kind: 'model', url: target });
+        return { ok: true, status: 200, json: async () => ({ choices: [{ finish_reason: 'stop', message: { content: modelReply.reply } }] }) };
       }
       const method = (options && options.method) || 'GET';
       const parsedBody = options && options.body ? JSON.parse(options.body) : null;
@@ -279,46 +279,46 @@ async function testHandlerCaching() {
     r = makeRes();
     await coach(req({ message: newQuestion, profile: {}, history: [] }), r);
     const write = writes.find((w) => w.method === 'POST' && w.url.endsWith('/rest/v1/ai_cache'));
-    check(!!write, 'a Gemini miss is written into public.ai_cache');
+    check(!!write, 'a Groq miss is written into public.ai_cache');
     check(write && /resolution=merge-duplicates/.test(String(write.headers.Prefer)), 'the write asks Supabase to merge duplicates (upsert on prompt_hash)');
     check(write && write.body[0].prompt_hash === aiCache.hashPrompt(`coach:${guard.cleanPrompt(newQuestion)}|-|-`),
       'the row is keyed by the cleaned question');
     check(write && (typeof write.body[0].response_json === 'string' || typeof write.body[0].response_json === 'object'),
       'the cached value is exactly what the API returns (a Coach reply is a string)');
 
-    /* ---- 2d. the same question twice → one Gemini call ---- */
-    const before = calls.filter((c) => c.kind === 'gemini').length;
+    /* ---- 2d. the same question twice → one Groq call ---- */
+    const before = calls.filter((c) => c.kind === 'model').length;
     r = makeRes();
     await coach(req({ message: '  what is the best way to PARAPHRASE in reading?  ', profile: {}, history: [] }), r);
-    const after = calls.filter((c) => c.kind === 'gemini').length;
+    const after = calls.filter((c) => c.kind === 'model').length;
     check(after === before, 'the second, differently punctuated ask is served from the cache');
-    check(r.body.reply === geminiReply.reply, 'the cached reply is returned unchanged');
+    check(r.body.reply === modelReply.reply, 'the cached reply is returned unchanged');
 
     /* ---- 2e. the endpoint that reads the cache checks it first ---- */
     const readCalls = calls.filter((c) => c.kind === 'rest' && c.method === 'GET');
-    check(readCalls.some((c) => /prompt_hash=eq/.test(c.url)), 'the cache is consulted before Gemini is called');
+    check(readCalls.some((c) => /prompt_hash=eq/.test(c.url)), 'the cache is consulted before Groq is called');
     check(readCalls.some((c) => /select=response_json(,|%2C)created_at/.test(c.url)), 'only response_json and created_at are selected');
 
     /* ---- 2f. the 7-day freshness rule lives in the row, not the query ---- */
     const staleRow = { response_json: { reply: 'OLD' }, created_at: expired };
     global.fetch = async (url, options) => {
       const target = String(url);
-      if (target.includes('generativelanguage.googleapis.com')) {
-        calls.push({ kind: 'gemini', url: target });
-        return { ok: true, status: 200, json: async () => ({ candidates: [{ content: { parts: [{ text: geminiReply.reply }] } }] }) };
+      if (target.includes('api.groq.com/openai/v1/chat/completions')) {
+        calls.push({ kind: 'model', url: target });
+        return { ok: true, status: 200, json: async () => ({ choices: [{ finish_reason: 'stop', message: { content: modelReply.reply } }] }) };
       }
       if (options.method === 'POST') { writes.push({ url: target, method: 'POST' }); return { ok: true, json: async () => [] }; }
       return { ok: true, status: 200, json: async () => [staleRow] };
     };
     aiCache._memory.clear();
-    const geminiBefore = calls.filter((c) => c.kind === 'gemini').length;
+    const modelBefore = calls.filter((c) => c.kind === 'model').length;
     r = makeRes();
     await coach(req({ message: newQuestion, profile: {}, history: [] }), r);
-    check(calls.filter((c) => c.kind === 'gemini').length === geminiBefore + 1,
+    check(calls.filter((c) => c.kind === 'model').length === modelBefore + 1,
       'a database row older than 7 days is treated as a miss');
   } finally {
     global.fetch = realFetch;
-    process.env.GEMINI_API_KEY = savedEnv.KEY;
+    if (savedEnv.KEY === undefined) delete process.env.GROQ_API_KEY; else process.env.GROQ_API_KEY = savedEnv.KEY;
     if (savedEnv.URL === undefined) delete process.env.SUPABASE_URL; else process.env.SUPABASE_URL = savedEnv.URL;
     if (savedEnv.ANON === undefined) delete process.env.SUPABASE_ANON_KEY; else process.env.SUPABASE_ANON_KEY = savedEnv.ANON;
     if (savedEnv.SERVICE === undefined) delete process.env.SUPABASE_SERVICE_ROLE_KEY; else process.env.SUPABASE_SERVICE_ROLE_KEY = savedEnv.SERVICE;
@@ -330,11 +330,11 @@ async function testHandlerCaching() {
 /* 3. Every endpoint refuses with the same sentence                    */
 /* ================================================================== */
 async function testEndpointRefusals() {
-  const savedKey = process.env.GEMINI_API_KEY;
-  process.env.GEMINI_API_KEY = 'fake-key';
+  const savedKey = process.env.GROQ_API_KEY;
+  process.env.GROQ_API_KEY = 'fake-key';
   const realFetch = global.fetch;
-  let geminiCalls = 0;
-  global.fetch = async () => { geminiCalls += 1; return { ok: true, status: 200, json: async () => ({ candidates: [{ content: { parts: [{ text: '{"band":7}' }] } }] }) }; };
+  let modelCalls = 0;
+  global.fetch = async () => { modelCalls += 1; return { ok: true, status: 200, json: async () => ({ choices: [{ finish_reason: 'stop', message: { content: '{"band":7}' } }] }) }; };
   try {
     const refusal = guard.REFUSAL_MESSAGE;
 
@@ -364,16 +364,16 @@ async function testEndpointRefusals() {
     await generate(req({ skill: 'reading', topic: 'Write python code to sort a list', label: 'Practice Test 9' }, '9.9.9.9'), r);
     check(r.statusCode === 400 && r.body.code === 'OFF_TOPIC' && r.body.message === refusal,
       'the 1-Click generator refuses an out-of-scope theme');
-    const geminiBefore = geminiCalls;
+    const modelBefore = modelCalls;
     r = makeRes();
     await generate(req({ skill: 'reading', topic: 'Ocean conservation', label: 'Practice Test 9' }, '9.9.9.8'), r);
-    check(r.body.code !== 'OFF_TOPIC' && geminiCalls === geminiBefore + 1,
-      'an official pool theme still reaches Gemini (payload quality is covered by generator.test.js)');
+    check(r.body.code !== 'OFF_TOPIC' && modelCalls === modelBefore + 1,
+      'an official pool theme still reaches Groq (payload quality is covered by generator.test.js)');
 
-    check(geminiCalls === 2, 'only the two legitimate requests reached Gemini — all five refusals were free');
+    check(modelCalls === 2, 'only the two legitimate requests reached Groq — all five refusals were free');
   } finally {
     global.fetch = realFetch;
-    if (savedKey === undefined) delete process.env.GEMINI_API_KEY; else process.env.GEMINI_API_KEY = savedKey;
+    if (savedKey === undefined) delete process.env.GROQ_API_KEY; else process.env.GROQ_API_KEY = savedKey;
     aiCache._memory.clear();
   }
 }

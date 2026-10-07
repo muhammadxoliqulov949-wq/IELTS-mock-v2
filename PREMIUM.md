@@ -77,7 +77,7 @@ XSS escape, footer/i18n, lesson modal, EN logged-out CTA). All suites green.
 | Dashboard | Overall band, band trend SVG, weekly activity, study minutes, personalized 6-day plan |
 | Full mock | Combined Listening→Reading→Writing→Speaking flow + combined band |
 | i18n | English / Uzbek / Russian with language switcher in nav & settings |
-| Quiz | Client-side quick quiz + server-side `/api/quiz` (Gemini with local fallback) |
+| Quiz | Client-side quick quiz + server-side `/api/quiz` (Groq with local fallback) |
 | Vocabulary | 3 topic sets (travel, education, environment) with mastery % |
 | Mini lessons | 6 category-based lessons (Writing, Reading, Listening, Speaking, Vocabulary) |
 | PWA | `manifest.webmanifest`, `sw.js` (cache + offline fallback), app icon |

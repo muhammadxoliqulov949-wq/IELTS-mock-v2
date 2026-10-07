@@ -6,9 +6,9 @@
  *  - mode: 'speaking' → body: { mode: 'speaking', parts: [{ title, qa: [{q, a}] }] }
  *                       or legacy { mode: 'speaking', response: '...' }
  *
- * Requires env var: GEMINI_API_KEY (free key at https://aistudio.google.com/apikey)
+ * Requires the shared GROQ_API_KEY server secret.
  */
-const gemini = require('../lib/geminiModel.js');
+const aiClient = require('../lib/aiClient.js');
 const guard = require('../lib/aiGuardrails.js');
 const aiCache = require('../lib/aiCache.js');
 
@@ -51,23 +51,12 @@ function parseJson(raw) {
   throw new Error('Could not parse examiner response');
 }
 
-async function callGemini(systemPrompt, userContent, maxTokens = 2500) {
-  const res = await fetch(gemini.url(process.env.GEMINI_API_KEY), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      system_instruction: { parts: [{ text: systemPrompt }] },
-      contents: [{ role: 'user', parts: [{ text: userContent }] }],
-      generationConfig: { temperature: 0.25, maxOutputTokens: maxTokens }
-    })
-  });
-  if (!res.ok) {
-    const errText = (await res.text()).slice(0, 400);
-    throw new Error(`Gemini API error (${res.status}): ${errText}${gemini.modelNotFoundHint(res.status, errText)}`);
-  }
-  const data = await res.json();
-  const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '{}';
-  return parseJson(raw);
+async function callAI(systemPrompt, userContent, temperature = 0.25) {
+  const { content } = await aiClient.chatCompletion([
+    { role: 'system', content: systemPrompt },
+    { role: 'user', content: userContent }
+  ], { temperature, responseFormat: 'json_object' });
+  return parseJson(content);
 }
 
 /* ---------- prompts ---------- */
@@ -165,9 +154,9 @@ module.exports = async function handler(req, res) {
     res.status(429).json({ error: 'Too many requests — please wait a moment and try again.' });
     return;
   }
-  if (!process.env.GEMINI_API_KEY) {
+  if (!aiClient.isConfigured()) {
     res.status(500).json({
-      error: 'GEMINI_API_KEY is not set on the server. Add it in your hosting environment (Vercel → Settings → Environment Variables) — get a free key at https://aistudio.google.com/apikey'
+      error: 'GROQ_API_KEY is not set on the server. Add it in your hosting environment (Vercel → Settings → Environment Variables) — get a key at https://console.groq.com/keys'
     });
     return;
   }
@@ -179,7 +168,7 @@ module.exports = async function handler(req, res) {
   }
 
   /* Strict IELTS boundary (lib/aiGuardrails.js): anything that clearly
-     belongs to another domain is refused before a Gemini call is made. */
+     belongs to another domain is refused before a language-model call is made. */
   const scopeText = [
     prompt, response,
     ...(Array.isArray(tasks) ? tasks.flatMap((t) => [t && t.prompt, t && t.response]) : []),
@@ -206,10 +195,10 @@ module.exports = async function handler(req, res) {
       }
       const userContent = clean.map((t) => `TASK: ${t.title}\nOFFICIAL MINIMUM: ${t.minWords} words\nTASK PROMPT:\n${t.prompt}${t.criteria ? `\n\nASSESSMENT CRITERIA / NOTES:\n${t.criteria}` : ''}\n\nCANDIDATE RESPONSE:\n${t.response}`).join('\n\n---\n\n');
       /* 7-day TTL cache (public.ai_cache): the same graded answer is not
-         re-sent to Gemini when the candidate asks again. */
+         re-sent to the language model when the candidate asks again. */
       const { data: parsed } = await aiCache.withCache(
         `grade:writing:${guard.cleanPrompt(userContent).slice(0, 4000)}`,
-        () => callGemini(guard.withGuardrails(WRITING_SYSTEM), userContent.slice(0, 12000), 3000)
+        () => callAI(guard.withGuardrails(WRITING_SYSTEM), userContent, 0.25)
       );
       res.status(200).json(normalizeWriting(parsed, clean.length));
       return;
@@ -226,10 +215,14 @@ module.exports = async function handler(req, res) {
       res.status(400).json({ error: 'Please record at least one answer first.' });
       return;
     }
+    if (userContent.length > 40000) {
+      res.status(400).json({ error: 'Speaking transcript is too long (max 40000 characters).' });
+      return;
+    }
     /* 7-day TTL cache — identical transcripts are marked once. */
     const { data: parsed } = await aiCache.withCache(
       `grade:speaking:${guard.cleanPrompt(userContent).slice(0, 4000)}`,
-      () => callGemini(guard.withGuardrails(SPEAKING_SYSTEM), userContent.slice(0, 9000), 2000)
+      () => callAI(guard.withGuardrails(SPEAKING_SYSTEM), userContent, 0.25)
     );
     res.status(200).json(normalizeSpeaking(parsed));
   } catch (err) {
