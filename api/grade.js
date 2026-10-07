@@ -8,7 +8,7 @@
  *
  * Requires env var: GEMINI_API_KEY (free key at https://aistudio.google.com/apikey)
  */
-const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
+const gemini = require('../lib/geminiModel.js');
 const guard = require('../lib/aiGuardrails.js');
 const aiCache = require('../lib/aiCache.js');
 
@@ -52,7 +52,7 @@ function parseJson(raw) {
 }
 
 async function callGemini(systemPrompt, userContent, maxTokens = 2500) {
-  const res = await fetch(`${GEMINI_URL}?key=${process.env.GEMINI_API_KEY}`, {
+  const res = await fetch(gemini.url(process.env.GEMINI_API_KEY), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -63,7 +63,7 @@ async function callGemini(systemPrompt, userContent, maxTokens = 2500) {
   });
   if (!res.ok) {
     const errText = (await res.text()).slice(0, 400);
-    throw new Error(`Gemini API error (${res.status}): ${errText}`);
+    throw new Error(`Gemini API error (${res.status}): ${errText}${gemini.modelNotFoundHint(res.status, errText)}`);
   }
   const data = await res.json();
   const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '{}';

@@ -6,7 +6,7 @@
  *
  * Requires env var: GEMINI_API_KEY (free key at https://aistudio.google.com/apikey)
  */
-const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
+const gemini = require('../lib/geminiModel.js');
 const guard = require('../lib/aiGuardrails.js');
 const aiCache = require('../lib/aiCache.js');
 
@@ -99,7 +99,7 @@ module.exports = async function handler(req, res) {
        database and Gemini is not called again. */
     const cacheKey = `coach:${guard.cleanPrompt(message)}|${p.band ?? '-'}|${p.weakest ?? '-'}`;
     const { data: reply } = await aiCache.withCache(cacheKey, async () => {
-      const geminiRes = await fetch(`${GEMINI_URL}?key=${process.env.GEMINI_API_KEY}`, {
+      const geminiRes = await fetch(gemini.url(process.env.GEMINI_API_KEY), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -110,7 +110,7 @@ module.exports = async function handler(req, res) {
       });
       if (!geminiRes.ok) {
         const errText = (await geminiRes.text()).slice(0, 400);
-        const err = new Error(`Gemini API error (${geminiRes.status}): ${errText}`);
+        const err = new Error(`Gemini API error (${geminiRes.status}): ${errText}${gemini.modelNotFoundHint(geminiRes.status, errText)}`);
         err.status = geminiRes.status;
         throw err;
       }

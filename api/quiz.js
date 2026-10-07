@@ -9,7 +9,7 @@
  * If GEMINI_API_KEY is not configured, it falls back to a local question bank so
  * the preview still works without a key.
  */
-const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
+const gemini = require('../lib/geminiModel.js');
 const guard = require('../lib/aiGuardrails.js');
 const aiCache = require('../lib/aiCache.js');
 
@@ -47,7 +47,7 @@ function pickLocal(topic, count) {
 }
 
 async function callGemini(topic, count) {
-  const res = await fetch(`${GEMINI_URL}?key=${process.env.GEMINI_API_KEY}`, {
+  const res = await fetch(gemini.url(process.env.GEMINI_API_KEY), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -56,7 +56,7 @@ async function callGemini(topic, count) {
       generationConfig: { temperature: 0.4, maxOutputTokens: 800 }
     })
   });
-  if (!res.ok) throw new Error('Gemini unavailable');
+  if (!res.ok) throw new Error(`Gemini unavailable (model ${gemini.model()}, HTTP ${res.status})`);
   const data = await res.json();
   const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
   const start = text.indexOf('{'); const end = text.lastIndexOf('}');

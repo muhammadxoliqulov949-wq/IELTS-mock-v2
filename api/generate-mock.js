@@ -42,8 +42,10 @@ const tts = require('../lib/edgeTts.js');
  * itself to avoid — the generator's whole promise is that every run
  * differs. Grade, Coach and Quiz are the cached endpoints. */
 
-const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
-const MODEL = 'gemini-2.5-flash';
+/* Model ids live in lib/geminiModel.js (see the note there). This endpoint
+ * used to pin a Gemini Flash id in two constants and started returning 404
+ * the moment Google restricted that model to keys that already used it. */
+const gemini = require('../lib/geminiModel.js');
 const MEDIA_BUCKET = 'ielts-media';
 const SKILLS = ['listening', 'reading', 'writing', 'speaking'];
 const TEMPERATURE = 0.85; /* diversity over precision — see ADMIN.md */
@@ -82,7 +84,7 @@ function parseJson(raw) {
 }
 
 async function callGemini(systemPrompt, userContent, maxTokens) {
-  const res = await fetch(`${GEMINI_URL}?key=${encodeURIComponent(process.env.GEMINI_API_KEY)}`, {
+  const res = await fetch(gemini.url(process.env.GEMINI_API_KEY), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -97,7 +99,7 @@ async function callGemini(systemPrompt, userContent, maxTokens) {
   });
   if (!res.ok) {
     const body = (await res.text()).slice(0, 400);
-    const err = new Error(`Gemini API error (${res.status}): ${body}`);
+    const err = new Error(`Gemini API error (${res.status}): ${body}${gemini.modelNotFoundHint(res.status, body)}`);
     err.status = res.status;
     throw err;
   }
