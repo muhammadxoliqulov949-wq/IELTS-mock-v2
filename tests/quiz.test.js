@@ -1,5 +1,5 @@
 'use strict';
-/* Tests for the new /api/quiz endpoint (local fallback when no Gemini key). */
+/* Tests for the /api/quiz endpoint (local fallback when no Groq key). */
 const fs = require('fs');
 const path = require('path').join(__dirname, '..');
 
@@ -11,6 +11,7 @@ function makeRes() {
 }
 
 (async () => {
+  delete process.env.GROQ_API_KEY; /* the local bank must answer without a key */
   const src = fs.readFileSync(path + '/api/quiz.js', 'utf8');
   const fn = new Function('module', 'require', 'process', src);
   const m = { exports: {} };
