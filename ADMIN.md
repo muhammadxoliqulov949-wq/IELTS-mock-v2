@@ -177,7 +177,7 @@ qoralama sifatida saqlanadini boshqaradi; qo'lda tuzilgan yangi testdan farqi �
 yaratilgan test darhol muharrirga uzatiladi. Agar test id allaqachon mavjud bo'lsa, modal
 ogohlantiradi: generatsiya natijasi mavjud bo'limlarning ustiga yoziladi.
 
-Barcha matnli AI so'rovlari **`lib/aiClient.js`** orqali `https://api.groq.com/openai/v1/chat/completions` manziliga yuboriladi. Yagona model — `llama-3.3-70b-versatile`; barcha so'rovlarda `max_tokens: 4096` va serverdagi yagona `GROQ_API_KEY` ishlatiladi. Model yoki endpointni boshqa API fayllarda alohida belgilamang.
+Barcha matnli AI so'rovlari **`lib/aiClient.js`** orqali `https://api.groq.com/openai/v1/chat/completions` manziliga yuboriladi. Asosiy model — `GROQ_MODEL` (standart `openai/gpt-oss-120b`); zaxira model — `GROQ_FALLBACK_MODEL` (standart `openai/gpt-oss-20b`), u asosiy model 404 / `model_not_found` / `model_decommissioned` qaytarganda ishlatiladi. Barcha so'rovlarda `max_completion_tokens: 4096` va serverdagi yagona `GROQ_API_KEY` ishlatiladi. Model yoki endpointni boshqa API fayllarda alohida belgilamang.
 
 **`GROQ_API_KEY` kiritilmagan bo'lsa** bo'lim generatsiyasi uni sozlash bo'yicha xabar qaytaradi. Kalitni [Groq Console](https://console.groq.com/keys) dan oling va Vercel → Settings → Environment Variables ga qo'shib qayta deploy qiling. Quiz kalit bo'lmasa lokal savol bankiga qaytadi.
 
@@ -261,6 +261,7 @@ Nashrdan olinsa, keyingi sahifa yangilanishida yo'qoladi.
 | Test tanlash oynasida yangi test yo'q | Test yoki uning bo'limi nashr qilinmagan | Ham meta, ham kerakli bo'limlar `Published` bo'lishi kerak |
 | "Iltimos, avval GROQ_API_KEY sozlang" | Serverda Groq kaliti yo'q | Vercel → Settings → Environment Variables → `GROQ_API_KEY` qo'shing va qayta deploy qiling |
 | `Groq API error (429)` | So'rov tezligi yoki kvota limiti | Biroz kuting, Groq Console’dagi loyiha limiti va server kalitini tekshiring. Boshqa HTTP xatolarda endpoint qaytargan Groq xabarini tekshiring. |
+| `Groq API error (404)` yoki `model_not_found` | Asosiy model Groq'da o'chirilgan yoki kalitga ruxsat yo'q | Server avtomatik `GROQ_FALLBACK_MODEL` ga o'tadi (logda `[aiClient]` xabari chiqadi). Doimiy yechim: Vercel → Environment Variables'da `GROQ_MODEL` ni o'chiring yoki `openai/gpt-oss-120b` ga o'rnating, so'ng qayta deploy qiling. |
 | Listening bo'limida audio yo'q | Edge TTS xizmati javob bermadi | `audioUrl` bo'sh — muharrirga kirib MP3 ni qo'lda yuklang; transcript saqlangan |
 | AI generator tugmasi ishlamaydi | `mockGenerator.js` / `lib/topicPool.js` yuklanmagan | `index.html` skriptlari va `sw.js` precache ro'yxatini tekshiring |
 | AI IELTS'dan tashqari savolga javob berdi | So'rov guardrails'dan o'tib ketdi | `public/lib/aiGuardrails.js` yuklangani va `api/*` da `withGuardrails` borligini tekshiring; brauzer keshi'ni tozalang |
@@ -278,7 +279,7 @@ supabaseClient.js                            admin API + Supabase Storage media 
 admin.js                                     panel mantiqiy qatlami + IELTS konstruktor + JSON muharriri
 mockGenerator.js                             admin UI: 1-Click AI generator modal (progress, saqlash, tahrirlash)
 lib/topicPool.js                             48 mavzu + savol turi aralashtirish (brauzer va Node uchun UMD)
-lib/aiClient.js                             yagona Groq API klienti, llama-3.3-70b-versatile, 4096 token
+lib/aiClient.js                             yagona Groq API klienti, openai/gpt-oss-120b (zaxira gpt-oss-20b), 4096 token
 lib/edgeTts.js                               Microsoft Edge TTS (MP3)
 api/generate-mock.js                         POST /api/generate-mock — bo'lim va audio generatsiyasi
 tests/generator.test.js                      pool, endpoint, TTS, i18n, wiring testlari

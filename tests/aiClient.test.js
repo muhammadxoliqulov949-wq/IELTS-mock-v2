@@ -7,6 +7,10 @@ const aiClient = require('../lib/aiClient.js');
 const aiCache = require('../lib/aiCache.js');
 const { buildPlan } = require('../lib/topicPool.js');
 
+/* Pin the model environment so the suite does not depend on a developer's shell. */
+delete process.env.GROQ_MODEL;
+delete process.env.GROQ_FALLBACK_MODEL;
+
 const root = path.join(__dirname, '..');
 const check = (condition, message) => assert.ok(condition, message);
 const makeRes = () => {
@@ -60,7 +64,7 @@ async function testClientConfigurationAndWireFormat() {
   const calls = [];
   try {
     assert.equal(aiClient.API_BASE, 'https://api.groq.com/openai/v1');
-    assert.equal(aiClient.MODEL, 'llama-3.3-70b-versatile');
+    assert.equal(aiClient.MODEL, 'openai/gpt-oss-120b');
     assert.equal(aiClient.MAX_TOKENS, 4096);
     assert.equal(aiClient.endpoint(), 'https://api.groq.com/openai/v1/chat/completions');
 
@@ -94,13 +98,17 @@ async function testClientConfigurationAndWireFormat() {
     assert.equal(result.content, 'A complete answer.');
     assert.deepEqual(result.usage, { prompt_tokens: 12, completion_tokens: 8, total_tokens: 20 });
     assert.equal(result.finishReason, 'stop');
+    assert.equal(result.model, 'openai/gpt-oss-120b', 'the result names the model that answered');
     assert.equal(calls.length, 1);
     assert.equal(calls[0].url, aiClient.endpoint());
     assert.equal(calls[0].options.method, 'POST');
     assert.equal(calls[0].options.headers.Authorization, 'Bearer test-groq-key');
     assert.equal(calls[0].options.headers['Content-Type'], 'application/json');
-    assert.equal(calls[0].body.model, 'llama-3.3-70b-versatile');
-    assert.equal(calls[0].body.max_tokens, 4096, 'the output budget is fixed at 4096 for every call');
+    assert.equal(calls[0].body.model, 'openai/gpt-oss-120b');
+    assert.equal(calls[0].body.max_completion_tokens, 4096, 'the output budget is fixed at 4096 for every call');
+    assert.equal(calls[0].body.max_tokens, undefined, 'the deprecated max_tokens field is not sent');
+    assert.equal(calls[0].body.reasoning_effort, 'low', 'GPT-OSS reasoning is pinned to low effort');
+    assert.equal(calls[0].body.include_reasoning, false, 'GPT-OSS reasoning stays out of the answer text');
     assert.equal(calls[0].body.temperature, 0.85);
     assert.deepEqual(calls[0].body.response_format, { type: 'json_object' });
     assert.deepEqual(calls[0].body.messages, [
@@ -242,7 +250,7 @@ async function testEndpointMigration() {
     assert.ok(requests.every(request => request.url === aiClient.endpoint()));
     assert.ok(requests.every(request => request.headers.Authorization === 'Bearer integration-test-key'));
     assert.ok(requests.every(request => request.body.model === aiClient.MODEL));
-    assert.ok(requests.every(request => request.body.max_tokens === 4096));
+    assert.ok(requests.every(request => request.body.max_completion_tokens === 4096));
     assert.ok(requests.every(request => request.body.messages.length >= 2));
 
     for (const file of ['api/coach.js', 'api/grade.js', 'api/quiz.js', 'api/generate-mock.js']) {
@@ -260,6 +268,126 @@ async function testEndpointMigration() {
     if (oldEnv.service === undefined) delete process.env.SUPABASE_SERVICE_ROLE_KEY;
     else process.env.SUPABASE_SERVICE_ROLE_KEY = oldEnv.service;
     aiCache._memory.clear();
+  }
+}
+
+async function testModelSelectionAndFallback() {
+  const saved = {
+    key: process.env.GROQ_API_KEY,
+    model: process.env.GROQ_MODEL,
+    fallback: process.env.GROQ_FALLBACK_MODEL
+  };
+  const oldFetch = global.fetch;
+  const oldWarn = console.warn;
+  const warnings = [];
+  const requests = [];
+  let queued = [];
+  const okBody = content => ({ choices: [{ finish_reason: 'stop', message: { content } }], usage: null });
+  const modelNotFound = {
+    error: { message: 'The model does not exist or you do not have access to it.', type: 'invalid_request_error', code: 'model_not_found' }
+  };
+  const reply = ([status, body]) => ({
+    ok: status >= 200 && status < 300,
+    status,
+    text: async () => (typeof body === 'string' ? body : JSON.stringify(body))
+  });
+  /* Each scripted [status, body] pair answers one request, in order. */
+  const script = (...responses) => {
+    queued = responses.slice();
+    requests.length = 0;
+    warnings.length = 0;
+  };
+  const messages = [{ role: 'user', content: 'Explain an IELTS overview.' }];
+
+  try {
+    process.env.GROQ_API_KEY = 'fallback-test-key';
+    global.fetch = async (url, options) => {
+      requests.push({ url: String(url), body: JSON.parse(options.body) });
+      if (!queued.length) throw new Error('unexpected extra request to Groq');
+      return reply(queued.shift());
+    };
+    console.warn = (...args) => { warnings.push(args.join(' ')); };
+
+    /* 1. The primary model comes from GROQ_MODEL; a blank value uses the default. */
+    delete process.env.GROQ_MODEL;
+    delete process.env.GROQ_FALLBACK_MODEL;
+    assert.equal(aiClient.primaryModel(), 'openai/gpt-oss-120b');
+    assert.equal(aiClient.fallbackModel(), 'openai/gpt-oss-20b');
+    process.env.GROQ_MODEL = '   ';
+    assert.equal(aiClient.primaryModel(), 'openai/gpt-oss-120b', 'a blank GROQ_MODEL uses the default');
+    process.env.GROQ_MODEL = '  qwen/qwen3.8-27b  ';
+    assert.equal(aiClient.primaryModel(), 'qwen/qwen3.8-27b', 'GROQ_MODEL is trimmed and used as the primary model');
+    assert.equal(aiClient.MODEL, 'qwen/qwen3.8-27b', 'MODEL reflects the configured primary model');
+
+    /* 2. A fallback equal to the primary model is never requested a second time. */
+    process.env.GROQ_MODEL = 'openai/gpt-oss-20b';
+    process.env.GROQ_FALLBACK_MODEL = ' openai/gpt-oss-20b ';
+    assert.equal(aiClient.fallbackModel(), null);
+    script([404, modelNotFound]);
+    await assert.rejects(aiClient.chatCompletion(messages), error => error.status === 404);
+    assert.equal(requests.length, 1, 'no retry when the fallback is the same model');
+
+    /* 3. The primary model is missing: the same request is retried once on the fallback. */
+    process.env.GROQ_MODEL = 'openai/gpt-oss-120b';
+    process.env.GROQ_FALLBACK_MODEL = 'test/fallback-model';
+    script([404, modelNotFound], [200, okBody('Answered by the fallback.')]);
+    const recovered = await aiClient.chatCompletion(messages, { responseFormat: 'json_object' });
+    assert.equal(recovered.content, 'Answered by the fallback.');
+    assert.equal(recovered.model, 'test/fallback-model');
+    assert.deepEqual(requests.map(request => request.body.model), ['openai/gpt-oss-120b', 'test/fallback-model']);
+    assert.equal(warnings.length, 1, 'the model switch is logged for the operator');
+    assert.match(warnings[0], /openai\/gpt-oss-120b.*test\/fallback-model/);
+    assert.equal(requests[0].body.reasoning_effort, 'low');
+    assert.equal(requests[1].body.reasoning_effort, undefined, 'reasoning options are only sent to GPT-OSS models');
+    assert.equal(requests[1].body.include_reasoning, undefined, 'reasoning options are only sent to GPT-OSS models');
+    assert.deepEqual(requests[1].body.response_format, { type: 'json_object' }, 'JSON mode is kept on the fallback');
+    assert.equal(requests[1].body.max_completion_tokens, 4096, 'the output budget is kept on the fallback');
+
+    /* 4. Any HTTP 404 counts, even without a Groq error code. */
+    script([404, 'Not Found'], [200, okBody('Plain 404 recovered.')]);
+    assert.equal((await aiClient.chatCompletion(messages)).model, 'test/fallback-model');
+    assert.equal(requests.length, 2);
+
+    /* 5. Groq's model error codes move to the fallback whatever the HTTP status. */
+    for (const code of ['model_decommissioned', 'model_not_found']) {
+      script(
+        [400, { error: { message: `Model unavailable (${code}).`, code } }],
+        [200, okBody(`${code} recovered.`)]
+      );
+      assert.equal((await aiClient.chatCompletion(messages)).content, `${code} recovered.`);
+      assert.equal(requests.length, 2, `${code} triggers the fallback even on HTTP 400`);
+    }
+
+    /* 6. If the fallback is unavailable as well, its error is reported. */
+    script([404, modelNotFound], [404, modelNotFound]);
+    await assert.rejects(
+      aiClient.chatCompletion(messages),
+      error => error.status === 404 && error.model === 'test/fallback-model'
+    );
+    assert.equal(requests.length, 2);
+
+    /* 7. Failures that are not about the model are never retried on the fallback. */
+    const notModelProblems = [
+      { reply: [429, { error: { message: 'Rate limit reached', code: 'rate_limit_exceeded' } }], status: 429 },
+      { reply: [503, { error: { message: 'Service unavailable' } }], status: 503 },
+      { reply: [400, { error: { message: 'Invalid request', code: 'invalid_request_error' } }], status: 400 },
+      { reply: [200, { choices: [{ finish_reason: 'length', message: { content: '{"partial":' } }] }], code: 'AI_OUTPUT_TRUNCATED' }
+    ];
+    for (const { reply: failure, status, code } of notModelProblems) {
+      script(failure, [200, okBody('must not be reached')]);
+      await assert.rejects(
+        aiClient.chatCompletion(messages),
+        error => (status === undefined || error.status === status) && (code === undefined || error.code === code)
+      );
+      assert.equal(requests.length, 1, `${code || status} does not trigger the model fallback`);
+    }
+  } finally {
+    global.fetch = oldFetch;
+    console.warn = oldWarn;
+    for (const [name, value] of [['GROQ_API_KEY', saved.key], ['GROQ_MODEL', saved.model], ['GROQ_FALLBACK_MODEL', saved.fallback]]) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
   }
 }
 
@@ -285,15 +413,18 @@ function testNoLegacyProviderRemnants() {
     for (const pattern of banned) {
       assert.ok(!pattern.test(source), `${file} still refers to the previous provider (${pattern})`);
     }
+    assert.ok(!/llama-3\.3-70b-versatile/.test(source), `${file} still refers to the retired Groq model llama-3.3-70b-versatile`);
   }
   assert.ok(aiClient.endpoint().startsWith('https://api.groq.com/openai/v1'),
     'the API base is Groq');
-  assert.equal(aiClient.MODEL, 'llama-3.3-70b-versatile', 'the single model is pinned in the client');
+  assert.equal(aiClient.MODEL, 'openai/gpt-oss-120b', 'the default primary model is pinned in the client');
+  assert.equal(aiClient.DEFAULT_FALLBACK_MODEL, 'openai/gpt-oss-20b', 'the default fallback model is pinned in the client');
 }
 
 (async () => {
   await testClientConfigurationAndWireFormat();
   await testProviderErrorsAndTruncation();
+  await testModelSelectionAndFallback();
   testNoLegacyProviderRemnants();
   await testEndpointMigration();
   console.log('AI CLIENT TESTS OK ✓');
