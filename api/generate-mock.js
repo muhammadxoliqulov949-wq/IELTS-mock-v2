@@ -18,34 +18,30 @@
  * The four skills are generated ONE REQUEST AT A TIME on purpose: the
  * admin modal can then show honest progress (Listening → Reading →
  * Writing → Speaking) and every response stays far below the serverless
- * execution limit, which also keeps the Gemini output token budget
- * comfortable for a 40-question section.
+ * execution limit. Listening and Reading are split into small focused
+ * model calls so every 4096-token response can finish cleanly.
  *
  * Audio: Listening transcripts are synthesised with the free Edge TTS
- * engine (MP3) and, when that is unreachable, with Gemini TTS (WAV) —
- * see lib/edgeTts.js. When the browser forwards the admin's Supabase
- * access token the MP3/WAV is uploaded straight into the public
+ * engine (MP3) — see lib/edgeTts.js. When the browser forwards the
+ * admin's Supabase access token the MP3 is uploaded straight into the public
  * "ielts-media" bucket and the payload comes back with a real audioUrl.
  * Without a token the audio is returned as base64 so the browser can
  * upload it through the existing admin media endpoint (RLS still guards
  * the bucket: only admins may write).
  *
- * Requires env var: GEMINI_API_KEY
+ * Section generation requires the shared GROQ_API_KEY server secret.
  * =================================================================== */
 'use strict';
 
 const { buildPlan } = require('../lib/topicPool.js');
 const guard = require('../lib/aiGuardrails.js');
 const tts = require('../lib/edgeTts.js');
+const aiClient = require('../lib/aiClient.js');
 /* NOTE: this endpoint deliberately does NOT use lib/aiCache.js. A cached
  * mock section would replay the very same paper the pool just randomised
  * itself to avoid — the generator's whole promise is that every run
  * differs. Grade, Coach and Quiz are the cached endpoints. */
 
-/* Model ids live in lib/geminiModel.js (see the note there). This endpoint
- * used to pin a Gemini Flash id in two constants and started returning 404
- * the moment Google restricted that model to keys that already used it. */
-const gemini = require('../lib/geminiModel.js');
 const MEDIA_BUCKET = 'ielts-media';
 const SKILLS = ['listening', 'reading', 'writing', 'speaking'];
 const TEMPERATURE = 0.85; /* diversity over precision — see ADMIN.md */
@@ -71,7 +67,7 @@ function rateLimited(req) {
 function str(v) { return String(v ?? '').trim(); }
 function num(v, fallback) { const n = Number(v); return Number.isFinite(n) ? n : fallback; }
 
-/* Gemini sometimes wraps JSON in ```json fences or adds a preamble. */
+/* Be tolerant of a code fence or a short preamble around JSON. */
 function parseJson(raw) {
   const s = String(raw || '').replace(/```(?:json)?/gi, '').trim();
   try { return JSON.parse(s); } catch { /* fall through */ }
@@ -83,37 +79,72 @@ function parseJson(raw) {
   throw new Error('The model did not return valid JSON');
 }
 
-async function callGemini(systemPrompt, userContent, maxTokens) {
-  const res = await fetch(gemini.url(process.env.GEMINI_API_KEY), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      system_instruction: { parts: [{ text: systemPrompt }] },
-      contents: [{ role: 'user', parts: [{ text: userContent }] }],
-      generationConfig: {
-        temperature: TEMPERATURE,
-        maxOutputTokens: maxTokens,
-        responseMimeType: 'application/json'
+async function callAI(systemPrompt, userContent) {
+  const { content, usage } = await aiClient.chatCompletion([
+    { role: 'system', content: guard.withGuardrails(systemPrompt) },
+    { role: 'user', content: userContent }
+  ], { temperature: TEMPERATURE, responseFormat: 'json_object' });
+  return { parsed: parseJson(content), usage };
+}
+
+function combineUsage(usages) {
+  const rows = usages.filter(Boolean);
+  if (!rows.length) return null;
+  return rows.reduce((total, row) => {
+    for (const key of ['prompt_tokens', 'completion_tokens', 'total_tokens']) {
+      if (Number.isFinite(Number(row[key]))) total[key] = (total[key] || 0) + Number(row[key]);
+    }
+    return total;
+  }, { calls: rows.length });
+}
+
+async function generateSkill(skill, plan, context) {
+  if (skill === 'listening') {
+    const parts = [];
+    const usages = [];
+    for (const item of plan.questionPlan.listening) {
+      const userContent = `${context}\nGenerate only Listening Part ${item.part}, with exactly its 10 planned questions. Return it in the required JSON shape.`;
+      const result = await callAI(listeningSystem(plan, item.part), userContent);
+      const section = result.parsed.listening || result.parsed;
+      const generated = Array.isArray(section.parts) ? section.parts : [];
+      if (generated.length !== 1) {
+        throw new Error(`Listening Part ${item.part} response was incomplete. Please generate the section again.`);
       }
-    })
-  });
-  if (!res.ok) {
-    const body = (await res.text()).slice(0, 400);
-    const err = new Error(`Gemini API error (${res.status}): ${body}${gemini.modelNotFoundHint(res.status, body)}`);
-    err.status = res.status;
-    throw err;
+      parts.push({ ...generated[0], partNumber: item.part });
+      usages.push(result.usage);
+    }
+    return {
+      parsed: { listening: { title: 'Listening Practice Test', parts } },
+      usage: combineUsage(usages)
+    };
   }
-  const data = await res.json();
-  const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!raw) {
-    const reason = data?.candidates?.[0]?.finishReason || data?.promptFeedback?.blockReason || 'unknown';
-    throw new Error(`Gemini returned no content (finishReason: ${reason}). Try generating the section again.`);
+
+  if (skill === 'reading') {
+    const passages = [];
+    const usages = [];
+    for (const item of plan.questionPlan.reading) {
+      const userContent = `${context}\nGenerate only Reading Passage ${item.passage}, with exactly its ${item.types.length} planned questions. Return it in the required JSON shape.`;
+      const result = await callAI(readingSystem(plan, item.passage), userContent);
+      const section = result.parsed.reading || result.parsed;
+      const generated = Array.isArray(section.passages) ? section.passages : [];
+      if (generated.length !== 1) {
+        throw new Error(`Reading Passage ${item.passage} response was incomplete. Please generate the section again.`);
+      }
+      passages.push({ ...generated[0], passageNumber: item.passage });
+      usages.push(result.usage);
+    }
+    return {
+      parsed: { reading: { title: 'Reading Practice Test', passages } },
+      usage: combineUsage(usages)
+    };
   }
-  return { parsed: parseJson(raw), usage: data.usageMetadata || null };
+
+  const systems = { writing: writingSystem(plan), speaking: speakingSystem(plan) };
+  return callAI(systems[skill], `${context}\nWrite the complete ${skill.toUpperCase()} section as one JSON object.`);
 }
 
 /* ------------------------------------------------------------------
- * PROMPTS — one per skill. Every prompt carries the exact question-type
+ * PROMPTS — focused on a skill or one large section chunk. Every prompt carries the exact question-type
  * sequence chosen by lib/topicPool.js, so the mix really changes on
  * every run instead of collapsing to the model's favourite types.
  * ------------------------------------------------------------------ */
@@ -131,96 +162,80 @@ function difficultyLine(difficulty) {
     : 'Difficulty: STANDARD IELTS. Clear academic English at the level of a real General/Academic paper, with fair, findable answers.';
 }
 
-function listeningSystem(plan) {
-  const perPart = plan.questionPlan.listening
-    .map(p => `  Part ${p.part}: exactly 10 questions, in this order: ${JSON.stringify(p.types)}`)
-    .join('\n');
+function listeningSystem(plan, partNumber) {
+  const selected = plan.questionPlan.listening.filter(p => !partNumber || p.part === partNumber);
+  const partText = selected.map(p => `Part ${p.part}: exactly 10 questions, in this order: ${JSON.stringify(p.types)}`).join('\n');
+  const startId = partNumber ? (partNumber - 1) * 10 + 1 : 1;
+  const endId = partNumber ? partNumber * 10 : 40;
+  const scope = partNumber
+    ? `Generate ONLY Listening Part ${partNumber}. Do not include any other part.`
+    : 'Generate all four Listening parts.';
   return `${RULES}
 
-TASK: write the LISTENING section of a full IELTS mock test on the theme "${plan.topics.listening}".
+TASK: write IELTS Listening practice on the theme "${plan.topics.listening}".
 ${difficultyLine(plan.difficulty)}
+${scope}
 
-Structure (exactly four parts):
-- Part 1 — an everyday conversation between two speakers (an enquiry, a booking, an arrangement).
-- Part 2 — a monologue: a public announcement, a guided talk or a set of instructions.
-- Part 3 — an academic discussion between two to four speakers (students and/or a tutor).
-- Part 4 — an academic lecture by a single speaker.
+Listening structure:
+- Part 1: an everyday conversation between two speakers (enquiry, booking or arrangement).
+- Part 2: one speaker gives a public announcement, guided talk or instructions.
+- Part 3: an academic discussion between two to four students and/or a tutor.
+- Part 4: a single-speaker academic lecture.
 
-Each part needs:
-- "partNumber": 1|2|3|4
-- "title": short label such as "Part 1 — Enquiry about a field course"
-- "instructions": one IELTS-style line, e.g. "Questions 1–10. You will hear this recording ONCE."
-- "transcript": 260–520 words of spoken dialogue/monologue with speaker labels like "Woman:", "Man:", "Tutor:", "Dr Ahmed:". The transcript is the ONLY source of answers — every answer must be spoken in it, in the words the question asks for.
-- "questions": the 10 questions below, in the given order.
+For each requested part return:
+- "partNumber": 1, 2, 3 or 4; "title": a short descriptive label; "instructions": one IELTS-style line.
+- "transcript": 260–520 words of natural spoken English, with labels such as "Woman:", "Man:", "Tutor:" or "Dr Ahmed:". It is the ONLY source of answers; all answers must be clearly spoken.
+- "questions": exactly 10 questions in the planned order below.
 
-${perPart}
+Planned types:
+${partText}
 
 Question rules:
-- "id": "l1"…"l40", numbered continuously across all four parts.
-- "type": exactly the type given in the sequence above.
-- completion types ("form-completion", "note-completion", "table-completion", "sentence-completion"): "prompt" contains a gap shown as ______; "answer" is the exact short phrase spoken (1–4 words, no article changes); add "wordLimit": "NO MORE THAN TWO WORDS AND/OR A NUMBER".
-- "multiple-choice": exactly 4 options; "answer" is the 0-based index of the single correct option.
-- "multiple-choice-multi": exactly 5 options; "answer" is an array of exactly TWO 0-based indexes.
-- "matching": 5–7 options in "options"; "answer" is the 0-based index of the correct option.
-- Every question needs a one-sentence "explanation" quoting the evidence.
-- Numbers, names and dates in the transcript must be spoken out and unambiguous.
+- IDs run continuously from l${startId} to l${endId}; type must exactly match the planned sequence.
+- Completion questions have a gap (______), an exact 1–4 word answer and wordLimit "NO MORE THAN TWO WORDS AND/OR A NUMBER".
+- multiple-choice has 4 options and a single 0-based answer; multiple-choice-multi has 5 options and exactly two 0-based answers; matching has 5–7 options and one 0-based answer.
+- Every question has a one-sentence explanation quoting the transcript. Numbers, names and dates are spoken clearly.
 
-Return exactly:
-{
-  "listening": {
-    "title": "Listening Practice Test",
-    "parts": [
-      { "partNumber": 1, "title": "…", "instructions": "…", "transcript": "…",
-        "questions": [ { "id": "l1", "type": "…", "prompt": "…", "options": ["…"], "answer": 0, "explanation": "…", "wordLimit": "…" } ] }
-    ]
-  }
-}`;
+Return one valid JSON object only, shaped as:
+{"listening":{"title":"Listening Practice Test","parts":[{"partNumber":${partNumber || 1},"title":"…","instructions":"…","transcript":"…","questions":[{"id":"l${startId}","type":"…","prompt":"…","options":["…"],"answer":0,"explanation":"…","wordLimit":"…"}]}]}}`;
 }
 
-function readingSystem(plan) {
-  const perPassage = plan.questionPlan.reading
-    .map(p => `  Passage ${p.passage}: exactly ${p.types.length} questions, in this order: ${JSON.stringify(p.types)}`)
-    .join('\n');
+function readingSystem(plan, passageNumber) {
+  const selected = plan.questionPlan.reading.filter(p => !passageNumber || p.passage === passageNumber);
+  const passageText = selected.map(p => `Passage ${p.passage}: exactly ${p.types.length} questions, in this order: ${JSON.stringify(p.types)}`).join('\n');
+  const startId = passageNumber
+    ? 1 + plan.questionPlan.reading.slice(0, passageNumber - 1).reduce((n, p) => n + p.types.length, 0)
+    : 1;
+  const questionCount = selected.reduce((n, p) => n + p.types.length, 0);
+  const endId = startId + questionCount - 1;
+  const scope = passageNumber
+    ? `Generate ONLY Reading Passage ${passageNumber}. Do not include any other passage.`
+    : 'Generate all three Reading passages.';
+  const angle = passageNumber === 1 ? 'factual or descriptive' : passageNumber === 2 ? 'research or process' : 'argument, debate or application';
   return `${RULES}
 
-TASK: write the READING section of a full IELTS Academic mock test. The three passages approach one broad area from three different angles:
-- Passage 1 theme: ${plan.topics.reading} (factual/descriptive angle)
-- Passage 2 theme: ${plan.topics.reading} (research or process angle)
-- Passage 3 theme: ${plan.topics.reading} (argument, debate or application angle)
+TASK: write IELTS Academic Reading practice on "${plan.topics.reading}".
 ${difficultyLine(plan.difficulty)}
+${scope}
 
-Each passage needs:
-- "passageNumber": 1|2|3
-- "title": an academic-style title
-- "difficulty": "Easier" | "Medium" | "Harder" (passage 1 easier, passage 3 harder)
-- "paragraphs": 5–7 objects { "text": "…" }, each 110–170 words, in order. Paragraph breaks must fall between them — never inside one.
-- "questions": the questions below, in the given order.
+Each requested passage needs:
+- "passageNumber": 1, 2 or 3; an academic-style "title"; "difficulty": Easier, Medium or Harder (in order).
+- 5–7 paragraph objects, each 110–170 words, with paragraph breaks between objects. Passage ${passageNumber || 1} should take a ${angle} angle on the theme.
+- Exactly the planned questions in the given order.
 
-${perPassage}
+Planned types:
+${passageText}
 
 Question rules:
-- "id": "r1"…"r40", numbered continuously across the three passages (13 + 14 + 13 = 40 questions).
-- "type": exactly the type given in the sequence above.
-- "true-false-not-given": "answer" is "TRUE", "FALSE" or "NOT GIVEN".
-- "yes-no-not-given": "answer" is "YES", "NO" or "NOT GIVEN".
-- "matching-headings": "options" is a list of 6–8 roman-numeral headings (i–viii) taken from the passage's ideas, one of which is a worked example; "answer" is the 0-based index of the correct heading. The headings must be paraphrases, never word-for-word copies of a paragraph.
-- "summary-completion": "prompt" is a gapped summary of part of the passage with ______; "answer" is 1–3 words from the passage; add "wordLimit": "NO MORE THAN THREE WORDS AND/OR A NUMBER".
-- "sentence-completion": same gap rule, "wordLimit": "NO MORE THAN TWO WORDS AND/OR A NUMBER".
-- "multiple-choice": 4 options, 0-based index. "multiple-choice-multi": 5 options, array of exactly two indexes.
-- "matching": 5–7 options, 0-based index.
-- Every question needs a one-sentence "explanation" naming the paragraph letter that proves it.
+- IDs run continuously from r${startId} to r${endId}; types match the planned sequence.
+- true-false-not-given answers are TRUE/FALSE/NOT GIVEN; yes-no-not-given answers are YES/NO/NOT GIVEN.
+- matching-headings uses 6–8 roman-numeral headings, including one unused example; answer is the correct 0-based index.
+- summary-completion uses a gap and 1–3 answer words, with wordLimit "NO MORE THAN THREE WORDS AND/OR A NUMBER". Sentence-completion uses "NO MORE THAN TWO WORDS AND/OR A NUMBER".
+- multiple-choice has 4 options and one 0-based answer; multiple-choice-multi has 5 options and exactly two 0-based answers; matching has 5–7 options and one 0-based answer.
+- Every question has a one-sentence explanation naming the paragraph letter that proves it.
 
-Return exactly:
-{
-  "reading": {
-    "title": "Reading Practice Test",
-    "passages": [
-      { "passageNumber": 1, "title": "…", "difficulty": "Easier",
-        "paragraphs": [ { "text": "…" } ],
-        "questions": [ { "id": "r1", "type": "…", "prompt": "…", "options": ["…"], "answer": "TRUE", "explanation": "…" } ] }
-    ]
-  }
-}`;
+Return one valid JSON object only, shaped as:
+{"reading":{"title":"Reading Practice Test","passages":[{"passageNumber":${passageNumber || 1},"title":"…","difficulty":"Easier","paragraphs":[{"text":"…"}],"questions":[{"id":"r${startId}","type":"…","prompt":"…","options":["…"],"answer":"TRUE","explanation":"…"}]}]}}`;
 }
 
 function writingSystem(plan) {
@@ -629,18 +644,6 @@ module.exports = async function handler(req, res) {
     res.status(429).json({ ok: false, error: 'Too many generation requests. Wait a few minutes and try again.' });
     return;
   }
-  if (!process.env.GEMINI_API_KEY) {
-    res.status(500).json({
-      ok: false,
-      code: 'GEMINI_KEY_MISSING',
-      error: 'GEMINI_API_KEY is not set on the server.',
-      /* the exact message the admin must see */
-      message: 'Iltimos, avval GEMINI_API_KEY sozlang — AI generator ishga tushishi uchun Gemini API kaliti kerak.',
-      hint: 'Add GEMINI_API_KEY in Vercel → Project → Settings → Environment Variables (free key: https://aistudio.google.com/apikey), then redeploy.'
-    });
-    return;
-  }
-
   const body = req.body || {};
   const mode = body.mode === 'audio' ? 'audio' : 'section';
 
@@ -702,6 +705,17 @@ module.exports = async function handler(req, res) {
   }
 
   /* ---------------- section mode ---------------- */
+  if (!aiClient.isConfigured()) {
+    res.status(500).json({
+      ok: false,
+      code: 'GROQ_KEY_MISSING',
+      error: 'GROQ_API_KEY is not set on the server.',
+      message: 'Iltimos, avval GROQ_API_KEY sozlang — AI generator ishlashi uchun Groq API kaliti kerak.',
+      hint: 'Add GROQ_API_KEY in Vercel → Project → Settings → Environment Variables (get a key at https://console.groq.com/keys), then redeploy.'
+    });
+    return;
+  }
+
   const skill = str(body.skill).toLowerCase();
   if (!SKILLS.includes(skill)) {
     res.status(400).json({ ok: false, error: `Unknown skill "${body.skill}". Expected one of: ${SKILLS.join(', ')}.` });
@@ -717,7 +731,7 @@ module.exports = async function handler(req, res) {
 
   /* Strict IELTS boundary (lib/aiGuardrails.js). The admin may type any
      theme into the modal, so an obviously out-of-scope one is refused with
-     the same sentence the other AI endpoints use. The 48 pool themes all
+     the same sentence the other AI endpoints use. The pool themes all
      pass this check — tests/aiGuardrails.test.js pins that. */
   if (guard.isLikelyOffTopic([body.topic, body.label].filter(Boolean).join('\n'))) {
     res.status(400).json({
@@ -729,27 +743,17 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  const prompts = {
-    listening: () => ({ system: listeningSystem(plan), max: 8192 }),
-    reading: () => ({ system: readingSystem(plan), max: 8192 }),
-    writing: () => ({ system: writingSystem(plan), max: 4096 }),
-    speaking: () => ({ system: speakingSystem(plan), max: 4096 })
-  };
-
   try {
-    const { system, max } = prompts[skill]();
-    const userContent = [
+    const context = [
       `Test label: ${str(body.label) || 'Practice Test'}`,
       `Test id: ${str(body.testId) || 'test?'}`,
       `Difficulty: ${plan.difficulty}`,
       plan.forcedTopic
         ? `Requested theme (use it for the whole section): ${plan.forcedTopic}`
-        : `Theme chosen for this section: ${plan.topics[skill]}`,
-      '',
-      'Now write the complete ' + skill.toUpperCase() + ' section as one JSON object.'
+        : `Theme chosen for this section: ${plan.topics[skill]}`
     ].join('\n');
 
-    const { parsed, usage } = await callGemini(guard.withGuardrails(system), userContent, max);
+    const { parsed, usage } = await generateSkill(skill, plan, context);
 
     const payload = skill === 'listening' ? normalizeListening(parsed, plan)
       : skill === 'reading' ? normalizeReading(parsed, plan)

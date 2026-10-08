@@ -154,18 +154,13 @@ Har bir generatsiyada:
 - har bir bo'lim uchun `Math.random()` bilan **alohida tasodifiy mavzu** tanlanadi;
 - savol turlari (T/F/NG, Headings, Multiple Choice, Summary fill-in, Table completion…) har safar
   **boshqacha kombinatsiyada** aralashtiriladi (Listening: 4×10, Reading: 13+14+13 = 40 savol);
-- Gemini so'rovi `temperature: 0.85` bilan yuboriladi — natija har safar boshqacha.
+- Groq so'rovi `temperature: 0.85` bilan yuboriladi — natija har safar boshqacha. Listening va Reading 4096 tokenlik limitga sig'ishi uchun qismlarga bo'lib so'raladi.
 
 **Format 100% IELTS bo'yicha:** Listening (4 part, 40 savol, 4 to'liq transcript), Reading (3 akademik passage,
 40 savol — javob kaliti va tushuntirish bilan), Writing (Task 1 grafik/jadval + Task 2 insho), Speaking
 (Part 1–3, shu jumladan Part 2 Cue Card).
 
-**Audio (MP3).** Har bir Listening transcript Microsoft'ning bepul **Edge TTS** xizmati orqali MP3 ga
-aylantiriladi (`lib/edgeTts.js`, API kalit kerak emas). Agar Edge javob bermasa, tizim avtomatik
-**Gemini TTS** ga o'tadi (WAV). Audio to'g'ridan-to'g'ri Supabase Storage `ielts-media` bucket'iga,
-adminning o'z tokeni bilan yuklanadi va havola `audioUrl` maydoniga tushadi — boshqa brauzer upload
-yo'li ham ishlaydi (RLS baribir admin'ni tekshiradi). Audio yaratilmasa, transcript saqlanib qoladi va
-admin MP3 ni qo'lda yuklashi mumkin.
+**Audio (MP3).** Har bir Listening transcript Microsoft Edge TTS orqali MP3 ga aylantiriladi (`lib/edgeTts.js`). Bu alohida audio xizmati bo'lib, Groq til modeli kalitidan foydalanmaydi. Edge TTS ishlamasa, transcript saqlanadi va admin MP3 ni qo'lda yuklashi mumkin. Tayyor MP3 adminning Supabase tokeni bilan `ielts-media` bucket'iga yuklanadi; RLS yuklash huquqini tekshiradi.
 
 **Writing Task 1 diagrammasi.** Model `chartSpec` (tur, nom, o'lchov, label'lar, seriyalar) qaytaradi;
 modal uni brauzerda canvas'da chizib PNG ga aylantiradi va `images/` ga yuklaydi. Rastr ishlamasa,
@@ -182,11 +177,9 @@ qoralama sifatida saqlanadini boshqaradi; qo'lda tuzilgan yangi testdan farqi �
 yaratilgan test darhol muharrirga uzatiladi. Agar test id allaqachon mavjud bo'lsa, modal
 ogohlantiradi: generatsiya natijasi mavjud bo'limlarning ustiga yoziladi.
 
-Model id **`lib/geminiModel.js`** da bir joyda saqlanadi (standart `gemini-3.8-flash`). Google modelga kirishni cheklasa yoki nomini almashtirsa, `GEMINI_MODEL` muhit o'zgaruvchisini o'zgartirish kifoya — kodni tahrirlash shart emas.
+Barcha matnli AI so'rovlari **`lib/aiClient.js`** orqali `https://api.groq.com/openai/v1/chat/completions` manziliga yuboriladi. Yagona model — `llama-3.3-70b-versatile`; barcha so'rovlarda `max_tokens: 4096` va serverdagi yagona `GROQ_API_KEY` ishlatiladi. Model yoki endpointni boshqa API fayllarda alohida belgilamang.
 
-**`GEMINI_API_KEY` kiritilmagan bo'lsa** endpoint aniq xabar qaytaradi:
-*"Iltimos, avval GEMINI_API_KEY sozlang — AI generator ishga tushishi uchun Gemini API kaliti kerak."*
-Va qayerdan olish ko'rsatiladi (https://aistudio.google.com/apikey → Vercel → Settings → Environment Variables).
+**`GROQ_API_KEY` kiritilmagan bo'lsa** bo'lim generatsiyasi uni sozlash bo'yicha xabar qaytaradi. Kalitni [Groq Console](https://console.groq.com/keys) dan oling va Vercel → Settings → Environment Variables ga qo'shib qayta deploy qiling. Quiz kalit bo'lmasa lokal savol bankiga qaytadi.
 
 So'ng sahifani yangilang — yangi test test tanlash oynasida paydo bo'ladi.
 
@@ -194,19 +187,19 @@ So'ng sahifani yangilang — yangi test test tanlash oynasida paydo bo'ladi.
 
 Generator va boshqa AI xizmatlar (Coach, Writing/Speaking baholash, Quiz) **faqat IELTS va ingliz tili** doirasida ishlaydi.
 
-**Guardrails (`lib/aiGuardrails.js`).** Har bir Gemini chaqiruviga qat'iy **System Instruction** biriktiriladi — model o'zini faqat *"IELTS Murabbiyi"* sifatida tutadi. IELTS/ingliz tiliga aloqasi bo'lmagan so'rov (dasturlash, siyosat, erkin suhbat, umumiy savollar) boshqa hech qanday javobsiz, faqat quyidagi aniq jumla bilan rad etiladi:
+**Guardrails (`lib/aiGuardrails.js`).** Har bir AI so'roviga qat'iy **System Instruction** biriktiriladi — model o'zini faqat *"IELTS Murabbiyi"* sifatida tutadi. IELTS/ingliz tiliga aloqasi bo'lmagan so'rov (dasturlash, siyosat, erkin suhbat, umumiy savollar) boshqa hech qanday javobsiz, faqat quyidagi aniq jumla bilan rad etiladi:
 
 > Kechirasiz, men faquq IELTS va inglng tiliga doir savollarga yordak bera olaman.
 
 Bu qatlam to'rttala endpointda ham bor: `api/generate-mock.js`, `api/coach.js`, `api/grade.js`, `api/quiz.js`. Coach sahifasida savol **tarmoq chizig'idan oldin** brauzerda tekshiriladi (`script.js`), shuning uchun mavzudan tashqari xabar serverga ham bormaydi. Guardrails brauzer uchun `public/lib/aiGuardrails.js` ga ko'chiriladi va `sw.js` precache ro'yxatiga kiritilgan.
 
-**7 kunlik kesh (`lib/aiCache.js` + `public.ai_cache`).** Bir xil savol 7 kun ichida qayta berilsa, Gemini umuman chaqirilmaydi — javob ma'lumot bazasidan olinadi:
+**7 kunlik kesh (`lib/aiCache.js` + `public.ai_cache`).** Bir xil savol 7 kun ichida qayta berilsa, Groq API umuman chaqirilmaydi — javob ma'lumot bazasidan olinadi:
 
 | Bosqich | Nima sodir bo'ladi |
 | --- | --- |
 | 1 | Savol tozalib (`cleanPrompt`) `sha256` ga aylanadi → `prompt_hash` |
-| 2 | `select` qilinadi. Agar `now() - created_at < interval '7 days'` — keshdagi javob qaytadi, **Gemini chaqirilmaydi** |
-| 3 | Muddati o'tgan bo'lsa Gemini'ga so'rov ketadi va javob `Prefer: resolution=merge-duplicates` bilan qatorga upsert qilinadi — eski qator yangilanadi, 7 kunlik muddat qaytadan boshlanadi |
+| 2 | `select` qilinadi. Agar `now() - created_at < interval '7 days'` — keshdagi javob qaytadi, **Groq API chaqirilmaydi** |
+| 3 | Muddati o'tgan bo'lsa Groq API'ga so'rov ketadi va javob `Prefer: resolution=merge-duplicates` bilan qatorga upsert qilinadi — eski qator yangilanadi, 7 kunlik muddat qaytadan boshlanadi |
 
 Kesh kaliti bo'lim va parametrlarga bog'liq: `coach:<savol>|<band>|<weakest>`, `grade:writing:<savol>`, `grade:speaking:<savol>`, `quiz:<mavzu>:<savollar soni>`. Coach javobi oddiy matn, baholash/quiz javoblari esa obyekt sifatida saqlanadi — ikkisi ham qo'llanadi.
 
@@ -266,13 +259,13 @@ Nashrdan olinsa, keyingi sahifa yangilanishida yo'qoladi.
 | Kirganda dashboard'ga tashlab yuboradi | Rol `admin` emas yoki profil yuklanmagan | `select * from profiles where email = '…';` bilan tekshiring |
 | Jadvallar bo'sh, lekin xato yo'q | RLS hammasini filtrlayapti | `role` ustunini tekshiring; `select public.is_admin();` `true` qaytarishi kerak |
 | Test tanlash oynasida yangi test yo'q | Test yoki uning bo'limi nashr qilinmagan | Ham meta, ham kerakli bo'limlar `Published` bo'lishi kerak |
-| "Iltimos, avval GEMINI_API_KEY sozlang" | Serverda Gemini kaliti yo'q | Vercel → Settings → Environment Variables → `GEMINI_API_KEY` qo'shing va qayta deploy qiling |
-| `Gemini API error (404): … is no longer available to new users` | Kalit yangi, Google esa eski model id'ga kirishni yopgan | Endpoint javobidagi ko'rsatmani bajaring: Vercel → Environment Variables → `GEMINI_MODEL=gemini-3.8-flash` qo'shib qayta deploy qiling (yoki `lib/geminiModel.js` dagi standartni yangilang). Model ro'yxati: https://ai.google.dev/gemini-api/docs/models |
-| Listening bo'limida audio yo'q | Edge TTS va Gemini TTS javob bermadi | `audioUrl` bo'sh — muharrirga kirib MP3 ni qo'lda yuklang; transcript saqlangan |
+| "Iltimos, avval GROQ_API_KEY sozlang" | Serverda Groq kaliti yo'q | Vercel → Settings → Environment Variables → `GROQ_API_KEY` qo'shing va qayta deploy qiling |
+| `Groq API error (429)` | So'rov tezligi yoki kvota limiti | Biroz kuting, Groq Console’dagi loyiha limiti va server kalitini tekshiring. Boshqa HTTP xatolarda endpoint qaytargan Groq xabarini tekshiring. |
+| Listening bo'limida audio yo'q | Edge TTS xizmati javob bermadi | `audioUrl` bo'sh — muharrirga kirib MP3 ni qo'lda yuklang; transcript saqlangan |
 | AI generator tugmasi ishlamaydi | `mockGenerator.js` / `lib/topicPool.js` yuklanmagan | `index.html` skriptlari va `sw.js` precache ro'yxatini tekshiring |
 | AI IELTS'dan tashqari savolga javob berdi | So'rov guardrails'dan o'tib ketdi | `public/lib/aiGuardrails.js` yuklangani va `api/*` da `withGuardrails` borligini tekshiring; brauzer keshi'ni tozalang |
 | AI har safar bir xil javobni berayapti | Kesh ishlayapti (bu normal) | 7 kunlik kesh — boshqa javob kerak bo'lsa savolni biroz boshqacha yozing yoki `ai_cache` qatorini o'chiring |
-| Kesh ishlamayapti (har safar Gemini chaqiriladi) | `SUPABASE_SERVICE_ROLE_KEY` yoki `202610060002_ai_cache.sql` migratsiyasi yo'q | Migratsiyani qo'llang; server log'ida kesh o'qish/yozish xatosini tekshiring — kesh yozilmasa ham AI javob beraveradi |
+| Kesh ishlamayapti (har safar Groq API chaqiriladi) | `SUPABASE_SERVICE_ROLE_KEY` yoki `202610060002_ai_cache.sql` migratsiyasi yo'q | Migratsiyani qo'llang; server log'ida kesh o'qish/yozish xatosini tekshiring — kesh yozilmasa ham AI javob beraveradi |
 
 ---
 
@@ -285,14 +278,16 @@ supabaseClient.js                            admin API + Supabase Storage media 
 admin.js                                     panel mantiqiy qatlami + IELTS konstruktor + JSON muharriri
 mockGenerator.js                             admin UI: 1-Click AI generator modal (progress, saqlash, tahrirlash)
 lib/topicPool.js                             48 mavzu + savol turi aralashtirish (brauzer va Node uchun UMD)
-lib/edgeTts.js                               Edge TTS (MP3) + Gemini TTS (WAV) fallback
+lib/aiClient.js                             yagona Groq API klienti, llama-3.3-70b-versatile, 4096 token
+lib/edgeTts.js                               Microsoft Edge TTS (MP3)
 api/generate-mock.js                         POST /api/generate-mock — bo'lim va audio generatsiyasi
 tests/generator.test.js                      pool, endpoint, TTS, i18n, wiring testlari
 tests/generatorClient.test.js                modal oqimi: generatsiya → upload → saqlash → xulosa
 lib/aiGuardrails.js                         qat'iy System Instruction + mavzudan tashqari so'rovni rad etish
-lib/aiCache.js                              7 kunlik TTL kesh (sha256 kalit, upsert, xotira nusxasi)
+lib/aiCache.js                              7 kunlik TTL AI kesh (sha256 kalit, upsert, xotira nusxasi)
 supabase/migrations/202610060002_ai_cache.sql  public.ai_cache — AI javoblari keshi (RLS, policy yo'q)
 tests/aiGuardrails.test.js                  guardrails + 7 kunlik kesh testlari (PGlite bilan)
+tests/aiClient.test.js                      Groq wire format, 4096 token va endpoint ulanish testlari
 script.js                                    #/admin route, learner runner, audio/image rendering
 styles.css                                   admin builder + media + exam content stillari
 tests/admin.test.js                          guard/RLS, media migratsiyasi, format, validatsiya, XSS testlari
