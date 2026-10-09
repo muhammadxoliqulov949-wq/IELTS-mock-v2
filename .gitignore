@@ -5,6 +5,7 @@ node_modules/
 .vercel/
 public/
 supabase.bundle.js
+markdown.bundle.js
 .cache/
 playwright-report/
 test-results/

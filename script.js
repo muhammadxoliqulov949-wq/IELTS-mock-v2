@@ -916,6 +916,21 @@ function mistakes() {
 
 /* ---------------- AI COACH ---------------- */
 let coachSending = false;
+
+/* One chat bubble. The AI reply is Markdown (lists, tables, **bold**), so it
+   goes through the sanitised renderer from markdown.bundle.js. The learner's
+   own text is shown as plain text. If that script did not load, the reply is
+   escaped and shown as plain text. The CSS keeps its line breaks. */
+function coachBubble(m) {
+  if (m.role !== 'ai') {
+    return `<div class="coach-msg-body coach-msg-body--plain">${esc(m.text)}</div>`;
+  }
+  const md = (typeof window !== 'undefined' && window.IELTS_MARKDOWN) || null;
+  let html = null;
+  try { html = md ? md.render(m.text) : null; } catch { html = null; }
+  if (html === null) return `<div class="coach-msg-body coach-msg-body--plain">${esc(m.text)}</div>`;
+  return `<div class="coach-msg-body coach-md">${html}</div>`;
+}
 function coach() {
   const overall = bandAverage();
   const weakest = weakestSkill();
@@ -935,7 +950,7 @@ function coach() {
         ${store.coachMessages.length ? store.coachMessages.map(m => `
           <div class="coach-msg ${m.role === 'user' ? 'coach-msg--user' : 'coach-msg--ai'}">
             ${m.role === 'ai' ? mascotAvatar('mascot-avatar--msg') : ''}
-            <div class="coach-msg-body">${esc(m.text)}</div>
+            ${coachBubble(m)}
           </div>`).join('')
         : `<div class="coach-empty">
              ${mascotImg('full', 'mascot--empty')}
