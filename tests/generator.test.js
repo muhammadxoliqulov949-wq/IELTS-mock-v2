@@ -32,6 +32,7 @@ function check(name, cond) {
 /* 1. Topic & diversity pool                                           */
 /* ------------------------------------------------------------------ */
 const pool = require('../lib/topicPool.js');
+const aiClient = require('../lib/aiClient.js');
 
 check('pool: at least 40 IELTS topics are defined', pool.TOPICS.length >= 40);
 check('pool: topics are unique and non-empty',
@@ -416,9 +417,9 @@ function speakingAnswer() {
     check('api: ' + skill + ' uses focused Groq requests with the shared 4096-token budget',
       requests.length === expectedCalls
       && requests.every(request => request.url === 'https://api.groq.com/openai/v1/chat/completions'
-        && request.body.model === 'llama-3.3-70b-versatile'
+        && request.body.model === aiClient.MODEL
         && request.body.temperature === 0.85
-        && request.body.max_tokens === 4096
+        && request.body.max_completion_tokens === 4096
         && request.body.response_format.type === 'json_object'));
     check('api: ' + skill + ' sends the planned topic to the model',
       requests.every(request => request.body.messages.some(message => message.content.includes(r.body.plan.topics[skill]))));

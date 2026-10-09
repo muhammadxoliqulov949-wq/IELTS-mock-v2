@@ -168,7 +168,7 @@ npm run test:learning:browser -- --account
 
 1. Reponi GitHub'ga push qiling
 2. [vercel.com](https://vercel.com) → **New Project** → reponi tanlang
-3. Environment Variables: `GROQ_API_KEY` (barcha matnli AI funksiyalar uchun), `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` (7 kunlik AI kesh uchun). Model `lib/aiClient.js` da `llama-3.3-70b-versatile`, har bir so'rovda `max_tokens: 4096`.
+3. Environment Variables: `GROQ_API_KEY` (barcha matnli AI funksiyalar uchun), `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` (7 kunlik AI kesh uchun). Ixtiyoriy: `GROQ_MODEL` (standart `openai/gpt-oss-120b`) va `GROQ_FALLBACK_MODEL` (standart `openai/gpt-oss-20b`). Asosiy model Groq'da 404 / `model_not_found` yoki `model_decommissioned` bilan javob bersa, so'rov zaxira modelda qayta yuboriladi. Har bir so'rovda `max_completion_tokens: 4096`.
 4. **Deploy** — `vercel.json` SPA routingni boshqaradi
 
 ## 🧩 Loyiha tuzilishi
