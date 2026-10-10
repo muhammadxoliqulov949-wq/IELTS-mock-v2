@@ -6,6 +6,9 @@
  *     question-type mixes, temperature 0.85 with the shared client)
  *   • the generator endpoint (shape of every one of the four skills,
  *     the GROQ_API_KEY message an admin actually sees, audio mode)
+ *   • chunk mode: one Listening part / Reading passage per request, and
+ *     the Groq 429 contract (retried inside the request, reported as
+ *     RATE_LIMITED only when it outlasts the retries)
  *   • the TTS module (Sec-MS-GEC vectors, speaker-label stripping, frame parsing,
  *     and a full Edge-TTS round trip against a local mock endpoint)
  *   • the wiring (button in the admin panel, scripts loaded, service
@@ -476,6 +479,191 @@ function speakingAnswer() {
     && speaking.parts[1].bullets.length === 3
     && speaking.parts[2].questions.length >= 3);
 
+  /* --- 4.4b chunk mode: ONE focused model call per Listening part / Reading passage --- */
+  {
+    const chunkPlan = pool.buildPlan({ difficulty: 'hard' });
+    const chunkBody = (extra) => Object.assign({ testId: 'test6', label: 'Practice Test 6', difficulty: 'hard', plan: chunkPlan }, extra);
+    const savedGeneratorModel = process.env.GROQ_GENERATOR_MODEL;
+    delete process.env.GROQ_GENERATOR_MODEL;
+
+    pendingAnswer = listeningAnswer();
+    let before = calls.length;
+    const parts = [];
+    for (const part of [1, 2, 3, 4]) {
+      r = makeRes();
+      await handler(req(chunkBody({ skill: 'listening', part, questionOffset: (part - 1) * 10 }), '10.1.0.1'), r);
+      parts.push(r);
+    }
+    check('chunk: Listening parts 1–4 are each answered with 200', parts.every(x => x.statusCode === 200 && x.body.ok));
+    check('chunk: four chunk requests made exactly four model calls (one each)', calls.length - before === 4);
+    check('chunk: every call asked for just its own part',
+      [1, 2, 3, 4].every((n, i) => calls[before + i].body.messages[1].content.includes(`Generate only Listening Part ${n}`)));
+    check('chunk: each answer holds ONE part and says which chunk it is',
+      parts.every((x, i) => x.body.payload.parts.length === 1
+        && x.body.payload.parts[0].partNumber === i + 1
+        && x.body.payload.parts[0].id === 'lp' + (i + 1)
+        && JSON.stringify(x.body.chunk) === JSON.stringify({ kind: 'part', number: i + 1, index: i, total: 4 })
+        && x.body.counts.blocks === 1 && x.body.counts.questions === 10));
+    check('chunk: questionOffset numbers the ids (part 3 → l21…l30)',
+      parts[2].body.payload.parts[0].questions.map(q => q.id).join(',')
+      === Array.from({ length: 10 }, (_, i) => 'l' + (21 + i)).join(','));
+    const mergedListening = Object.assign({}, parts[0].body.payload, { parts: parts.flatMap(x => x.body.payload.parts) });
+    check('chunk: the four parts joined are a valid Listening section — l1…l40, the editor validator is satisfied',
+      mergedListening.parts.flatMap(part => part.questions).every((q, i) => q.id === 'l' + (i + 1))
+      && adminInternal.validatePayload('listening', mergedListening).length === 0);
+
+    r = makeRes();
+    await handler(req(chunkBody({ skill: 'listening', part: 3 }), '10.1.0.2'), r);
+    check('chunk: without questionOffset the plan decides the numbering (part 3 starts at l21)',
+      r.statusCode === 200 && r.body.payload.parts[0].questions[0].id === 'l21');
+
+    pendingAnswer = readingAnswer();
+    before = calls.length;
+    const passages = [];
+    let offset = 0;
+    for (const passage of [1, 2, 3]) {
+      r = makeRes();
+      await handler(req(chunkBody({ skill: 'reading', passage, questionOffset: offset }), '10.1.0.3'), r);
+      passages.push(r);
+      offset += r.body.ok ? r.body.payload.passages[0].questions.length : 0;
+    }
+    check('chunk: Reading passages 1–3 are each answered with 200, one model call each',
+      passages.every(x => x.statusCode === 200 && x.body.ok) && calls.length - before === 3);
+    check('chunk: each answer holds ONE passage of 13, 14 and 13 questions',
+      passages.map(x => x.body.payload.passages.length + ':' + x.body.payload.passages[0].questions.length).join(',') === '1:13,1:14,1:13'
+      && passages.every((x, i) => JSON.stringify(x.body.chunk) === JSON.stringify({ kind: 'passage', number: i + 1, index: i, total: 3 })));
+    const mergedReading = Object.assign({}, passages[0].body.payload, { passages: passages.flatMap(x => x.body.payload.passages) });
+    check('chunk: the three passages joined are a valid Reading section — r1…r40, the editor validator is satisfied',
+      mergedReading.passages.flatMap(passage => passage.questions).every((q, i) => q.id === 'r' + (i + 1))
+      && adminInternal.validatePayload('reading', mergedReading).length === 0);
+
+    before = calls.length;
+    const badSelectors = [
+      { skill: 'listening', part: 5 }, { skill: 'listening', part: 0 }, { skill: 'listening', part: 'x' },
+      { skill: 'reading', passage: 4 }, { skill: 'reading', passage: 1.5 }
+    ];
+    for (const bad of badSelectors) {
+      r = makeRes();
+      await handler(req(chunkBody(bad), '10.1.0.4'), r);
+      check('chunk: ' + JSON.stringify(bad) + ' is a 400 with a plain message',
+        r.statusCode === 400 && /Unknown (part|passage)/.test(r.body.error));
+    }
+    check('chunk: invalid selectors never reach the model', calls.length === before);
+
+    /* the legacy path (no selector) still returns the whole skill, chunk by chunk */
+    pendingAnswer = listeningAnswer();
+    before = calls.length;
+    r = makeRes();
+    await handler(req(chunkBody({ skill: 'listening' }), '10.1.0.5'), r);
+    check('chunk: a request without a selector still returns all 4 parts (the legacy path), as 4 sequential calls',
+      r.statusCode === 200 && r.body.payload.parts.length === 4 && !r.body.chunk && calls.length - before === 4);
+
+    /* --- 4.4c the generator's model --- */
+    const savedModelEnv = { model: process.env.GROQ_MODEL, fallback: process.env.GROQ_FALLBACK_MODEL };
+    delete process.env.GROQ_MODEL;
+    delete process.env.GROQ_FALLBACK_MODEL;
+    pendingAnswer = writingAnswer();
+    r = makeRes();
+    await handler(req(chunkBody({ skill: 'writing' }), '10.1.0.6'), r);
+    check('model: by default the generator asks for the Free-tier model openai/gpt-oss-20b',
+      calls[calls.length - 1].body.model === 'openai/gpt-oss-20b' && calls[calls.length - 1].body.model === aiClient.MODEL);
+    process.env.GROQ_MODEL = 'openai/gpt-oss-120b';
+    r = makeRes();
+    await handler(req(chunkBody({ skill: 'writing' }), '10.1.0.6'), r);
+    check('model: it follows GROQ_MODEL like every other endpoint', calls[calls.length - 1].body.model === 'openai/gpt-oss-120b');
+    process.env.GROQ_GENERATOR_MODEL = '  openai/gpt-oss-20b  ';
+    r = makeRes();
+    await handler(req(chunkBody({ skill: 'writing' }), '10.1.0.6'), r);
+    check('model: GROQ_GENERATOR_MODEL (trimmed) moves the generator to its own model — and its own Groq quota',
+      calls[calls.length - 1].body.model === 'openai/gpt-oss-20b' && aiClient.MODEL === 'openai/gpt-oss-120b');
+    delete process.env.GROQ_GENERATOR_MODEL;
+    for (const [key, value] of [['GROQ_MODEL', savedModelEnv.model], ['GROQ_FALLBACK_MODEL', savedModelEnv.fallback]]) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+
+    /* --- 4.4d a Groq 429 is retried inside the request --- */
+    const policy = aiClient._retryPolicy;
+    const savedPolicy = Object.assign({}, policy);
+    const savedFetch = global.fetch;
+    const savedWarn = console.warn;
+    console.warn = () => {};   /* the client logs every wait; keep the test output readable */
+    const waits = [];
+    Object.assign(policy, { baseDelayMs: 2000, factor: 2, jitterMs: 0, maxDelayMs: 10000, maxRetries: 3, sleep: async (ms) => { waits.push(ms); } });
+    /* a Groq 429: an optional Retry-After header, and an optional
+       "Please try again in …" sentence in the error text */
+    const limited = (retryAfter, sentence) => ({
+      ok: false, status: 429,
+      headers: { get: (name) => (String(name).toLowerCase() === 'retry-after' && retryAfter !== undefined ? String(retryAfter) : null) },
+      text: async () => JSON.stringify({ error: {
+        message: 'Rate limit reached for model on tokens per minute (TPM): Limit 8000, Used 7900, Requested 5000.' + (sentence ? ' ' + sentence : ''),
+        type: 'tokens', code: 'rate_limit_exceeded'
+      } })
+    });
+    const answered = () => ({
+      ok: true, status: 200,
+      json: async () => ({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(writingAnswer()) } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } })
+    });
+    const upstream = [];
+    try {
+      pendingAnswer = writingAnswer();
+      let attempt = 0;
+      global.fetch = async () => { attempt += 1; upstream.push(attempt); return attempt <= 2 ? limited() : answered(); };
+      r = makeRes();
+      await handler(req(chunkBody({ skill: 'writing' }), '10.1.1.1'), r);
+      check('429: two upstream 429s are absorbed — the admin gets a normal 200 on the third try',
+        r.statusCode === 200 && r.body.ok && upstream.length === 3);
+      check('429: the waits before the retries are 2 s then 4 s (exponential)', waits.join(',') === '2000,4000');
+
+      waits.length = 0; upstream.length = 0; attempt = 0;
+      global.fetch = async () => { attempt += 1; upstream.push(attempt); return attempt === 1 ? limited(5) : answered(); };
+      r = makeRes();
+      await handler(req(chunkBody({ skill: 'writing' }), '10.1.1.2'), r);
+      check('429: a Retry-After of 5 s is waited out (5 s + margin), not the shorter backoff',
+        r.statusCode === 200 && waits.join(',') === '5250');
+
+      waits.length = 0; upstream.length = 0; attempt = 0;
+      global.fetch = async () => { attempt += 1; upstream.push(attempt); return attempt === 1 ? limited(undefined, 'Please try again in 3.5s.') : answered(); };
+      r = makeRes();
+      await handler(req(chunkBody({ skill: 'writing' }), '10.1.1.6'), r);
+      check('429: with no header, the "try again in 3.5s" sentence of the error text is honoured (3.5 s + margin)',
+        r.statusCode === 200 && waits.join(',') === '3750');
+
+      waits.length = 0; upstream.length = 0;
+      global.fetch = async () => { upstream.push(1); return limited(); };
+      r = makeRes();
+      await handler(req(chunkBody({ skill: 'writing' }), '10.1.1.3'), r);
+      check('429: when every retry is rate limited the endpoint answers 429 RATE_LIMITED, not a generic failure',
+        r.statusCode === 429 && r.body.ok === false && r.body.code === 'RATE_LIMITED' && upstream.length === 4);
+      check('429: it waited 2 s, 4 s and 8 s first', waits.join(',') === '2000,4000,8000');
+      check('429: the answer is plain for the admin (Uzbek message) and carries no provider detail',
+        /Groq bepul limiti/.test(r.body.message) && !/org_|organization/i.test(JSON.stringify(r.body)));
+      check('429: retryAfterMs is null when Groq did not say how long', r.body.retryAfterMs === null);
+
+      waits.length = 0; upstream.length = 0;
+      global.fetch = async () => { upstream.push(1); return limited(90); };
+      const longRes = makeRes();
+      const headers = {};
+      longRes.setHeader = (name, value) => { headers[name] = value; };
+      await handler(req(chunkBody({ skill: 'writing' }), '10.1.1.4'), longRes);
+      check('429: a wait longer than one request may hold (90 s) is not slept through — one attempt, then RATE_LIMITED',
+        longRes.statusCode === 429 && longRes.body.code === 'RATE_LIMITED' && upstream.length === 1 && waits.length === 0);
+      check('429: the answer says how long Groq asked for (retryAfterMs and the Retry-After header)',
+        longRes.body.retryAfterMs === 90000 && headers['Retry-After'] === '90');
+
+      upstream.length = 0;
+      global.fetch = async () => { upstream.push(1); return { ok: false, status: 500, text: async () => 'upstream broke' }; };
+      r = makeRes();
+      await handler(req(chunkBody({ skill: 'writing' }), '10.1.1.5'), r);
+      check('429: any other upstream error is still reported as before (502 GENERATION_FAILED, no waiting)',
+        r.statusCode === 502 && r.body.code === 'GENERATION_FAILED' && waits.length === 0);
+    } finally {
+      Object.assign(policy, savedPolicy);
+      global.fetch = savedFetch;
+      console.warn = savedWarn;
+      if (savedGeneratorModel === undefined) delete process.env.GROQ_GENERATOR_MODEL; else process.env.GROQ_GENERATOR_MODEL = savedGeneratorModel;
+    }
+  }
+
   /* --- 4.5 a malformed model answer fails loudly, not silently --- */
   pendingAnswer = { listening: { parts: [] } };
   r = makeRes();
@@ -532,12 +720,17 @@ function speakingAnswer() {
 
   /* --- 4.8 rate limiting (last: it burns the quota for one IP) --- */
   let limited = false;
-  for (let i = 0; i < 62; i++) {
+  let allowedBeforeLimit = 0;
+  for (let i = 0; i < 130; i++) {
     r = makeRes();
     await handler(req({ skill: 'invalid' }, '77.77.77.77'), r);
     if (r.statusCode === 429) { limited = true; break; }
+    allowedBeforeLimit += 1;
   }
   check('api: generation is rate limited', limited);
+  check('api: the per-IP limit leaves room for a full run with retries (120 per 5 minutes)', allowedBeforeLimit === 120);
+  check('api: the per-IP limiter says TOO_MANY_REQUESTS, so the admin modal never mistakes it for a Groq limit',
+    r.body.code === 'TOO_MANY_REQUESTS' && /Too many generation requests/.test(r.body.error));
 
   console.log(failed === 0 ? '\nGENERATOR TESTS OK ✓' : `\n${failed} GENERATOR TEST(S) FAILED`);
   process.exit(failed === 0 ? 0 : 1);

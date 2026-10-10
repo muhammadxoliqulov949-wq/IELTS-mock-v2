@@ -6,13 +6,18 @@
  * admin journey:
  *
  *   open the modal → the four progress steps appear → "Generatsiya
- *   qilish" → four section calls, four TTS calls, five media uploads,
- *   four adminSaveTest calls and one adminSaveTestMeta call → the
- *   summary with the per-skill counts.
+ *   qilish" → nine chunk calls (Listening parts 1–4, Reading passages
+ *   1–3, Writing, Speaking) one after another, four TTS calls, five
+ *   media uploads, four adminSaveTest calls and one adminSaveTestMeta
+ *   call → the summary with the per-skill counts.
  *
- * It also pins the two behaviours that matter most in production:
+ * It also pins the behaviours that matter most in production:
  *   • a failure in one section stops the run, marks that step as failed
  *     and keeps everything already saved
+ *   • a Groq rate limit (HTTP 429, RATE_LIMITED) is NOT an error: the
+ *     modal waits (exponential backoff, a countdown in the status line)
+ *     and sends the same chunk again; only an exhausted or daily quota
+ *     stops the run, with a plain message
  *   • anything the admin types is escaped before it reaches innerHTML
  * =================================================================== */
 'use strict';
@@ -197,37 +202,56 @@ const adminPanel = window.IELTS_ADMIN;
 /* ------------------------------------------------------------------ */
 /* Canned endpoint answers                                            */
 /* ------------------------------------------------------------------ */
-function sectionAnswer(skill) {
+const QUESTIONS_PER_PASSAGE = [13, 14, 13];
+
+function listeningPart(n) {
+  return {
+    id: 'lp' + n, partNumber: n, title: 'Part ' + n,
+    instructions: 'Questions 1–10.', transcript: 'Woman: ' + 'spoken words for the recording. '.repeat(20),
+    audioUrl: '', audioPath: '',
+    questions: Array.from({ length: 10 }, (_, i) => ({
+      id: 'x', type: 'form-completion', prompt: `Q${i + 1} ______`, answer: 'words', explanation: 'said in the transcript'
+    }))
+  };
+}
+
+function readingPassage(n) {
+  return {
+    id: 'rp' + n, passageNumber: n, title: 'Passage ' + n, difficulty: 'Medium',
+    text: 'Academic text. '.repeat(80),
+    paragraphs: [{ label: 'A', text: 'Academic text. '.repeat(60) }],
+    questions: Array.from({ length: QUESTIONS_PER_PASSAGE[n - 1] }, (_, i) => ({
+      id: 'x', type: 'true-false-not-given', prompt: `R${i + 1}`, answer: 'TRUE', explanation: 'paragraph A'
+    }))
+  };
+}
+
+/* What the endpoint answers for one request. A request with `part` /
+   `passage` is ONE chunk: a payload holding a single block plus `chunk`;
+   anything else gets the whole skill, like the legacy endpoint path. */
+function sectionAnswer(skill, request) {
+  const body = request || {};
   if (skill === 'listening') {
+    const numbers = body.part ? [Number(body.part)] : [1, 2, 3, 4];
     return {
-      ok: true, skill, counts: { questions: 40, blocks: 4 },
+      ok: true, skill, counts: { questions: numbers.length * 10, blocks: numbers.length },
+      ...(body.part ? { chunk: { kind: 'part', number: Number(body.part), index: Number(body.part) - 1, total: 4 } } : {}),
       plan: { topics: { listening: 'Space exploration', reading: 'Marine biology', writing: 'Cognitive psychology', speaking: 'Urban architecture' } },
       payload: {
         id: 'listening-custom', title: '', skill: 'Listening', duration: 30,
-        parts: [1, 2, 3, 4].map(n => ({
-          id: 'lp' + n, partNumber: n, title: 'Part ' + n,
-          instructions: 'Questions 1–10.', transcript: 'Woman: ' + 'spoken words for the recording. '.repeat(20),
-          audioUrl: '', audioPath: '',
-          questions: Array.from({ length: 10 }, (_, i) => ({
-            id: 'x', type: 'form-completion', prompt: `Q${i + 1} ______`, answer: 'words', explanation: 'said in the transcript'
-          }))
-        }))
+        parts: numbers.map(listeningPart)
       }
     };
   }
   if (skill === 'reading') {
+    const numbers = body.passage ? [Number(body.passage)] : [1, 2, 3];
     return {
-      ok: true, skill, counts: { questions: 40, blocks: 3 },
+      ok: true, skill,
+      counts: { questions: numbers.reduce((sum, n) => sum + QUESTIONS_PER_PASSAGE[n - 1], 0), blocks: numbers.length },
+      ...(body.passage ? { chunk: { kind: 'passage', number: Number(body.passage), index: Number(body.passage) - 1, total: 3 } } : {}),
       payload: {
         id: 'reading-custom', title: '', skill: 'Reading', duration: 60, format: 'Academic',
-        passages: [1, 2, 3].map(n => ({
-          id: 'rp' + n, passageNumber: n, title: 'Passage ' + n, difficulty: 'Medium',
-          text: 'Academic text. '.repeat(80),
-          paragraphs: [{ label: 'A', text: 'Academic text. '.repeat(60) }],
-          questions: Array.from({ length: 13 }, (_, i) => ({
-            id: 'x', type: 'true-false-not-given', prompt: `R${i + 1}`, answer: 'TRUE', explanation: 'paragraph A'
-          }))
-        }))
+        passages: numbers.map(readingPassage)
       }
     };
   }
@@ -328,14 +352,21 @@ async function waitFor(predicate, label, timeout) {
 
   /* ---------- 3. the full generation run ---------- */
   const calls = [];
+  let inFlight = 0;
+  let maxInFlight = 0;
   global.fetch = async (url, options) => {
     const target = String(url);
     const body = JSON.parse(options.body || '{}');
     calls.push(body);
+    /* a real round trip takes time, so overlapping requests would be seen */
+    inFlight += 1;
+    maxInFlight = Math.max(maxInFlight, inFlight);
+    await new Promise(resolve => setTimeout(resolve, 1));
+    inFlight -= 1;
     if (body.mode === 'audio') {
       return { ok: true, status: 200, json: async () => ({ ok: true, audio: { source: 'edge-tts', mime: 'audio/mpeg', ext: 'mp3', bytes: 1234, base64: Buffer.from([0xff, 0xfb, 0x90]).toString('base64') }, storage: 'client' }) };
     }
-    return { ok: true, status: 200, json: async () => sectionAnswer(body.skill) };
+    return { ok: true, status: 200, json: async () => sectionAnswer(body.skill, body) };
   };
 
   const difficulty = backdrop.querySelector('[data-ai-difficulty]');
@@ -357,9 +388,20 @@ async function waitFor(predicate, label, timeout) {
   check('run: the run finishes', finished);
   check('run: no error was reported', generator.state.error === '');
 
-  const skillCalls = calls.filter(c => c.mode !== 'audio').map(c => c.skill);
+  const sectionCalls = calls.filter(c => c.mode !== 'audio');
+  const skillCalls = sectionCalls.map(c => c.skill);
   check('run: the four sections were requested in IELTS order',
-    JSON.stringify(skillCalls) === JSON.stringify(['listening', 'reading', 'writing', 'speaking']));
+    JSON.stringify(skillCalls.filter((skill, i) => skillCalls.indexOf(skill) === i))
+      === JSON.stringify(['listening', 'reading', 'writing', 'speaking']));
+  check('run: every request is ONE chunk — Listening parts 1–4, Reading passages 1–3, Writing, Speaking',
+    JSON.stringify(sectionCalls.map(c => c.skill + (c.part ? ':part' + c.part : '') + (c.passage ? ':passage' + c.passage : '')))
+      === JSON.stringify(['listening:part1', 'listening:part2', 'listening:part3', 'listening:part4',
+        'reading:passage1', 'reading:passage2', 'reading:passage3', 'writing', 'speaking']));
+  check('run: each chunk is told how many questions the earlier chunks hold',
+    JSON.stringify(sectionCalls.filter(c => c.skill === 'listening').map(c => c.questionOffset)) === JSON.stringify([0, 10, 20, 30])
+    && JSON.stringify(sectionCalls.filter(c => c.skill === 'reading').map(c => c.questionOffset)) === JSON.stringify([0, 13, 27])
+    && sectionCalls.filter(c => c.skill === 'writing' || c.skill === 'speaking').every(c => c.questionOffset === undefined));
+  check('run: the chunks are asked for one at a time (never in parallel)', maxInFlight === 1);
   const audioCalls = calls.filter(c => c.mode === 'audio');
   check('run: one TTS request per Listening part', audioCalls.length === 4);
   check('run: every section was sent the same test id and label',
@@ -384,6 +426,17 @@ async function waitFor(predicate, label, timeout) {
   const listeningRow = saved.tests.find(r => r.skill === 'listening');
   check('listening: every part got an audioUrl from the upload',
     listeningRow.payload.parts.every(p => /ielts-media\/audio\//.test(p.audioUrl || '') && p.audioPath));
+  const listeningQuestions = listeningRow.payload.parts.flatMap(p => p.questions);
+  check('listening: the four chunks are merged into one section — parts 1–4, ids l1…l40',
+    listeningRow.payload.parts.map(p => p.partNumber).join(',') === '1,2,3,4'
+    && listeningQuestions.length === 40
+    && listeningQuestions.every((q, i) => q.id === 'l' + (i + 1)));
+  const readingRow = saved.tests.find(r => r.skill === 'reading');
+  const readingQuestions = readingRow.payload.passages.flatMap(p => p.questions);
+  check('reading: the three chunks are merged into one section — passages 1–3 (13 + 14 + 13), ids r1…r40',
+    readingRow.payload.passages.map(p => p.passageNumber).join(',') === '1,2,3'
+    && readingRow.payload.passages.map(p => p.questions.length).join(',') === '13,14,13'
+    && readingQuestions.every((q, i) => q.id === 'r' + (i + 1)));
   const writingRow = saved.tests.find(r => r.skill === 'writing');
   check('writing: Task 1 has the rendered chart image and keeps chartData',
     /ielts-media\/images\//.test(writingRow.payload.tasks[0].imageUrl || '')
@@ -467,15 +520,15 @@ async function waitFor(predicate, label, timeout) {
   label2.value = 'Practice Test 10';
   label2.dispatch('input');
 
-  let seen = 0;
+  const seen = [];
   global.fetch = async (url, options) => {
     const body = JSON.parse(options.body || '{}');
     if (body.mode !== 'audio') {
-      seen += 1;
+      seen.push(body.skill + (body.part ? ':part' + body.part : '') + (body.passage ? ':passage' + body.passage : ''));
       if (body.skill === 'reading') {
         return { ok: false, status: 502, json: async () => ({ ok: false, error: 'Groq API error (500): overloaded' }) };
       }
-      return { ok: true, status: 200, json: async () => sectionAnswer(body.skill) };
+      return { ok: true, status: 200, json: async () => sectionAnswer(body.skill, body) };
     }
     return { ok: true, status: 200, json: async () => ({ ok: true, audio: { source: 'edge-tts', mime: 'audio/mpeg', ext: 'mp3', base64: '' }, storage: 'client' }) };
   };
@@ -491,6 +544,212 @@ async function waitFor(predicate, label, timeout) {
     saved.tests.length === 1 && saved.tests[0].skill === 'listening');
   check('failure: no meta row is written for an incomplete test', saved.meta.length === 0);
   check('failure: no editor buttons are offered', !/data-ai-open-editor/.test(backdrop2.innerHTML));
+  check('failure: an ordinary error is not retried — Reading Passage 1 was asked once and nothing came after it',
+    seen.join(',') === 'listening:part1,listening:part2,listening:part3,listening:part4,reading:passage1');
+
+  /* ---------- 4b. a Groq rate limit is waited out, never shown ---------- */
+  const normalTiming = Object.assign({}, generator.timing);
+  Object.assign(generator.timing, { maxRetries: 6, baseMs: 20, jitterMs: 0, maxWaitMs: 2000, maxHintMs: 5000, tickMs: 5 });
+
+  const audioReply = () => ({
+    ok: true, status: 200,
+    json: async () => ({ ok: true, audio: { source: 'edge-tts', mime: 'audio/mpeg', ext: 'mp3', bytes: 3, base64: Buffer.from([0xff, 0xfb, 0x90]).toString('base64') }, storage: 'client' })
+  });
+  const rateLimitedReply = (retryAfterMs) => ({
+    ok: false, status: 429,
+    json: async () => ({
+      ok: false, code: 'RATE_LIMITED',
+      error: 'Groq rate limit reached (429) — try this section again in a moment.',
+      message: "Groq bepul limiti vaqtincha to'ldi (429) — birozdan so'ng avtomatik qayta uriniladi.",
+      retryAfterMs: retryAfterMs === undefined ? null : retryAfterMs,
+      hint: 'Free-tier Groq keys allow only a few thousand tokens per minute.'
+    })
+  });
+  /* a fake endpoint: `decide(body, attemptNumberForThatChunk)` may answer with
+     a custom reply; returning nothing falls through to a normal success */
+  function installEndpoint(decide) {
+    const attempts = {};
+    const log = [];
+    global.fetch = async (url, options) => {
+      const body = JSON.parse(options.body || '{}');
+      if (body.mode === 'audio') return audioReply();
+      const id = body.skill + (body.part ? ':part' + body.part : '') + (body.passage ? ':passage' + body.passage : '');
+      attempts[id] = (attempts[id] || 0) + 1;
+      log.push({ id, at: Date.now() });
+      return decide(body, attempts[id], id) || { ok: true, status: 200, json: async () => sectionAnswer(body.skill, body) };
+    };
+    return { attempts, log };
+  }
+  function resetSaved() {
+    saved.tests.length = 0; saved.meta.length = 0; saved.media.length = 0; saved.reloads = 0;
+  }
+  async function startRun(testId, label) {
+    resetSaved();
+    generator.close();
+    generator.open({ testId, label });
+    const modal = document.body.children[0];
+    const field = modal.querySelector('[data-ai-label]');
+    field.value = label;
+    field.dispatch('input');
+    /* every text the status line is given, in order */
+    const statuses = [];
+    let current = generator.state.status;
+    Object.defineProperty(generator.state, 'status', {
+      configurable: true, enumerable: true,
+      get() { return current; },
+      set(value) { current = value; statuses.push(value); }
+    });
+    modal.querySelector('[data-ai-generate]').click();
+    return {
+      modal, statuses,
+      stop() { Object.defineProperty(generator.state, 'status', { configurable: true, enumerable: true, writable: true, value: current }); }
+    };
+  }
+
+  /* (a) Reading passage 2 is rate limited twice, the third try succeeds */
+  {
+    const endpoint = installEndpoint((body, attempt) => {
+      if (body.skill === 'reading' && body.passage === 2 && attempt === 1) return rateLimitedReply();
+      if (body.skill === 'reading' && body.passage === 2 && attempt === 2) return rateLimitedReply(100);
+      return null;
+    });
+    const run = await startRun('test13', 'Practice Test 13');
+    const done = await waitFor(() => !generator.state.running, 'the rate-limited run to finish', 20000);
+    run.stop();
+    const second = endpoint.log.filter(row => row.id === 'reading:passage2');
+    check('429: the run still finishes', done);
+    check('429: no error is shown to the admin', generator.state.error === '' && !/admin-notice--error/.test(run.modal.innerHTML));
+    check('429: the limited chunk is simply sent again (3 attempts), nothing else is repeated',
+      endpoint.attempts['reading:passage2'] === 3
+      && Object.keys(endpoint.attempts).filter(id => id !== 'reading:passage2').every(id => endpoint.attempts[id] === 1)
+      && Object.keys(endpoint.attempts).length === 9);
+    const gap1 = second[1].at - second[0].at;
+    const gap2 = second[2].at - second[1].at;
+    check('429: the first wait is the base delay (' + gap1 + ' ms)', gap1 >= 15 && gap1 < 300);
+    check('429: a wait of at least what Groq asked for (retryAfterMs 100 + margin) is honoured (' + gap2 + ' ms)', gap2 >= 330);
+    const waiting = run.statuses.filter(text => /Groq/.test(text) && /\(\d\/6\)/.test(text));
+    check('429: the status line counts the attempt while waiting', waiting.some(t => /\(1\/6\)/.test(t)) && waiting.some(t => /\(2\/6\)/.test(t)));
+    const lastCountdown = run.statuses.map((text, i) => (/\(2\/6\)/.test(text) ? i : -1)).reduce((a, b) => Math.max(a, b), -1);
+    check('429: the countdown is replaced by the normal progress text afterwards',
+      lastCountdown >= 0 && /Reading 2\/3/.test(run.statuses[lastCountdown + 1] || ''));
+    const progress = run.statuses.filter(text => !/Groq/.test(text)).join(' | ');
+    check('429: the status line shows the chunk in progress (Listening 1/4 … Reading 3/3, then Writing and Speaking)',
+      ['Listening 1/4', 'Listening 2/4', 'Listening 3/4', 'Listening 4/4', 'Reading 1/3', 'Reading 2/3', 'Reading 3/3', 'Writing', 'Speaking']
+        .every(label => progress.includes(label)));
+    check('429: all four sections and the meta row were saved',
+      saved.tests.map(r => r.skill).join(',') === 'listening,reading,writing,speaking' && saved.meta.length === 1);
+    const savedReading = saved.tests.find(r => r.skill === 'reading');
+    check('429: the merged Reading section is complete (3 passages, 40 questions)',
+      savedReading.payload.passages.length === 3
+      && savedReading.payload.passages.reduce((sum, p) => sum + p.questions.length, 0) === 40);
+    check('429: every step ended done',
+      ['listening', 'reading', 'writing', 'speaking'].every(skill => generator.state.steps[skill] === 'done'));
+  }
+
+  /* (b) a daily quota (a huge retryAfterMs) is not waited for in the page */
+  {
+    const endpoint = installEndpoint((body) => (body.skill === 'reading' && body.passage === 1 ? rateLimitedReply(3600000) : null));
+    const run = await startRun('test14', 'Practice Test 14');
+    const done = await waitFor(() => !generator.state.running, 'the daily-limit run to stop', 20000);
+    run.stop();
+    check('429 daily limit: the run stops at once', done && endpoint.attempts['reading:passage1'] === 1);
+    check('429 daily limit: the admin gets a plain message naming the wait (60 min)',
+      /429/.test(generator.state.error) && /60/.test(generator.state.error) && !/undefined|\{m\}/.test(generator.state.error));
+    check('429 daily limit: Reading is marked failed, Listening stays saved',
+      generator.state.steps.reading === 'error' && saved.tests.length === 1 && saved.tests[0].skill === 'listening' && saved.meta.length === 0);
+  }
+
+  /* (b2) a hint longer than the exponential cap but within maxHintMs IS waited out */
+  {
+    const saveTiming = Object.assign({}, generator.timing);
+    Object.assign(generator.timing, { maxWaitMs: 100, maxHintMs: 1000 });
+    const endpoint = installEndpoint((body, attempt) => (body.skill === 'writing' && attempt === 1 ? rateLimitedReply(600) : null));
+    const run = await startRun('test18', 'Practice Test 18');
+    const done = await waitFor(() => !generator.state.running, 'the long-hint run to finish', 20000);
+    run.stop();
+    const at = endpoint.log.filter(row => row.id === 'writing').map(row => row.at);
+    check('429 long hint: a 600 ms hint (above the 100 ms backoff cap) is waited out, then the run completes',
+      done && generator.state.error === '' && at.length === 2 && at[1] - at[0] >= 800 && saved.tests.length === 4);
+    Object.assign(generator.timing, saveTiming);
+  }
+
+  /* (c) a quota that never opens: every attempt is used, then the run stops */
+  {
+    generator.timing.maxRetries = 2;
+    const endpoint = installEndpoint((body) => (body.skill === 'writing' ? rateLimitedReply() : null));
+    const run = await startRun('test15', 'Practice Test 15');
+    const done = await waitFor(() => !generator.state.running, 'the exhausted run to stop', 20000);
+    run.stop();
+    check('429 exhausted: the same chunk was tried 1 + maxRetries times (3)', done && endpoint.attempts.writing === 3);
+    check('429 exhausted: Speaking was never requested', endpoint.attempts.speaking === undefined);
+    check('429 exhausted: the sections before it are saved, Writing is marked failed',
+      saved.tests.map(r => r.skill).join(',') === 'listening,reading' && generator.state.steps.writing === 'error' && saved.meta.length === 0);
+    check('429 exhausted: the message is plain, not a raw provider error',
+      /429/.test(generator.state.error) && !/Groq API error/.test(generator.state.error));
+    generator.timing.maxRetries = 6;
+  }
+
+  /* (d) this server's own per-IP limiter is a different 429: not retried */
+  {
+    const endpoint = installEndpoint((body) => (body.skill === 'listening' && body.part === 1
+      ? { ok: false, status: 429, json: async () => ({ ok: false, code: 'TOO_MANY_REQUESTS', error: 'Too many generation requests. Wait a few minutes and try again.' }) }
+      : null));
+    const run = await startRun('test16', 'Practice Test 16');
+    const done = await waitFor(() => !generator.state.running, 'the per-IP limit run to stop', 20000);
+    run.stop();
+    check('429 per-IP limiter: the run stops after a single attempt', done && endpoint.attempts['listening:part1'] === 1);
+    check('429 per-IP limiter: the server message is shown as an error', /Too many generation requests/.test(generator.state.error));
+  }
+
+  /* (e) the waits grow exponentially, honour Groq's hint and are capped */
+  {
+    const { backoffMs, isRateLimited } = generator._internal;
+    const saveTiming = Object.assign({}, generator.timing);
+    Object.assign(generator.timing, { baseMs: 2000, jitterMs: 0, maxWaitMs: 60000, maxHintMs: 300000 });
+    const noJitter = [0, 1, 2, 3, 4, 5, 6, 7].map(attempt => backoffMs(attempt, 0));
+    check('backoff: 2 s, 4 s, 8 s, 16 s, 32 s, then capped at one minute (' + noJitter.join(', ') + ')',
+      noJitter.join(',') === '2000,4000,8000,16000,32000,60000,60000,60000');
+    check('backoff: Groq\'s own hint is waited out in full (+ a margin), never less than the backoff',
+      backoffMs(0, 7000) === 7250 && backoffMs(3, 1000) === 16000 && backoffMs(0, 59900) === 60150);
+    check('backoff: a hint beyond the one-minute cap (here 2 min) is still waited out — Groq knows when its quota reopens',
+      backoffMs(0, 120000) === 120250);
+
+    generator.timing.jitterMs = 1000;
+    const realRandom = Math.random;
+    Math.random = () => 0;
+    const lowest = backoffMs(0, 0);
+    Math.random = () => 0.999999;
+    const highest = backoffMs(0, 0);
+    Math.random = realRandom;
+    check('backoff: the first wait is 2–3 s (jitter adds up to 1 s)', lowest === 2000 && highest >= 2990 && highest <= 3000);
+    Object.assign(generator.timing, saveTiming);
+
+    check('signal: an upstream rate limit is recognised', isRateLimited(429, { code: 'RATE_LIMITED' })
+      && isRateLimited(502, { error: 'Groq API error (429): rate limit reached' }) && isRateLimited(429, null));
+    check('signal: this server\'s own limiter and ordinary errors are not',
+      !isRateLimited(429, { code: 'TOO_MANY_REQUESTS' }) && !isRateLimited(502, { error: 'Groq API error (500): overloaded' })
+      && !isRateLimited(500, { code: 'GROQ_KEY_MISSING', error: 'GROQ_API_KEY is not set on the server.' }));
+  }
+
+  /* (f) the same ladder, end to end with real timers (lower bounds only) */
+  {
+    const normal = Object.assign({}, generator.timing);
+    Object.assign(generator.timing, { maxRetries: 3, baseMs: 20, jitterMs: 0, maxWaitMs: 70, tickMs: 5 });
+    const endpoint = installEndpoint((body) => (body.skill === 'speaking' ? rateLimitedReply() : null));
+    const run = await startRun('test17', 'Practice Test 17');
+    const done = await waitFor(() => !generator.state.running, 'the backoff run to stop', 20000);
+    run.stop();
+    const at = endpoint.log.filter(row => row.id === 'speaking').map(row => row.at);
+    const gaps = at.slice(1).map((time, i) => time - at[i]);
+    check('backoff: 1 + maxRetries attempts were made (' + at.length + ')', done && at.length === 4);
+    check('backoff: the real waits follow 20 ms, 40 ms, 70 ms (capped) (' + gaps.join(', ') + ' ms)',
+      gaps[0] >= 17 && gaps[1] >= 37 && gaps[2] >= 67);
+    Object.assign(generator.timing, normal);
+  }
+  Object.assign(generator.timing, normalTiming);
+  check('timing: the real defaults wait 2–3 s first, doubling up to a minute; a Groq hint up to 5 minutes is honoured',
+    normalTiming.baseMs === 2000 && normalTiming.jitterMs === 1000 && normalTiming.maxWaitMs === 60000
+    && normalTiming.maxHintMs === 300000 && normalTiming.maxRetries >= 5);
 
   /* ---------- 5. a missing GROQ_API_KEY is reported verbatim ---------- */
   generator.close();

@@ -4,22 +4,46 @@
  * POST /api/generate-mock
  *
  * Body (mode "section", the default):
- *   { skill, testId, label, difficulty, topic?, plan?, withAudio? }
+ *   { skill, testId, label, difficulty, topic?, plan?, part?, passage?,
+ *     questionOffset? }
  *     skill       'listening' | 'reading' | 'writing' | 'speaking'
  *     difficulty  'standard' | 'hard'
  *     topic       optional theme; when empty the pool picks one
  *     plan        optional plan built by the browser (lib/topicPool.js)
+ *     part        listening only: 1–4 → generate just that Part (one chunk)
+ *     passage     reading only: 1–3 → generate just that Passage (one chunk)
+ *     questionOffset  chunk requests: questions already used by the earlier
+ *                 chunks (numbers the ids, e.g. 10 → l11…l20); default is
+ *                 taken from the plan
  *
  * Body (mode "audio"):
  *   { mode: 'audio', transcript, partNumber?, label?, voice?, accessToken? }
  *
- * Both modes answer with { ok: true, … }.
+ * Both modes answer with { ok: true, … }. A chunk request answers with the
+ * usual envelope: `payload` holds exactly ONE part/passage and `chunk` is
+ * { kind, number, index, total }.
  *
- * The four skills are generated ONE REQUEST AT A TIME on purpose: the
- * admin modal can then show honest progress (Listening → Reading →
- * Writing → Speaking) and every response stays far below the serverless
- * execution limit. Listening and Reading are split into small focused
- * model calls so every 4096-token response can finish cleanly.
+ * CHUNKS — why a mock is 9 small requests, not 1 big one. The Groq Free
+ * tier allows only a few thousand tokens per minute per model, and one
+ * response is capped at 4096 tokens. So the admin modal asks for one chunk at
+ * a time — Listening Parts 1–4, Reading Passages 1–3, Writing, Speaking — and
+ * merges the answers itself (mockGenerator.js). Every request is one focused
+ * model call that finishes well inside the serverless time limit, the modal
+ * shows honest progress ("Listening 2/4"), and a rate-limited chunk is simply
+ * asked again without losing the chunks already done. A request without
+ * `part`/`passage` still returns the whole skill (the chunks run one after
+ * another here) — kept for API users and older browsers.
+ *
+ * Rate limits: when Groq answers 429 even after lib/aiClient.js has waited
+ * and retried, the endpoint answers HTTP 429 { code: 'RATE_LIMITED',
+ * retryAfterMs? } — a signal the modal waits out and retries by itself, never
+ * an error shown to the admin. This server's own per-IP limiter answers
+ * 429 { code: 'TOO_MANY_REQUESTS' } instead.
+ *
+ * Model: GROQ_GENERATOR_MODEL when set, otherwise the shared primary model
+ * (GROQ_MODEL, default openai/gpt-oss-20b). Groq counts rate limits per
+ * model, so a separate generator model also keeps long generation runs from
+ * using up the quota that grading and the AI Coach need.
  *
  * Audio: Listening transcripts are synthesised with the free Edge TTS
  * engine (MP3) — see lib/edgeTts.js. When the browser forwards the
@@ -48,7 +72,10 @@ const TEMPERATURE = 0.85; /* diversity over precision — see ADMIN.md */
 
 /* ---------- rate limiting (generation is the most expensive call) ---------- */
 const RATE_WINDOW_MS = 5 * 60 * 1000;
-const RATE_MAX = 60;
+/* One mock is 9 section requests + 4 audio requests, and every automatic
+   retry after a Groq 429 is one more request — 120 per 5 minutes leaves room
+   for a full run with retries. */
+const RATE_MAX = 120;
 const ipHits = new Map();
 function clientIp(req) {
   return (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket?.remoteAddress || 'unknown';
@@ -79,11 +106,19 @@ function parseJson(raw) {
   throw new Error('The model did not return valid JSON');
 }
 
+/* The model that writes the mock sections: GROQ_GENERATOR_MODEL when set,
+   otherwise the shared primary model. */
+function generatorModel() {
+  return str(process.env.GROQ_GENERATOR_MODEL) || aiClient.primaryModel();
+}
+
+/* One focused model call. 429s are absorbed inside aiClient (wait + retry);
+   only a 429 that outlasts those retries reaches the handler. */
 async function callAI(systemPrompt, userContent) {
   const { content, usage } = await aiClient.chatCompletion([
     { role: 'system', content: guard.withGuardrails(systemPrompt) },
     { role: 'user', content: userContent }
-  ], { temperature: TEMPERATURE, responseFormat: 'json_object' });
+  ], { temperature: TEMPERATURE, responseFormat: 'json_object', model: generatorModel() });
   return { parsed: parseJson(content), usage };
 }
 
@@ -98,49 +133,105 @@ function combineUsage(usages) {
   }, { calls: rows.length });
 }
 
-async function generateSkill(skill, plan, context) {
+/* ------------------------------------------------------------------
+ * CHUNKS — the unit of generation (one model call each).
+ *   Listening → 4 chunks (Part 1…4)    Reading  → 3 chunks (Passage 1…3)
+ *   Writing   → 1 chunk                Speaking → 1 chunk
+ * ------------------------------------------------------------------ */
+function skillChunks(skill, plan) {
   if (skill === 'listening') {
-    const parts = [];
-    const usages = [];
-    for (const item of plan.questionPlan.listening) {
-      const userContent = `${context}\nGenerate only Listening Part ${item.part}, with exactly its 10 planned questions. Return it in the required JSON shape.`;
-      const result = await callAI(listeningSystem(plan, item.part), userContent);
-      const section = result.parsed.listening || result.parsed;
-      const generated = Array.isArray(section.parts) ? section.parts : [];
-      if (generated.length !== 1) {
-        throw new Error(`Listening Part ${item.part} response was incomplete. Please generate the section again.`);
-      }
-      parts.push({ ...generated[0], partNumber: item.part });
-      usages.push(result.usage);
+    return plan.questionPlan.listening.map(item => ({ kind: 'part', number: item.part }));
+  }
+  if (skill === 'reading') {
+    return plan.questionPlan.reading.map(item => ({ kind: 'passage', number: item.passage }));
+  }
+  return [{ kind: 'section', number: 1 }];
+}
+
+/* Question ids the earlier chunks of a skill would have used, by plan. */
+function plannedOffset(skill, plan, number) {
+  const rows = skill === 'listening' ? plan.questionPlan.listening : plan.questionPlan.reading;
+  return rows
+    .filter(item => (skill === 'listening' ? item.part : item.passage) < number)
+    .reduce((sum, item) => sum + ((item.types && item.types.length) || 0), 0);
+}
+
+/* What the request asks for: { chunk } for a valid part/passage selector,
+   { error } for an invalid one, {} for none (the whole skill). */
+function requestedChunk(skill, body, plan) {
+  const field = skill === 'listening' ? 'part' : skill === 'reading' ? 'passage' : '';
+  const raw = field ? body[field] : undefined;
+  if (!field || raw === undefined || raw === null || raw === '') return {};
+  const chunks = skillChunks(skill, plan);
+  const number = Number(raw);
+  const chunk = Number.isInteger(number) ? chunks.find(item => item.number === number) : null;
+  if (!chunk) return { error: `Unknown ${field} "${raw}" for ${skill}. Expected a number from 1 to ${chunks.length}.` };
+  return { chunk };
+}
+
+/* Generate ONE chunk: a single model call, returned in the shape the
+   normalisers read (`parsed`) together with the call's token usage. */
+async function generateChunk(skill, plan, context, chunk) {
+  if (skill === 'listening') {
+    const userContent = `${context}\nGenerate only Listening Part ${chunk.number}, with exactly its 10 planned questions. Return it in the required JSON shape.`;
+    const result = await callAI(listeningSystem(plan, chunk.number), userContent);
+    const section = result.parsed.listening || result.parsed;
+    const generated = Array.isArray(section.parts) ? section.parts : [];
+    if (generated.length !== 1) {
+      throw new Error(`Listening Part ${chunk.number} response was incomplete. Please generate the section again.`);
     }
     return {
-      parsed: { listening: { title: 'Listening Practice Test', parts } },
-      usage: combineUsage(usages)
+      parsed: { listening: { title: 'Listening Practice Test', parts: [{ ...generated[0], partNumber: chunk.number }] } },
+      usage: result.usage
     };
   }
 
   if (skill === 'reading') {
-    const passages = [];
-    const usages = [];
-    for (const item of plan.questionPlan.reading) {
-      const userContent = `${context}\nGenerate only Reading Passage ${item.passage}, with exactly its ${item.types.length} planned questions. Return it in the required JSON shape.`;
-      const result = await callAI(readingSystem(plan, item.passage), userContent);
-      const section = result.parsed.reading || result.parsed;
-      const generated = Array.isArray(section.passages) ? section.passages : [];
-      if (generated.length !== 1) {
-        throw new Error(`Reading Passage ${item.passage} response was incomplete. Please generate the section again.`);
-      }
-      passages.push({ ...generated[0], passageNumber: item.passage });
-      usages.push(result.usage);
+    const item = plan.questionPlan.reading.find(row => row.passage === chunk.number);
+    const userContent = `${context}\nGenerate only Reading Passage ${chunk.number}, with exactly its ${item.types.length} planned questions. Return it in the required JSON shape.`;
+    const result = await callAI(readingSystem(plan, chunk.number), userContent);
+    const section = result.parsed.reading || result.parsed;
+    const generated = Array.isArray(section.passages) ? section.passages : [];
+    if (generated.length !== 1) {
+      throw new Error(`Reading Passage ${chunk.number} response was incomplete. Please generate the section again.`);
     }
     return {
-      parsed: { reading: { title: 'Reading Practice Test', passages } },
-      usage: combineUsage(usages)
+      parsed: { reading: { title: 'Reading Practice Test', passages: [{ ...generated[0], passageNumber: chunk.number }] } },
+      usage: result.usage
     };
   }
 
   const systems = { writing: writingSystem(plan), speaking: speakingSystem(plan) };
   return callAI(systems[skill], `${context}\nWrite the complete ${skill.toUpperCase()} section as one JSON object.`);
+}
+
+/* Join the chunk results of one skill back into the single `parsed` object
+   the whole-skill normalisers expect. */
+function mergeChunkResults(skill, results) {
+  if (skill === 'listening') {
+    return {
+      parsed: { listening: { title: 'Listening Practice Test', parts: results.flatMap(r => r.parsed.listening.parts) } },
+      usage: combineUsage(results.map(r => r.usage))
+    };
+  }
+  if (skill === 'reading') {
+    return {
+      parsed: { reading: { title: 'Reading Practice Test', passages: results.flatMap(r => r.parsed.reading.passages) } },
+      usage: combineUsage(results.map(r => r.usage))
+    };
+  }
+  return results[0];
+}
+
+/* The whole skill: its chunks, one after another. (The admin modal does not
+   use this path — it requests the chunks itself — but a request without a
+   part/passage selector still gets a complete skill.) */
+async function generateSkill(skill, plan, context) {
+  const results = [];
+  for (const chunk of skillChunks(skill, plan)) {
+    results.push(await generateChunk(skill, plan, context, chunk));
+  }
+  return mergeChunkResults(skill, results);
 }
 
 /* ------------------------------------------------------------------
@@ -404,6 +495,34 @@ function normalizeQuestion(q, id, skill) {
   return out;
 }
 
+/* One Listening Part. `i` is its 0-based position in the test; `qnStart` is
+   how many questions the earlier parts hold (so the ids continue l11, l12…). */
+function normalizeListeningPart(part, plan, i, qnStart) {
+  const planned = plan.questionPlan.listening[i] || { types: [] };
+  const questions = reconcileTypes(
+    (Array.isArray(part.questions) ? part.questions : []).map(q => normalizeQuestion(q, 'x', 'listening')),
+    planned.types
+  );
+  if (questions.length < 8) {
+    throw new Error(`Listening Part ${i + 1} only has ${questions.length} questions (10 expected). Please generate the section again.`);
+  }
+  const transcript = str(part.transcript);
+  if (transcript.length < 120) {
+    throw new Error(`Listening Part ${i + 1} transcript is too short. Please generate the section again.`);
+  }
+  let qn = qnStart;
+  return {
+    id: 'lp' + (i + 1),
+    partNumber: i + 1,
+    title: str(part.title) || `Part ${i + 1}`,
+    instructions: str(part.instructions) || `Questions ${qn + 1}–${qn + questions.length}. You will hear this recording ONCE.`,
+    transcript,
+    audioUrl: '',
+    audioPath: '',
+    questions: questions.map(q => ({ ...q, id: 'l' + (++qn) }))
+  };
+}
+
 function normalizeListening(parsed, plan) {
   const section = parsed.listening || parsed;
   const rawParts = Array.isArray(section.parts) ? section.parts : [];
@@ -412,28 +531,9 @@ function normalizeListening(parsed, plan) {
   }
   let qn = 0;
   const parts = rawParts.map((part, i) => {
-    const planned = plan.questionPlan.listening[i] || { types: [] };
-    const questions = reconcileTypes(
-      (Array.isArray(part.questions) ? part.questions : []).map(q => normalizeQuestion(q, 'x', 'listening')),
-      planned.types
-    );
-    if (questions.length < 8) {
-      throw new Error(`Listening Part ${i + 1} only has ${questions.length} questions (10 expected). Please generate the section again.`);
-    }
-    const transcript = str(part.transcript);
-    if (transcript.length < 120) {
-      throw new Error(`Listening Part ${i + 1} transcript is too short. Please generate the section again.`);
-    }
-    return {
-      id: 'lp' + (i + 1),
-      partNumber: i + 1,
-      title: str(part.title) || `Part ${i + 1}`,
-      instructions: str(part.instructions) || `Questions ${qn + 1}–${qn + questions.length}. You will hear this recording ONCE.`,
-      transcript,
-      audioUrl: '',
-      audioPath: '',
-      questions: questions.map(q => ({ ...q, id: 'l' + (++qn) }))
-    };
+    const out = normalizeListeningPart(part, plan, i, qn);
+    qn += out.questions.length;
+    return out;
   });
   return {
     id: 'listening-custom',
@@ -441,6 +541,52 @@ function normalizeListening(parsed, plan) {
     skill: 'Listening',
     duration: 30,
     parts
+  };
+}
+
+/* A chunk response: the usual Listening payload holding just ONE part. */
+function normalizeListeningChunk(parsed, plan, number, questionOffset) {
+  const section = parsed.listening || parsed;
+  const rawParts = Array.isArray(section.parts) ? section.parts : [];
+  if (rawParts.length !== 1) {
+    throw new Error(`Listening Part ${number} response was incomplete. Please generate the section again.`);
+  }
+  return {
+    id: 'listening-custom',
+    title: str(section.title) || 'Listening Practice Test',
+    skill: 'Listening',
+    duration: 30,
+    parts: [normalizeListeningPart(rawParts[0], plan, number - 1, questionOffset)]
+  };
+}
+
+/* One Reading Passage. `i` is its 0-based position in the test; `qnStart` is
+   how many questions the earlier passages hold (so the ids continue r14…). */
+function normalizeReadingPassage(passage, plan, i, qnStart) {
+  const planned = plan.questionPlan.reading[i] || { types: [] };
+  const paragraphs = (Array.isArray(passage.paragraphs) ? passage.paragraphs : [])
+    .map(row => str(row && row.text))
+    .filter(Boolean);
+  const text = paragraphs.length ? paragraphs.join('\n\n') : str(passage.text);
+  if (text.length < 400) {
+    throw new Error(`Reading Passage ${i + 1} is too short. Please generate the section again.`);
+  }
+  const questions = reconcileTypes(
+    (Array.isArray(passage.questions) ? passage.questions : []).map(q => normalizeQuestion(q, 'x', 'reading')),
+    planned.types
+  );
+  if (questions.length < 10) {
+    throw new Error(`Reading Passage ${i + 1} only has ${questions.length} questions. Please generate the section again.`);
+  }
+  let qn = qnStart;
+  return {
+    id: 'rp' + (i + 1),
+    passageNumber: i + 1,
+    title: str(passage.title) || `Passage ${i + 1}`,
+    difficulty: str(passage.difficulty) || ['Easier', 'Medium', 'Harder'][i],
+    text,
+    paragraphs: paragraphs.map((t, j) => ({ label: String.fromCharCode(65 + j), text: t })),
+    questions: questions.map(q => ({ ...q, id: 'r' + (++qn) }))
   };
 }
 
@@ -452,30 +598,9 @@ function normalizeReading(parsed, plan) {
   }
   let qn = 0;
   const passages = rawPassages.map((passage, i) => {
-    const planned = plan.questionPlan.reading[i] || { types: [] };
-    const paragraphs = (Array.isArray(passage.paragraphs) ? passage.paragraphs : [])
-      .map(row => str(row && row.text))
-      .filter(Boolean);
-    const text = paragraphs.length ? paragraphs.join('\n\n') : str(passage.text);
-    if (text.length < 400) {
-      throw new Error(`Reading Passage ${i + 1} is too short. Please generate the section again.`);
-    }
-    const questions = reconcileTypes(
-      (Array.isArray(passage.questions) ? passage.questions : []).map(q => normalizeQuestion(q, 'x', 'reading')),
-      planned.types
-    );
-    if (questions.length < 10) {
-      throw new Error(`Reading Passage ${i + 1} only has ${questions.length} questions. Please generate the section again.`);
-    }
-    return {
-      id: 'rp' + (i + 1),
-      passageNumber: i + 1,
-      title: str(passage.title) || `Passage ${i + 1}`,
-      difficulty: str(passage.difficulty) || ['Easier', 'Medium', 'Harder'][i],
-      text,
-      paragraphs: paragraphs.map((t, j) => ({ label: String.fromCharCode(65 + j), text: t })),
-      questions: questions.map(q => ({ ...q, id: 'r' + (++qn) }))
-    };
+    const out = normalizeReadingPassage(passage, plan, i, qn);
+    qn += out.questions.length;
+    return out;
   });
   return {
     id: 'reading-custom',
@@ -484,6 +609,23 @@ function normalizeReading(parsed, plan) {
     duration: 60,
     format: 'Academic',
     passages
+  };
+}
+
+/* A chunk response: the usual Reading payload holding just ONE passage. */
+function normalizeReadingChunk(parsed, plan, number, questionOffset) {
+  const section = parsed.reading || parsed;
+  const rawPassages = Array.isArray(section.passages) ? section.passages : [];
+  if (rawPassages.length !== 1) {
+    throw new Error(`Reading Passage ${number} response was incomplete. Please generate the section again.`);
+  }
+  return {
+    id: 'reading-custom',
+    title: str(section.title) || 'Reading Practice Test',
+    skill: 'Reading',
+    duration: 60,
+    format: 'Academic',
+    passages: [normalizeReadingPassage(rawPassages[0], plan, number - 1, questionOffset)]
   };
 }
 
@@ -641,7 +783,7 @@ module.exports = async function handler(req, res) {
     return;
   }
   if (rateLimited(req)) {
-    res.status(429).json({ ok: false, error: 'Too many generation requests. Wait a few minutes and try again.' });
+    res.status(429).json({ ok: false, code: 'TOO_MANY_REQUESTS', error: 'Too many generation requests. Wait a few minutes and try again.' });
     return;
   }
   const body = req.body || {};
@@ -744,6 +886,13 @@ module.exports = async function handler(req, res) {
   }
 
   try {
+    /* part / passage: ask for ONE chunk of Listening or Reading. */
+    const requested = requestedChunk(skill, body, plan);
+    if (requested.error) {
+      res.status(400).json({ ok: false, error: requested.error });
+      return;
+    }
+
     const context = [
       `Test label: ${str(body.label) || 'Practice Test'}`,
       `Test id: ${str(body.testId) || 'test?'}`,
@@ -753,17 +902,34 @@ module.exports = async function handler(req, res) {
         : `Theme chosen for this section: ${plan.topics[skill]}`
     ].join('\n');
 
-    const { parsed, usage } = await generateSkill(skill, plan, context);
-
-    const payload = skill === 'listening' ? normalizeListening(parsed, plan)
-      : skill === 'reading' ? normalizeReading(parsed, plan)
-        : skill === 'writing' ? normalizeWriting(parsed)
-          : normalizeSpeaking(parsed);
+    let payload;
+    let usage;
+    let chunk = null;
+    if (requested.chunk) {
+      /* one chunk: a single model call, a payload with exactly one block */
+      const { number } = requested.chunk;
+      const offset = Math.max(0, Math.min(500, Math.floor(num(body.questionOffset, plannedOffset(skill, plan, number)))));
+      const result = await generateChunk(skill, plan, context, requested.chunk);
+      usage = result.usage;
+      payload = skill === 'listening'
+        ? normalizeListeningChunk(result.parsed, plan, number, offset)
+        : normalizeReadingChunk(result.parsed, plan, number, offset);
+      chunk = { kind: requested.chunk.kind, number, index: number - 1, total: skillChunks(skill, plan).length };
+    } else {
+      /* the whole skill (legacy path) */
+      const result = await generateSkill(skill, plan, context);
+      usage = result.usage;
+      payload = skill === 'listening' ? normalizeListening(result.parsed, plan)
+        : skill === 'reading' ? normalizeReading(result.parsed, plan)
+          : skill === 'writing' ? normalizeWriting(result.parsed)
+            : normalizeSpeaking(result.parsed);
+    }
 
     res.status(200).json({
       ok: true,
       skill,
       payload,
+      ...(chunk ? { chunk } : {}),
       plan: {
         difficulty: plan.difficulty,
         topics: plan.topics,
@@ -778,6 +944,24 @@ module.exports = async function handler(req, res) {
       usage
     });
   } catch (err) {
+    /* Groq's quota still said "later" after aiClient waited and retried. This
+       is not a failure: the caller waits (retryAfterMs, when Groq said how
+       long) and asks for the same chunk again. */
+    if (aiClient.isRateLimitError(err)) {
+      const retryAfterMs = Number.isFinite(err.retryAfterMs) ? err.retryAfterMs : null;
+      if (retryAfterMs !== null && typeof res.setHeader === 'function') {
+        res.setHeader('Retry-After', String(Math.max(1, Math.ceil(retryAfterMs / 1000))));
+      }
+      res.status(429).json({
+        ok: false,
+        code: 'RATE_LIMITED',
+        error: 'Groq rate limit reached (429) — try this section again in a moment.',
+        message: "Groq bepul limiti vaqtincha to'ldi (429) — birozdan so'ng avtomatik qayta uriniladi.",
+        retryAfterMs,
+        hint: 'The Groq Free tier allows only a few thousand tokens per minute for each model. Nothing is lost: ask for the same part again after a short wait (the admin modal does this by itself).'
+      });
+      return;
+    }
     const status = err.status && err.status >= 400 && err.status < 600 ? 502 : 500;
     res.status(status).json({
       ok: false,

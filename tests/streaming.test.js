@@ -5,6 +5,9 @@
  *   2. Multi-key round-robin distributes requests across GROQ_API_KEY_1..N.
  *   3. 429 / network failover moves to the next key within ~100ms.
  *   4. DeepSeek is used as the ultimate fallback when Groq keys are exhausted.
+ *   4b. When EVERY provider answers 429, the pass is repeated after an
+ *      exponential wait (2–3 s, 4–5 s, 8–9 s) — for streams too, as long as
+ *      nothing has been yielded yet.
  *   5. The SSE endpoint (api/coach.js with Accept: text/event-stream) emits
  *      connected, chunk, and done events; cached replies stream in one shot.
  *
@@ -314,6 +317,146 @@ async function testNetworkErrorFailover() {
   }
 }
 
+/* A Groq 429 answer; `retryAfter` (seconds) becomes the Retry-After header. */
+function limitedReply(retryAfter) {
+  return {
+    ok: false,
+    status: 429,
+    headers: { get: name => (String(name).toLowerCase() === 'retry-after' && retryAfter !== undefined ? String(retryAfter) : null) },
+    text: async () => JSON.stringify({ error: { message: 'Rate limit reached for model on tokens per minute (TPM).', code: 'rate_limit_exceeded' } })
+  };
+}
+
+async function testStream429BacksOffAndRetries() {
+  saveEnv();
+  clearKeys();
+  const aiClient = freshAiClient();
+  const oldWarn = console.warn;
+  try {
+    process.env.GROQ_API_KEY = 'stream-429-key';
+    console.warn = () => {};
+    const waits = [];
+    aiClient._retryPolicy.sleep = async ms => { waits.push(ms); };
+
+    /* two 429s before the first chunk: the caller just sees the text arrive */
+    let attempts = 0;
+    global.fetch = async () => {
+      attempts += 1;
+      if (attempts <= 2) return limitedReply();
+      return { ok: true, status: 200, body: makeSSEStream([sseChunk('Worth '), sseChunk('the wait'), sseDone()]) };
+    };
+    const deltas = [];
+    let final = null;
+    for await (const c of aiClient.streamChat([{ role: 'user', content: 'hi' }])) {
+      if (c.done) final = c; else deltas.push(c.delta);
+    }
+    assert.deepEqual(deltas, ['Worth ', 'the wait']);
+    assert.equal(final.content, 'Worth the wait');
+    assert.equal(attempts, 3, 'the stream was opened again after every wait');
+    assert.equal(waits.length, 2);
+    assert.ok(waits[0] >= 2000 && waits[0] <= 3000 && waits[1] >= 4000 && waits[1] <= 5000,
+      `2–3 s then 4–5 s (was ${waits.join(', ')})`);
+
+    /* Retry-After is honoured for streams too */
+    waits.length = 0; attempts = 0;
+    global.fetch = async () => {
+      attempts += 1;
+      return attempts === 1 ? limitedReply(6) : { ok: true, status: 200, body: makeSSEStream([sseChunk('ok'), sseDone()]) };
+    };
+    for await (const c of aiClient.streamChat([{ role: 'user', content: 'hi' }])) { void c; }
+    assert.deepEqual(waits, [6250]);
+
+    /* a quota that never clears ends with the 429, after 1 + maxRetries attempts */
+    waits.length = 0; attempts = 0;
+    global.fetch = async () => { attempts += 1; return limitedReply(); };
+    await assert.rejects(
+      (async () => { for await (const c of aiClient.streamChat([{ role: 'user', content: 'hi' }])) { void c; } })(),
+      err => err.status === 429
+    );
+    assert.equal(attempts, 1 + aiClient._retryPolicy.maxRetries);
+    assert.equal(waits.length, aiClient._retryPolicy.maxRetries);
+
+    /* a wait longer than a request may hold is not slept through */
+    waits.length = 0; attempts = 0;
+    global.fetch = async () => { attempts += 1; return limitedReply(300); };
+    await assert.rejects(
+      (async () => { for await (const c of aiClient.streamChat([{ role: 'user', content: 'hi' }])) { void c; } })(),
+      err => err.status === 429 && err.retryAfterMs === 300000
+    );
+    assert.deepEqual([attempts, waits.length], [1, 0]);
+
+    /* once text has been yielded the stream is never restarted */
+    waits.length = 0; attempts = 0;
+    global.fetch = async () => {
+      attempts += 1;
+      const cut = makeSSEStream([sseChunk('Partial ')]);
+      const reader = cut.getReader();
+      let sent = false;
+      return {
+        ok: true, status: 200,
+        body: { getReader: () => ({
+          async read() { if (!sent) { sent = true; return reader.read(); } throw new Error('connection reset'); },
+          releaseLock() {}
+        }) }
+      };
+    };
+    const seen = [];
+    await assert.rejects(
+      (async () => { for await (const c of aiClient.streamChat([{ role: 'user', content: 'hi' }])) { if (!c.done) seen.push(c.delta); } })(),
+      () => true
+    );
+    assert.deepEqual(seen, ['Partial ']);
+    assert.equal(waits.length, 0, 'no rate-limit wait after output has reached the caller');
+  } finally {
+    console.warn = oldWarn;
+    global.fetch = oldFetch;
+    restoreEnv();
+  }
+}
+
+async function testChat429OnlyWaitsWhenEveryProviderIsLimited() {
+  saveEnv();
+  clearKeys();
+  const aiClient = freshAiClient();
+  const oldWarn = console.warn;
+  try {
+    process.env.GROQ_API_KEY_1 = 'k1';
+    process.env.GROQ_API_KEY_2 = 'k2';
+    console.warn = () => {};
+    const waits = [];
+    aiClient._retryPolicy.sleep = async ms => { waits.push(ms); };
+
+    /* k1 is limited, k2 is not: the failover is immediate, nothing sleeps */
+    const attempts = [];
+    global.fetch = async (url, opts) => {
+      const key = opts.headers.Authorization.replace('Bearer ', '');
+      attempts.push(key);
+      if (key === 'k1') return limitedReply();
+      return { ok: true, status: 200, json: async () => ({ choices: [{ finish_reason: 'stop', message: { content: 'from k2' } }] }) };
+    };
+    assert.equal((await aiClient.chatCompletion([{ role: 'user', content: 'hi' }])).content, 'from k2');
+    assert.deepEqual(waits, [], 'a free key is used at once instead of waiting');
+
+    /* both limited, then the limit clears: one wait, then the answer */
+    attempts.length = 0;
+    let round = 0;
+    global.fetch = async (url, opts) => {
+      attempts.push(opts.headers.Authorization.replace('Bearer ', ''));
+      round += 1;
+      if (round <= 2) return limitedReply();
+      return { ok: true, status: 200, json: async () => ({ choices: [{ finish_reason: 'stop', message: { content: 'after the wait' } }] }) };
+    };
+    assert.equal((await aiClient.chatCompletion([{ role: 'user', content: 'hi' }])).content, 'after the wait');
+    assert.equal(attempts.length, 3);
+    assert.equal(waits.length, 1);
+    assert.ok(waits[0] >= 2000 && waits[0] <= 3000);
+  } finally {
+    console.warn = oldWarn;
+    global.fetch = oldFetch;
+    restoreEnv();
+  }
+}
+
 (async () => {
   await testStreamChatYieldsDeltas();
   console.log('  ✓ streamChat yields deltas + final frame');
@@ -331,6 +474,10 @@ async function testNetworkErrorFailover() {
   console.log('  ✓ truncation/empty/invalid-JSON errors do not fail over');
   await testLegacyKeyStillWorks();
   console.log('  ✓ legacy single GROQ_API_KEY still works');
+  await testChat429OnlyWaitsWhenEveryProviderIsLimited();
+  console.log('  ✓ a 429 waits only when every key/provider is limited');
+  await testStream429BacksOffAndRetries();
+  console.log('  ✓ streams back off on 429 (2–3 s, 4–5 s …), honour Retry-After, never restart after output');
   console.log('STREAMING + ROUTER TESTS OK ✓');
 })().catch(err => {
   console.error('STREAMING/ROUTER TEST FAILED:', err);

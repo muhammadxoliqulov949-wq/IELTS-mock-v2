@@ -143,10 +143,11 @@ Nimalar tekshiriladi:
 - `tests/quiz.test.js` — `/api/quiz` endpoint
 - `tests/mascot.test.js` — Bandly: logo, hero, coach, bo'sh holatlar, suzuvchi hamroh, assetlar va tarjimalar
 - `tests/admin.test.js` — admin: guard/redirect, nav ko'rinishi, RLS va SQL invariantlari, muharrir validatsiyasi, XSS
-- `tests/generator.test.js` — AI generator: mavzu ombori, endpoint (har bir skill, kalit xabari, audio), TTS, i18n, wiring
-- `tests/generatorClient.test.js` — generator modal oqimi: generatsiya → media upload → Supabase saqlash → xulosa
+- `tests/generator.test.js` — AI generator: mavzu ombori, endpoint (har bir skill, bo'lak — `part`/`passage` — rejimi, kalit xabari, audio, 429 → `RATE_LIMITED`), TTS, i18n, wiring
+- `tests/generatorClient.test.js` — generator modal oqimi: 9 ta bo'lak so'rovi → media upload → Supabase saqlash → xulosa; 429 da kutish (exponential backoff) va qayta yuborish
 - `tests/aiGuardrails.test.js` — IELTS guardrails (rad etish) va 7 kunlik TTL kesh (PGlite bilan)
-- `tests/aiClient.test.js` — yagona Groq klienti, OpenAI formatidagi so'rovlar va to'rtta endpoint ulanishi
+- `tests/aiClient.test.js` — yagona Groq klienti, standart modellar, OpenAI formatidagi so'rovlar, 429 backoff / `Retry-After` va to'rtta endpoint ulanishi
+- `tests/streaming.test.js` — streaming, ko'p kalit (round-robin), failover, DeepSeek zaxirasi va stream'dagi 429 backoff
 - `tests/roadmap.test.js` — eski gamification migration’i, quiz threshold, duplicate coin rewards, mock reward tiers va leaderboard maxfiyligi
 - `tests/learning.test.js` — 40 ta seed, uchta o‘yin, global unlock, UTC streak, server timer/combo, RLS, idempotency, kontent o‘zgarishi, account switch, guest va real SDK HTTP fixture’lari
 
@@ -168,8 +169,19 @@ npm run test:learning:browser -- --account
 
 1. Reponi GitHub'ga push qiling
 2. [vercel.com](https://vercel.com) → **New Project** → reponi tanlang
-3. Environment Variables: `GROQ_API_KEY` (barcha matnli AI funksiyalar uchun), `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` (7 kunlik AI kesh uchun). Ixtiyoriy: `GROQ_MODEL` (standart `openai/gpt-oss-120b`) va `GROQ_FALLBACK_MODEL` (standart `openai/gpt-oss-20b`). Asosiy model Groq'da 404 / `model_not_found` yoki `model_decommissioned` bilan javob bersa, so'rov zaxira modelda qayta yuboriladi. Har bir so'rovda `max_completion_tokens: 4096`.
-4. **Deploy** — `vercel.json` SPA routingni boshqaradi
+3. Environment Variables: `GROQ_API_KEY` (barcha matnli AI funksiyalar uchun), `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` (7 kunlik AI kesh uchun). Ixtiyoriy: `GROQ_MODEL` (standart `openai/gpt-oss-20b`), `GROQ_FALLBACK_MODEL` (standart `openai/gpt-oss-120b`) va `GROQ_GENERATOR_MODEL` (faqat 1-Click generator uchun; bo'sh bo'lsa `GROQ_MODEL`). Asosiy model Groq'da 404 / `model_not_found` yoki `model_decommissioned` bilan javob bersa, so'rov zaxira modelda qayta yuboriladi. Har bir so'rovda `max_completion_tokens: 4096`.
+4. **Deploy** — `vercel.json` SPA routingni boshqaradi va `api/*.js` funksiyalariga `maxDuration: 60` beradi (429 kutishlari eski 10 soniyalik standart limitga sig'maydi)
+
+## 🆓 Groq Free Tier bilan ishlash (429 limitlarini avtomatik boshqarish)
+
+Loyiha Groq'ning **bepul** tarifida ishlashga moslangan. Qisqacha:
+
+- **Modellar.** Standart model `openai/gpt-oss-20b`, zaxirasi `openai/gpt-oss-120b`. Groq'ning [deprecations](https://console.groq.com/docs/deprecations) sahifasiga ko'ra `llama-3.1-8b-instant` va `llama-3.3-70b-versatile` Free va Developer tariflarida 2026-08-16 dan beri mavjud emas (faqat Enterprise), shuning uchun ular standart qilinmagan. Boshqa modelni xohlasangiz — `GROQ_MODEL` / `GROQ_GENERATOR_MODEL` env o'zgaruvchilari.
+- **Limitlar.** Groq hujjatlariga ko'ra (2026-10-10 da tekshirilgan) Free tarifda `gpt-oss-20b` / `gpt-oss-120b` uchun taxminan 30 so'rov/daqiqa, 1 000 so'rov/kun, **8 000 token/daqiqa** va 200 000 token/kun (har model uchun alohida hisoblanadi). Aniq raqamlar o'zgarishi mumkin — [rate-limits](https://console.groq.com/docs/rate-limits) sahifasini tekshiring. Hech bir model uchun "0 ta 429" kafolatlanmaydi; loyiha 429 ni xato emas, *pauza* sifatida qabul qiladi.
+- **1-Click mock bo'laklab yaratiladi.** Bitta og'ir so'rov o'rniga brauzer 9 ta kichik so'rovni **ketma-ket** yuboradi: Listening 4 ta Part, Reading 3 ta Passage, Writing, Speaking (+ har Part uchun audio). Javoblar brauzerda bitta bo'limga birlashtiriladi. Modalda progress: `Listening 2/4`, `Reading 3/3` …
+- **429 bo'lsa.** (1) Server (`lib/aiClient.js`) avval boshqa kalitlarni / DeepSeek'ni sinaydi, so'ng **2–3 s, 4–5 s, 8–9 s** kutib so'rovni qayta yuboradi (Groq `Retry-After` yoki "try again in …" degan vaqt uzunroq bo'lsa — shuncha). (2) Server ham pasaymasa, brauzer bo'lakni yana 6 martagacha, 60 soniyagacha kutib qayta yuboradi va holat qatorida sanoq ko'rsatadi: *"Groq so'rov limiti — 12 soniyadan so'ng avtomatik qayta uriniladi (2/6)…"*. Odatda foydalanuvchiga xato ko'rsatilmaydi.
+- **Qachon to'xtaydi.** Kunlik limit (token/kun) tugasa yoki barcha urinishlar ishlatilsa, modal aniq xabar bilan to'xtaydi ("taxminan N daqiqadan so'ng qayta urinib ko'ring"). Shu paytgacha to'liq tayyor bo'lgan bo'limlar saqlanib qoladi.
+- **Sig'im.** Bitta mock taxminan 30–40 ming token ishlatadi (taxminiy hisob, kafolat emas), shuning uchun 8K token/daqiqa chegarasida bir necha daqiqa olishi, 200K token/kun chegarasida esa kuniga bir necha mock yaratish mumkin. AI Coach, baholash (grade) va quiz so'rovlari `GROQ_MODEL` ning limitini ishlatadi; generatorni boshqa modelga (`GROQ_GENERATOR_MODEL`) o'tkazsangiz, ikkalasining limiti alohida hisoblanadi. Bir nechta `GROQ_API_KEY_1…N` faqat kalitlar **turli Groq tashkilotlariga** tegishli bo'lsa limitni oshiradi (limit tashkilot darajasida).
 
 ## 🧩 Loyiha tuzilishi
 
@@ -186,7 +198,7 @@ lib/
   topicPool.js    → AI mock generator uchun 48 IELTS mavzusi + savol turi aralashtirish
   learningPath.js → UTC streak, unlock, shuffle, scoring va SVG helpers
   roadmapContent.js → generated public 40-mavzuli katalog (quiz kalitlarisiz)
-  aiClient.js     → barcha til modeli so'rovlari uchun Groq API klienti (4096 token)
+  aiClient.js     → barcha til modeli so'rovlari uchun Groq API klienti (4096 token, 429 da exponential backoff)
   edgeTts.js      → Microsoft Edge TTS (MP3), til modelidan alohida audio xizmati
 scripts/roadmap-seed.js → 40 mavzu va private kalitlar uchun seed generator
 miniGames.js     → Word Match / Speed Vocabulary / Sentence Scramble controller

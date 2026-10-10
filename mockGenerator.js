@@ -4,11 +4,13 @@
  * Opened from Admin → Mock tests → "AI orqali yangi Mock yaratish".
  *
  * What it does, in order, with live progress in the modal:
- *   1. Listening  → /api/generate-mock (4 parts, 40 questions, 4 transcripts)
+ *   1. Listening  → /api/generate-mock, one request PER PART (4 requests,
+ *                   40 questions, 4 transcripts) merged into one section,
  *                   then one TTS request per part; each recording is
  *                   uploaded to the public "ielts-media" bucket and the
  *                   URL is written into parts[i].audioUrl
- *   2. Reading    → /api/generate-mock (3 passages, 40 questions)
+ *   2. Reading    → /api/generate-mock, one request PER PASSAGE (3 requests,
+ *                   40 questions) merged into one section
  *   3. Writing    → /api/generate-mock (Task 1 + Task 2). The Task 1
  *                   chartSpec is rendered to a PNG on a canvas and
  *                   uploaded, so the candidate sees a real chart image
@@ -16,6 +18,19 @@
  *   5. every section is saved through the normal admin Supabase calls
  *      (adminSaveTest / adminSaveTestMeta), so row level security is the
  *      only thing standing between this button and the database
+ *
+ * Chunked on purpose: the Groq Free tier allows only a few thousand tokens
+ * per minute, so nothing is asked for in one heavy request. The chunks run
+ * strictly one after another ("Listening 2/4") and are joined here.
+ *
+ * Rate limits (HTTP 429, code RATE_LIMITED) are not errors. The server has
+ * already waited and retried by itself; if Groq still says "later", this
+ * file waits 2–3 s, then 4–5 s, 8–9 s … (up to a minute, and at least as
+ * long as Groq's retryAfterMs asks, up to five minutes), shows a countdown in
+ * the status line and sends the SAME chunk again. Only when the quota stays
+ * closed (a daily limit, or every attempt used) does the run stop, with a
+ * plain message.
+ * Any other error stops the run at once.
  *
  * Everything the admin typed or the model produced is escaped before it
  * reaches innerHTML. The generator never invents its own validation:
@@ -45,10 +60,24 @@
     plan: null,
     onDone: null,
     steps: {},          /* skill → 'pending' | 'active' | 'done' | 'error' */
+    chunks: {},         /* skill → { done, total } while its chunks are generated */
     status: '',
     error: '',
     result: null,       /* { questions, audio, chart, saved } */
     root: null
+  };
+
+  /* How patient the browser is with a Groq 429 (the server has already
+     waited and retried a few times before it answers RATE_LIMITED).
+     Exposed as IELTS_GENERATOR.timing so tests can shorten the waits. */
+  const timing = {
+    maxRetries: 6,      /* extra attempts per chunk → at most 7 requests */
+    baseMs: 2000,       /* first wait; doubles each attempt: 2s, 4s, 8s … */
+    jitterMs: 1000,     /* + 0…1 s → the first wait is 2–3 s */
+    maxWaitMs: 60000,   /* the backoff itself never exceeds a minute … */
+    maxHintMs: 300000,  /* … but Groq's own "try again in" (up to 5 min) is waited
+                           out in full; a longer one (a daily quota) ends the run */
+    tickMs: 1000        /* how often the countdown in the status line updates */
   };
 
   /* ---------- tiny helpers ---------- */
@@ -59,6 +88,13 @@
     const value = i18n && typeof i18n.t === 'function' ? i18n.t(key) : '';
     return value && value !== key ? value : (fallback || key);
   }
+  /* t() with {name} placeholders filled in. */
+  function tf(key, vars, fallback) {
+    let text = t(key, fallback);
+    Object.keys(vars || {}).forEach(name => { text = text.split('{' + name + '}').join(String(vars[name])); });
+    return text;
+  }
+  function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
   function cloud() { return window.IELTS_CLOUD || null; }
   function admin() { return window.IELTS_ADMIN || null; }
   function pool() { return window.IELTS_TOPICS || null; }
@@ -78,6 +114,7 @@
     state.status = '';
     state.result = null;
     state.plan = null;
+    state.chunks = {};
     state.testId = opts.testId || nextTestId();
     state.label = opts.label || defaultLabel(state.testId);
     state.difficulty = opts.difficulty || 'standard';
@@ -199,7 +236,12 @@
   }
 
   function stepNote(skill, step) {
-    if (step === 'active') return t('admin_ai_step_active', 'yuklanmoqda…');
+    if (step === 'active') {
+      const c = state.chunks[skill];
+      /* "2/4": the chunk being generated now, out of all of them */
+      if (c && c.total > 1) return `${Math.min(c.done + 1, c.total)}/${c.total}`;
+      return t('admin_ai_step_active', 'yuklanmoqda…');
+    }
     if (step === 'done') {
       const result = state.result;
       if (result && result.perSkill && result.perSkill[skill]) return result.perSkill[skill];
@@ -331,28 +373,24 @@
 
     try {
       for (const skill of SKILLS) {
+        /* one request per chunk (Listening part / Reading passage), strictly
+           one after another, then joined into the single section */
+        const chunks = chunkPlan(skill, state.plan);
+        state.chunks[skill] = { done: 0, total: chunks.length };
         setStep(skill, 'active');
-        setStatus(t('admin_ai_status_generating', 'Generatsiya qilinmoqda') + ': ' + t(STEP_LABEL[skill], skill) + '…');
+        setStatus(progressText(skill));
 
-        const response = await fetch('/api/generate-mock', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            mode: 'section',
-            skill,
-            testId: state.testId,
-            label: state.label,
-            difficulty: state.plan.difficulty,
-            plan: state.plan
-          })
-        });
-        const data = await response.json().catch(() => null);
-        if (!response.ok || !data || !data.ok) {
-          throw new Error(errorMessage(data, response.status));
+        const results = [];
+        for (let i = 0; i < chunks.length; i++) {
+          state.chunks[skill].done = i;
+          if (i > 0) { patchSteps(); setStatus(progressText(skill)); }
+          results.push(await requestChunk(skill, chunks[i], results));
         }
+        state.chunks[skill].done = chunks.length;
 
-        let payload = data.payload || {};
-        const counts = data.counts || {};
+        let payload = mergeChunks(skill, results);
+        const serverCount = results.reduce((sum, r) => sum + (Number(r.counts && r.counts.questions) || 0), 0);
+        const counts = { questions: serverCount };
 
         if (skill === 'listening') {
           const audio = await generateAudio(payload, state.testId);
@@ -428,6 +466,129 @@
     if (data && data.message) return data.message;
     if (data && data.error) return data.error;
     return `Generation failed (HTTP ${status}).`;
+  }
+
+  /* ---------- chunks: request, wait out rate limits, merge ---------- */
+
+  /* "Generatsiya qilinmoqda: Listening 2/4…" */
+  function progressText(skill) {
+    const c = state.chunks[skill];
+    const where = c && c.total > 1 ? ` ${Math.min(c.done + 1, c.total)}/${c.total}` : '';
+    return t('admin_ai_status_generating', 'Generatsiya qilinmoqda') + ': ' + t(STEP_LABEL[skill], skill) + where + '…';
+  }
+
+  /* The requests one skill is made of, in order: Listening → its parts,
+     Reading → its passages (the plan from lib/topicPool.js says how many),
+     Writing and Speaking → one request each. */
+  function chunkPlan(skill, plan) {
+    const rows = plan && plan.questionPlan && plan.questionPlan[skill];
+    if (skill === 'listening' && Array.isArray(rows) && rows.length) {
+      return rows.map(row => ({ field: 'part', number: row.part }));
+    }
+    if (skill === 'reading' && Array.isArray(rows) && rows.length) {
+      return rows.map(row => ({ field: 'passage', number: row.passage }));
+    }
+    return [{ field: '', number: 1 }];
+  }
+
+  /* Did the server say "rate limited — later"? That is a signal to wait,
+     never an error. The server's own per-IP limiter (TOO_MANY_REQUESTS)
+     is different: waiting a few seconds would not help, so it stays an error. */
+  function isRateLimited(status, data) {
+    if (!data) return Number(status) === 429;
+    if (data.code === 'TOO_MANY_REQUESTS') return false;
+    if (data.code === 'RATE_LIMITED') return true;
+    return Number(status) === 429 || /\(429\)|rate limit/i.test(String(data.error || data.message || ''));
+  }
+
+  /* Exponential backoff: baseMs·2^attempt plus jitter (2–3 s, 4–5 s, 8–9 s …,
+     at most maxWaitMs), but never shorter than the retryAfterMs the server
+     relayed from Groq (plus a margin) — Groq knows when its quota reopens. */
+  function backoffMs(attempt, hintMs) {
+    const grown = timing.baseMs * Math.pow(2, attempt);
+    const jitter = timing.jitterMs > 0 ? Math.floor(Math.random() * (timing.jitterMs + 1)) : 0;
+    const backoff = Math.min(timing.maxWaitMs, grown + jitter);
+    return hintMs > 0 ? Math.max(backoff, hintMs + 250) : backoff;
+  }
+
+  function rateLimitMessage(hintMs) {
+    const minutes = Math.max(1, Math.ceil((Number(hintMs) || 0) / 60000));
+    return tf('admin_ai_err_rate_limit', { m: minutes },
+      "Groq bepul limiti hozircha to'lgan (429). Taxminan {m} daqiqadan so'ng qayta urinib ko'ring.");
+  }
+
+  /* Wait `ms`, with a per-second countdown in the status line. */
+  async function waitForRetry(ms, attempt) {
+    let left = ms;
+    do {
+      setStatus(tf('admin_ai_status_rate_limit', {
+        s: Math.max(1, Math.ceil(left / 1000)),
+        n: attempt + 1,
+        max: timing.maxRetries
+      }, "Groq so'rov limiti — {s} soniyadan so'ng avtomatik qayta uriniladi ({n}/{max})…"));
+      const slice = Math.min(timing.tickMs, left);
+      await sleep(slice);
+      left -= slice;
+    } while (left > 0);
+  }
+
+  /* One chunk. A rate-limited answer is waited out and the SAME request is
+     sent again, up to timing.maxRetries times; any other failure throws at
+     once. `previous` are the chunks already received for this skill — their
+     question count numbers the ids of this one. */
+  async function requestChunk(skill, chunk, previous) {
+    const body = {
+      mode: 'section',
+      skill,
+      testId: state.testId,
+      label: state.label,
+      difficulty: state.plan.difficulty,
+      plan: state.plan
+    };
+    if (chunk.field) {
+      body[chunk.field] = chunk.number;
+      body.questionOffset = previous.reduce((sum, r) => sum + countQuestions(r.payload), 0);
+    }
+    const json = JSON.stringify(body);
+
+    for (let attempt = 0; ; attempt++) {
+      const response = await fetch('/api/generate-mock', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: json
+      });
+      const data = await response.json().catch(() => null);
+      if (response.ok && data && data.ok) return data;
+      if (!isRateLimited(response.status, data)) throw new Error(errorMessage(data, response.status));
+
+      /* rate limited: no error — wait, then resend the same chunk */
+      const hint = Number(data && data.retryAfterMs) || 0;
+      if (attempt >= timing.maxRetries || hint > timing.maxHintMs) throw new Error(rateLimitMessage(hint));
+      await waitForRetry(backoffMs(attempt, hint), attempt);
+      setStatus(progressText(skill));
+    }
+  }
+
+  /* The chunks of one skill → the single payload the rest of the flow
+     (audio, chart, normalizePayload, save) works on. Listening parts and
+     Reading passages are renumbered continuously (parts 1…4, ids l1…l40). */
+  function mergeChunks(skill, results) {
+    const first = (results[0] && results[0].payload) || {};
+    if (skill !== 'listening' && skill !== 'reading') return first;
+    if (results.length === 1 && !results[0].chunk) return first;   /* a whole-skill answer */
+
+    const key = skill === 'listening' ? 'parts' : 'passages';
+    const numberKey = skill === 'listening' ? 'partNumber' : 'passageNumber';
+    const idPrefix = skill === 'listening' ? 'l' : 'r';
+    const blockPrefix = skill === 'listening' ? 'lp' : 'rp';
+    let qn = 0;
+    const blocks = results.map((result, i) => {
+      const block = ((result.payload && result.payload[key]) || [])[0];
+      if (!block) throw new Error(`${skillLabel(skill)} ${i + 1}/${results.length}: empty response — please generate again.`);
+      const questions = (block.questions || []).map(q => Object.assign({}, q, { id: idPrefix + (++qn) }));
+      return Object.assign({}, block, { id: block.id || blockPrefix + (i + 1), [numberKey]: i + 1, questions });
+    });
+    return Object.assign({}, first, { [key]: blocks });
   }
 
   function skillLabel(skill) {
@@ -699,5 +860,8 @@
   }
 
   /* ---------- public surface ---------- */
-  window.IELTS_GENERATOR = { open, close, isOpen, state };
+  window.IELTS_GENERATOR = {
+    open, close, isOpen, state, timing,
+    _internal: { backoffMs, isRateLimited, chunkPlan, mergeChunks }   /* for tests */
+  };
 })();
