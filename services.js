@@ -159,22 +159,59 @@ window.IELTS_SERVICES = {
     return Math.round((bands.reduce((s, b) => s + b, 0) / bands.length) * 2) / 2;
   },
 
-  /* Study-minutes estimate: 30 min per objective section, 60 for writing, 14 for speaking. */
-  studyMinutes(attempts) {
+  /* Mock sections keep their familiar duration estimate; completed adaptive
+     drills add their measured time from public.learning_activity. */
+  studyMinutes(attempts, activities = []) {
     const map = { listening: 30, reading: 60, writing: 60, speaking: 14 };
-    return attempts.reduce((s, a) => s + (map[a.section] || 20), 0);
+    const mockMinutes = (attempts || []).reduce((sum, attempt) => sum + (map[attempt.section] || 20), 0);
+    const drillSeconds = (activities || []).reduce((sum, activity) => {
+      if (!activity || activity.kind !== 'drill') return sum;
+      const seconds = Number(activity.duration_seconds ?? activity.durationSeconds) || 0;
+      return sum + Math.max(0, Math.min(3600, seconds));
+    }, 0);
+    return mockMinutes + (drillSeconds ? Math.ceil(drillSeconds / 60) : 0);
   },
 
-  /* Weekly activity: counts attempts per day over the last 7 days. */
-  weeklyActivity(attempts) {
+  /* Weekly activity includes scored mock sections plus Supabase learning
+     events (quizzes, games, mocks and adaptive drills). The reference key
+     collapses the local mock copy and its remote activity-trigger copy. */
+  weeklyActivity(attempts, activities = []) {
+    const events = new Map();
+    const dateKey = item => {
+      const raw = item && (item.activity_date || item.date || item.created_at);
+      if (typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+      const value = new Date(raw || 0);
+      return Number.isFinite(value.getTime()) ? value.toISOString().slice(0, 10) : '';
+    };
+    const add = (item, key, kind) => {
+      const day = dateKey(item);
+      if (!day) return;
+      const eventKey = `${kind}:${key}:${day}`;
+      if (!events.has(eventKey)) events.set(eventKey, day);
+    };
+    (attempts || []).forEach(attempt => {
+      if (!attempt) return;
+      add(attempt, `${attempt.test || 'test1'}:${attempt.section}`, 'mock');
+    });
+    (activities || []).forEach(activity => {
+      if (!activity) return;
+      const kind = String(activity.kind || 'activity');
+      let reference = String(activity.reference || '');
+      if (kind === 'mock') reference = reference.replace(/^mock:/, '');
+      if (kind === 'drill') reference = reference.replace(/^adaptive:/, '');
+      add(activity, reference || `${activity.skill || ''}:${activity.created_at || ''}`, kind);
+    });
+    const today = new Date();
+    const utcToday = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
     const days = [];
     for (let i = 6; i >= 0; i--) {
-      const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - i);
-      const count = attempts.filter(a => { const x = new Date(a.date); x.setHours(0, 0, 0, 0); return x.getTime() === d.getTime(); }).length;
-      days.push({ label: d.toLocaleDateString(undefined, { weekday: 'short' }), count });
+      const d = new Date(utcToday.getTime() - i * 86400000);
+      const key = d.toISOString().slice(0, 10);
+      const count = [...events.values()].filter(day => day === key).length;
+      days.push({ label: d.toLocaleDateString(undefined, { weekday: 'short', timeZone: 'UTC' }), count });
     }
-    const max = Math.max(1, ...days.map(d => d.count));
-    return days.map(d => ({ ...d, pct: Math.round((d.count / max) * 100) }));
+    const max = Math.max(1, ...days.map(day => day.count));
+    return days.map(day => ({ ...day, pct: Math.round((day.count / max) * 100) }));
   },
 
   /* Build a personal plan from the strongest and weakest sections. */

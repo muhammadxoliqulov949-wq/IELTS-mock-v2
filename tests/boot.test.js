@@ -58,12 +58,13 @@ try {
   eval(fs.readFileSync(path + '/content3.js', 'utf8'));
   eval(fs.readFileSync(path + '/content4.js', 'utf8'));
   eval(fs.readFileSync(path + '/services.js', 'utf8'));
+  eval(fs.readFileSync(path + '/lib/adaptiveDrills.js', 'utf8'));
   fn(global.document, global.localStorage, global.location, global.window, global.confirm);
   const render = globalThis.__render;
   console.log('script.js BOOTED OK');
 
   // render each route
-  const routes = ['/', '/mock', '/listening', '/reading', '/writing', '/speaking', '/results', '/mistakes', '/coach', '/dashboard', '/roadmap', '/leaderboard', '/lessons', '/vocabulary', '/quiz', '/fullmock', '/settings', '/login', '/unknown'];
+  const routes = ['/', '/mock', '/listening', '/reading', '/writing', '/speaking', '/results', '/mistakes', '/coach', '/dashboard', '/roadmap', '/drills', '/leaderboard', '/lessons', '/vocabulary', '/quiz', '/fullmock', '/settings', '/login', '/unknown'];
   let ok = true;
   for (const r of routes) {
     global.location.hash = '#' + r;

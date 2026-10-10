@@ -45,10 +45,10 @@ function testRenderedPages() {
     },
     window: { IELTS_CLOUD: cloud, addEventListener() {}, scrollY: 0, location: { hash: '#/roadmap', origin: 'https://preview.example' } }
   });
-  for (const file of ['data.js', 'content2.js', 'content3.js', 'content4.js', 'i18n.js', 'services.js', 'script.js']) {
+  for (const file of ['data.js', 'content2.js', 'content3.js', 'content4.js', 'i18n.js', 'services.js', 'lib/adaptiveDrills.js', 'script.js']) {
     vm.runInContext(fs.readFileSync(path.join(root, file), 'utf8'), context, { filename: file });
   }
-  vm.runInContext("signIn({id:'learner-1',email:'private@example.com',name:'Learner One',coins:15,auth:'supabase'}); roadmapState.topics=[{id:'a1-a2-present-simple',stage:'A1-A2',title:'Present simple',summary:'Rule\\nExample',ai_prompt:'Practise present simple with me.',questions:Array.from({length:5},(_,i)=>({type:i===1?'input':'multiple-choice',prompt:'Question '+(i+1),placeholder:'Answer',options:['A','B']})),reward_coins:10,order_index:1}]; roadmapState.progress={}; roadmapState.loadedUser='learner-1';", context);
+  vm.runInContext("signIn({id:'learner-1',email:'private@example.com',name:'Learner One',coins:15,auth:'supabase'}); roadmapState.topics=[{id:'a1-a2-present-simple',stage:'A1-A2',title:'Present simple',summary:'Rule\\nExample',ai_prompt:'Practise present simple with me.',questions:Array.from({length:5},(_,i)=>({type:i===1?'input':'multiple-choice',prompt:'Question '+(i+1),placeholder:'Answer',options:['A','B']})),reward_coins:10,order_index:1}]; roadmapState.progress={}; roadmapState.loadedUser='learner-1'; store.attempts=['listening','reading','writing','speaking'].map((section,index)=>({section,test:'test1',band:[6,5.5,6.5,6][index],date:Date.now()+index}));", context);
   const roadmap = vm.runInContext('roadmapPage()', context);
   assert(roadmap.includes('#/roadmap') && roadmap.includes('data-roadmap-open="a1-a2-present-simple"'));
   assert(roadmap.includes('🪙 +10') && roadmap.includes('roadmap-overview'));
@@ -235,7 +235,7 @@ function testFrontendWiring() {
   check(nav.includes("r === '/roadmap'") && nav.includes("r === '/leaderboard'"), 'hash router includes both new pages');
   check(nav.includes('data-roadmap-copy') && nav.includes('data-roadmap-submit'), 'topic modal has copy-prompt and quiz interactions');
   check(nav.includes("addUserCoins('mock'"), 'mock Listening and Reading results flow through the reward RPC');
-  check(html.includes('script.js?v=11') && fs.readFileSync(path.join(root, 'sw.js'), 'utf8').includes('bandly-v15'), 'updated app cache versions are wired');
+  check(html.includes('script.js?v=12') && fs.readFileSync(path.join(root, 'sw.js'), 'utf8').includes('bandly-v16'), 'updated app cache versions are wired');
   check(/function public\.add_user_coins\(p_source text, p_reference text\)/.test(sql) && !/p_amount/.test(sql), 'coin RPC accepts no client-supplied reward amount');
 }
 

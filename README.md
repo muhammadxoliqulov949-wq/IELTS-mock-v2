@@ -74,7 +74,7 @@ Har bir mavzuning uchta o‘yini:
 
 Glassmorphism, dark/light tema, EN/UZ/RU interfeys, keyboard/focus qo‘llovi, reduced-motion va Web Audio API pop/ding ovozlari (mute bilan) mavjud. Mehmon birinchi mavzuning o‘yinlarini sinab ko‘ra oladi, ammo real coin/streak/progress saqlanmaydi va yangi mavzu ochilmaydi.
 
-**O‘rnatish:** avvalgi migratsiyalardan keyin `supabase/migrations/202610060003_interactive_learning.sql` ni qo‘llang. Faylda 40 ta tayyor seed, `topics.game_data`, streak ustunlari, RLS va grader/reward RPC’lari bor. To‘liq tartib: [SUPABASE.md](SUPABASE.md) → “Interaktiv Roadmap, tangalar va leaderboard”. Kodni deploy qilishning o‘zi hosted bazaga migratsiya qo‘llamaydi.
+**O‘rnatish:** interaktiv Roadmap’dan keyin `supabase/migrations/202610100001_adaptive_drills.sql` ni qo‘llang. U drill activity metama’lumotlari, foydalanuvchiga bog‘langan RPC, Dashboard’dagi haftalik faollik va mashq daqiqalarining sinxronlanishini yoqadi. To‘liq ketma-ketlik: [SUPABASE.md](SUPABASE.md) → “Admin testlar, Storage media va Roadmap gamification”. Kodni deploy qilishning o‘zi hosted bazaga migratsiya qo‘llamaydi.
 
 Kontentning yagona manbasi — `scripts/roadmap-seed.js`:
 
