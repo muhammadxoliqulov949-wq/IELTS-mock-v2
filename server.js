@@ -58,20 +58,56 @@ function attachBody(req) {
 
 async function handleApi(handler, req, res) {
   await attachBody(req);
+  let headersWritten = false;
   const apiRes = {
     statusCode: 200,
     headers: {},
     body: '',
+    _streaming: false,
     status(c) { this.statusCode = c; return this; },
-    json(b) { this.headers['Content-Type'] = 'application/json; charset=utf-8'; this.body = JSON.stringify(b); }
+    setHeader(k, v) { this.headers[k] = v; return this; },
+    flushHeaders() {
+      if (headersWritten) return;
+      headersWritten = true;
+      // If the handler set SSE Content-Type, stream without buffering.
+      const ct = this.headers['Content-Type'] || 'application/json; charset=utf-8';
+      const isSSE = ct.includes('text/event-stream');
+      res.writeHead(this.statusCode, { ...this.headers, 'Content-Type': ct });
+      this._streaming = isSSE;
+    },
+    write(chunk) {
+      if (!headersWritten) this.flushHeaders();
+      res.write(chunk);
+    },
+    end(chunk) {
+      if (!headersWritten) this.flushHeaders();
+      res.end(chunk);
+    },
+    json(b) {
+      this.headers['Content-Type'] = 'application/json; charset=utf-8';
+      this.body = JSON.stringify(b);
+    }
   };
   try {
     await handler(req, apiRes);
-    res.writeHead(apiRes.statusCode, { 'Content-Type': 'application/json; charset=utf-8' });
-    res.end(apiRes.body || '{}');
+    if (!apiRes._streaming) {
+      // Non-streaming: send the accumulated JSON body.
+      if (!headersWritten) {
+        res.writeHead(apiRes.statusCode, {
+          'Content-Type': 'application/json; charset=utf-8',
+          ...apiRes.headers
+        });
+      }
+      res.end(apiRes.body || '{}');
+    }
+    // Streaming responses end themselves via apiRes.end() inside the handler.
   } catch (err) {
-    res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
-    res.end(JSON.stringify({ error: err.message || 'Server error' }));
+    if (!headersWritten) {
+      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: err.message || 'Server error' }));
+    } else {
+      try { res.end(); } catch { /* already ended */ }
+    }
   }
 }
 
@@ -118,8 +154,10 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY
     ? 'Supabase settings found — apply the SQL migration and configure Auth (see SUPABASE.md).'
     : 'Supabase not configured — sign-in and mock tests are disabled. See SUPABASE.md.');
-  if (!process.env.GROQ_API_KEY) {
-    console.log('Note: GROQ_API_KEY is not set — AI grading/coach will show a setup message.');
-    console.log('Set it (e.g. GROQ_API_KEY=... npm run preview) to enable Groq AI.');
+  const hasAnyKey = !!(process.env.GROQ_API_KEY || process.env.DEEPSEEK_API_KEY
+    || [1,2,3,4,5].some(i => process.env[`GROQ_API_KEY_${i}`]));
+  if (!hasAnyKey) {
+    console.log('Note: no AI provider key is set — AI grading/coach will show a setup message.');
+    console.log('Set GROQ_API_KEY (or GROQ_API_KEY_1, GROQ_API_KEY_2 for multi-key, DEEPSEEK_API_KEY for fallback).');
   }
 });

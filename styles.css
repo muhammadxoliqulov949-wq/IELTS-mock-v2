@@ -1046,6 +1046,27 @@ body[data-theme="light"] .coach-msg--ai .coach-msg-body { background: rgba(17, 2
 /* Plain text (learner messages, or the fallback when the renderer is missing) keeps its line breaks. */
 .coach-msg-body--plain { white-space: pre-line; }
 
+/* Streaming mode: preserve whitespace exactly (chunks arrive pre-formatted)
+   and show a blinking block cursor at the insertion point, like ChatGPT. */
+.coach-streaming { white-space: pre-wrap; }
+.coach-cursor {
+  display: inline-block;
+  width: 0.55em;
+  margin-left: 1px;
+  color: var(--primary);
+  animation: coach-cursor-blink 1s steps(2, start) infinite;
+  font-weight: 700;
+  vertical-align: text-bottom;
+  line-height: 1;
+}
+@keyframes coach-cursor-blink {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .coach-cursor { animation: none; opacity: 1; }
+}
+
 /* AI replies rendered from Markdown (lib/markdown.js). Spacing rhythm:
    0.85em between blocks, no extra gap at the bubble's top and bottom. */
 .coach-md > *:first-child { margin-top: 0; }
