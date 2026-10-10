@@ -156,7 +156,7 @@ module.exports = async function handler(req, res) {
   }
   if (!aiClient.isConfigured()) {
     res.status(500).json({
-      error: 'GROQ_API_KEY is not set on the server. Add it in your hosting environment (Vercel → Settings → Environment Variables) — get a key at https://console.groq.com/keys'
+      error: 'No AI provider key is configured. Set GROQ_API_KEY (or GROQ_API_KEY_1, GROQ_API_KEY_2 for multi-key, DEEPSEEK_API_KEY for fallback) in your environment.'
     });
     return;
   }

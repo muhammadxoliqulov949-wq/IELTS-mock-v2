@@ -916,14 +916,23 @@ function mistakes() {
 
 /* ---------------- AI COACH ---------------- */
 let coachSending = false;
+/* Track the streaming AI message index so we can DOM-update it in place
+   without re-rendering the whole coach page (which would lose focus). */
+let coachStreamingIdx = -1;
 
-/* One chat bubble. The AI reply is Markdown (lists, tables, **bold**), so it
+/* One chat bubble. The AI reply is Markdown (lists, tables, **bold), so it
    goes through the sanitised renderer from markdown.bundle.js. The learner's
    own text is shown as plain text. If that script did not load, the reply is
-   escaped and shown as plain text. The CSS keeps its line breaks. */
+   escaped and shown as plain text. The CSS keeps its line breaks.
+   While streaming (m.streaming === true) we render plain text with a
+   blinking cursor so the user sees words arrive in real time; on completion
+   the full text is run through marked + DOMPurify for nice rendering. */
 function coachBubble(m) {
   if (m.role !== 'ai') {
     return `<div class="coach-msg-body coach-msg-body--plain">${esc(m.text)}</div>`;
+  }
+  if (m.streaming) {
+    return `<div class="coach-msg-body coach-msg-body--plain coach-streaming">${esc(m.text)}<span class="coach-cursor">█</span></div>`;
   }
   const md = (typeof window !== 'undefined' && window.IELTS_MARKDOWN) || null;
   let html = null;
@@ -958,10 +967,48 @@ function coach() {
            </div>`}
       </div>
       <form id="coach-form" style="display:flex;gap:10px;margin-top:14px">
-        <input id="coach-input" class="btn btn-ghost" style="flex:1;text-align:left" placeholder="Ask about your IELTS practice..." />
-        <button class="btn btn-primary" type="submit">Send ↗</button>
+        <input id="coach-input" class="btn btn-ghost" style="flex:1;text-align:left" placeholder="Ask about your IELTS practice..." ${coachSending ? 'disabled' : ''} />
+        <button class="btn btn-primary" type="submit" ${coachSending ? 'disabled' : ''}>${coachSending ? '...' : 'Send ↗'}</button>
       </form>
     </section>`, 'coach');
+}
+
+/* Append a delta to the streaming AI bubble in the DOM (no full re-render,
+   so the input keeps focus). Called for each SSE chunk. */
+function coachAppendDelta(delta) {
+  const msgBox = document.querySelector('#coach-messages');
+  if (!msgBox) return;
+  const aiMsg = store.coachMessages[coachStreamingIdx];
+  if (!aiMsg) return;
+  aiMsg.text += delta;
+  const bubbles = msgBox.querySelectorAll('.coach-msg--ai');
+  const bubble = bubbles[bubbles.length - 1];
+  if (!bubble) return;
+  let body = bubble.querySelector('.coach-msg-body');
+  if (!body) return;
+  body.className = 'coach-msg-body coach-msg-body--plain coach-streaming';
+  const cursor = document.createElement('span');
+  cursor.className = 'coach-cursor';
+  cursor.textContent = '█';
+  body.textContent = aiMsg.text;
+  body.appendChild(cursor);
+  msgBox.scrollTop = msgBox.scrollHeight;
+}
+
+/* Finalise the streaming bubble: swap plain text for rendered Markdown,
+   persist, and re-enable the form. */
+function coachFinishStream(finalText, opts) {
+  const idx = coachStreamingIdx;
+  coachStreamingIdx = -1;
+  coachSending = false;
+  if (idx >= 0 && store.coachMessages[idx]) {
+    store.coachMessages[idx].text = finalText || store.coachMessages[idx].text;
+    store.coachMessages[idx].streaming = false;
+    if (opts && opts.offTopic) store.coachMessages[idx].offTopic = true;
+    if (opts && opts.error) store.coachMessages[idx].error = true;
+  }
+  save();
+  render();
 }
 
 function aiFeedbackBlock(feedback) {
@@ -1351,6 +1398,7 @@ function bind() {
       const text = input.value.trim();
       if (!text) return;
       store.coachMessages.push({ role: 'user', text });
+      input.value = '';
       save(); render();
       /* Strict IELTS boundary (lib/aiGuardrails.js): an obviously
          out-of-scope question is refused here, before any network call,
@@ -1358,28 +1406,96 @@ function bind() {
       const guard = (typeof window !== 'undefined' && window.IELTS_GUARDRAILS) || null;
       if (guard && guard.isLikelyOffTopic(text)) {
         store.coachMessages.push({ role: 'ai', text: guard.REFUSAL_MESSAGE, offTopic: true });
-        input.value = '';
         save(); render();
         return;
       }
+
+      // Add an empty streaming AI message that will be filled chunk-by-chunk.
+      store.coachMessages.push({ role: 'ai', text: '', streaming: true });
+      coachStreamingIdx = store.coachMessages.length - 1;
       coachSending = true;
+      save(); render();
+
+      // SSE streaming: chunks arrive as text/event-stream; we update the
+      // bubble in place for ChatGPT-style live typing.
       try {
         const res = await fetch('/api/coach', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'text/event-stream'
+          },
           body: JSON.stringify({
             message: text,
+            stream: true,
             profile: { band: bandAverage(), weakest: weakestSkill(), mistakeCount: store.mistakes.length },
-            history: store.coachMessages
+            history: store.coachMessages.slice(0, coachStreamingIdx)
           })
         });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Coach error');
-        store.coachMessages.push({ role: 'ai', text: data.reply });
+
+        if (!res.ok || !res.body) {
+          let errMsg = 'Coach error';
+          try { const d = await res.json(); errMsg = d.error || errMsg; } catch {}
+          throw new Error(errMsg);
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder('utf-8');
+        let sseBuffer = '';
+        let eventType = 'message';
+        let fullReply = '';
+        let finished = false;
+
+        while (!finished) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          sseBuffer += decoder.decode(value, { stream: true });
+
+          let dblNl;
+          while ((dblNl = sseBuffer.indexOf('\n\n')) >= 0) {
+            const rawEvent = sseBuffer.slice(0, dblNl);
+            sseBuffer = sseBuffer.slice(dblNl + 2);
+            eventType = 'message';
+            let dataStr = '';
+            for (const rawLine of rawEvent.split('\n')) {
+              const ln = rawLine.replace(/\r$/, '');
+              if (ln.startsWith('event:')) eventType = ln.slice(6).trim();
+              else if (ln.startsWith('data:')) dataStr += (dataStr ? '\n' : '') + ln.slice(5).trimStart();
+            }
+            if (!dataStr) continue;
+            if (eventType === 'connected') continue;
+            if (eventType === 'chunk') {
+              try {
+                const p = JSON.parse(dataStr);
+                if (p.delta) { coachAppendDelta(p.delta); fullReply += p.delta; }
+              } catch { /* ignore malformed chunk */ }
+            } else if (eventType === 'done') {
+              try {
+                const p = JSON.parse(dataStr);
+                fullReply = p.reply || fullReply;
+                finished = true;
+                coachFinishStream(fullReply, { offTopic: !!p.offTopic });
+              } catch {
+                coachFinishStream(fullReply || 'Error parsing response.');
+              }
+              break;
+            } else if (eventType === 'error') {
+              try {
+                const p = JSON.parse(dataStr);
+                coachFinishStream(p.message || 'Stream error', { error: true, offTopic: !!p.code });
+              } catch {
+                coachFinishStream('Stream error', { error: true });
+              }
+              finished = true;
+              break;
+            }
+          }
+        }
+        if (!finished) {
+          coachFinishStream(fullReply || 'Stream ended unexpectedly.');
+        }
       } catch (err) {
-        store.coachMessages.push({ role: 'ai', text: `Sorry, I couldn't respond: ${err.message}` });
-      } finally {
-        coachSending = false;
-        save(); render();
+        coachFinishStream('Sorry, I couldn\'t respond: ' + err.message, { error: true });
       }
     };
   }
