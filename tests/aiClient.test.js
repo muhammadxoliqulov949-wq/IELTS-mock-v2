@@ -10,6 +10,10 @@ const { buildPlan } = require('../lib/topicPool.js');
 /* Pin the model environment so the suite does not depend on a developer's shell. */
 delete process.env.GROQ_MODEL;
 delete process.env.GROQ_FALLBACK_MODEL;
+delete process.env.GROQ_GENERATOR_MODEL;
+
+/* The shipped 429 policy, captured before any test shortens it. */
+const shippedRetryPolicy = Object.assign({}, aiClient._retryPolicy);
 
 const root = path.join(__dirname, '..');
 const check = (condition, message) => assert.ok(condition, message);
@@ -64,7 +68,7 @@ async function testClientConfigurationAndWireFormat() {
   const calls = [];
   try {
     assert.equal(aiClient.API_BASE, 'https://api.groq.com/openai/v1');
-    assert.equal(aiClient.MODEL, 'openai/gpt-oss-120b');
+    assert.equal(aiClient.MODEL, 'openai/gpt-oss-20b', 'the default model is the one Groq still serves on the Free tier');
     assert.equal(aiClient.MAX_TOKENS, 4096);
     assert.equal(aiClient.endpoint(), 'https://api.groq.com/openai/v1/chat/completions');
 
@@ -98,13 +102,13 @@ async function testClientConfigurationAndWireFormat() {
     assert.equal(result.content, 'A complete answer.');
     assert.deepEqual(result.usage, { prompt_tokens: 12, completion_tokens: 8, total_tokens: 20 });
     assert.equal(result.finishReason, 'stop');
-    assert.equal(result.model, 'openai/gpt-oss-120b', 'the result names the model that answered');
+    assert.equal(result.model, 'openai/gpt-oss-20b', 'the result names the model that answered');
     assert.equal(calls.length, 1);
     assert.equal(calls[0].url, aiClient.endpoint());
     assert.equal(calls[0].options.method, 'POST');
     assert.equal(calls[0].options.headers.Authorization, 'Bearer test-groq-key');
     assert.equal(calls[0].options.headers['Content-Type'], 'application/json');
-    assert.equal(calls[0].body.model, 'openai/gpt-oss-120b');
+    assert.equal(calls[0].body.model, 'openai/gpt-oss-20b');
     assert.equal(calls[0].body.max_completion_tokens, 4096, 'the output budget is fixed at 4096 for every call');
     assert.equal(calls[0].body.max_tokens, undefined, 'the deprecated max_tokens field is not sent');
     assert.equal(calls[0].body.reasoning_effort, 'low', 'GPT-OSS reasoning is pinned to low effort');
@@ -126,17 +130,24 @@ async function testClientConfigurationAndWireFormat() {
 async function testProviderErrorsAndTruncation() {
   const oldKey = process.env.GROQ_API_KEY;
   const oldFetch = global.fetch;
+  const oldWarn = console.warn;
+  const policy = aiClient._retryPolicy;
+  const oldPolicy = Object.assign({}, policy);
   process.env.GROQ_API_KEY = 'test-key';
   try {
-    global.fetch = async () => ({
-      ok: false,
-      status: 429,
-      text: async () => '{"error":{"message":"rate limit"}}'
-    });
+    /* a 429 that never clears is retried with backoff, then reported as a 429 */
+    console.warn = () => {};
+    let attempts = 0;
+    Object.assign(policy, { baseDelayMs: 1, jitterMs: 0, sleep: async () => {} });
+    global.fetch = async () => {
+      attempts += 1;
+      return { ok: false, status: 429, text: async () => '{"error":{"message":"rate limit"}}' };
+    };
     await assert.rejects(
       aiClient.chatCompletion([{ role: 'user', content: 'test' }]),
       error => error.status === 429 && /Groq API error \(429\)/.test(error.message)
     );
+    assert.equal(attempts, 1 + policy.maxRetries, 'the request is sent again after every wait, then given up');
 
     global.fetch = async () => ({
       ok: true,
@@ -149,6 +160,8 @@ async function testProviderErrorsAndTruncation() {
     );
   } finally {
     global.fetch = oldFetch;
+    console.warn = oldWarn;
+    Object.assign(policy, oldPolicy);
     if (oldKey === undefined) delete process.env.GROQ_API_KEY;
     else process.env.GROQ_API_KEY = oldKey;
   }
@@ -311,13 +324,44 @@ async function testModelSelectionAndFallback() {
     /* 1. The primary model comes from GROQ_MODEL; a blank value uses the default. */
     delete process.env.GROQ_MODEL;
     delete process.env.GROQ_FALLBACK_MODEL;
-    assert.equal(aiClient.primaryModel(), 'openai/gpt-oss-120b');
-    assert.equal(aiClient.fallbackModel(), 'openai/gpt-oss-20b');
+    assert.equal(aiClient.primaryModel(), 'openai/gpt-oss-20b');
+    assert.equal(aiClient.fallbackModel(), 'openai/gpt-oss-120b');
     process.env.GROQ_MODEL = '   ';
-    assert.equal(aiClient.primaryModel(), 'openai/gpt-oss-120b', 'a blank GROQ_MODEL uses the default');
+    assert.equal(aiClient.primaryModel(), 'openai/gpt-oss-20b', 'a blank GROQ_MODEL uses the default');
     process.env.GROQ_MODEL = '  qwen/qwen3.8-27b  ';
     assert.equal(aiClient.primaryModel(), 'qwen/qwen3.8-27b', 'GROQ_MODEL is trimmed and used as the primary model');
     assert.equal(aiClient.MODEL, 'qwen/qwen3.8-27b', 'MODEL reflects the configured primary model');
+
+    /* 1b. The two defaults back each other up when GROQ_FALLBACK_MODEL is unset. */
+    process.env.GROQ_MODEL = 'openai/gpt-oss-120b';
+    assert.equal(aiClient.fallbackModel(), 'openai/gpt-oss-20b', 'a primary of gpt-oss-120b falls back to gpt-oss-20b');
+    assert.equal(aiClient.fallbackModel('openai/gpt-oss-20b'), 'openai/gpt-oss-120b', 'a one-request model override gets its own fallback');
+    assert.equal(aiClient.fallbackModel('openai/gpt-oss-120b'), 'openai/gpt-oss-20b');
+    process.env.GROQ_FALLBACK_MODEL = 'test/fallback-model';
+    assert.equal(aiClient.fallbackModel('openai/gpt-oss-20b'), 'test/fallback-model', 'an explicit GROQ_FALLBACK_MODEL always wins');
+    delete process.env.GROQ_MODEL;
+    delete process.env.GROQ_FALLBACK_MODEL;
+
+    /* 1c. Out of the box: the Free-tier model first, its bigger sibling when it is missing. */
+    script([404, modelNotFound], [200, okBody('Answered by gpt-oss-120b.')]);
+    const byDefault = await aiClient.chatCompletion(messages);
+    assert.deepEqual(requests.map(request => request.body.model), ['openai/gpt-oss-20b', 'openai/gpt-oss-120b']);
+    assert.equal(byDefault.model, 'openai/gpt-oss-120b');
+
+    /* 1d. options.model replaces the primary model for ONE request (the mock generator uses it). */
+    script([200, okBody('Per-request model.')]);
+    process.env.GROQ_MODEL = 'openai/gpt-oss-20b';
+    const overridden = await aiClient.chatCompletion(messages, { model: '  openai/gpt-oss-120b ' });
+    assert.equal(requests[0].body.model, 'openai/gpt-oss-120b', 'options.model is trimmed and sent');
+    assert.equal(overridden.model, 'openai/gpt-oss-120b');
+    script([200, okBody('Back to the configured model.')]);
+    await aiClient.chatCompletion(messages);
+    assert.equal(requests[0].body.model, 'openai/gpt-oss-20b', 'the override does not leak into the next request');
+    script([404, modelNotFound], [200, okBody('Fallback of the override.')]);
+    await aiClient.chatCompletion(messages, { model: 'openai/gpt-oss-120b' });
+    assert.deepEqual(requests.map(request => request.body.model), ['openai/gpt-oss-120b', 'openai/gpt-oss-20b'],
+      'the override falls back to the other default, not to its own model');
+    delete process.env.GROQ_MODEL;
 
     /* 2. A fallback equal to the primary model is never requested a second time. */
     process.env.GROQ_MODEL = 'openai/gpt-oss-20b';
@@ -368,7 +412,6 @@ async function testModelSelectionAndFallback() {
 
     /* 7. Failures that are not about the model are never retried on the fallback. */
     const notModelProblems = [
-      { reply: [429, { error: { message: 'Rate limit reached', code: 'rate_limit_exceeded' } }], status: 429 },
       { reply: [503, { error: { message: 'Service unavailable' } }], status: 503 },
       { reply: [400, { error: { message: 'Invalid request', code: 'invalid_request_error' } }], status: 400 },
       { reply: [200, { choices: [{ finish_reason: 'length', message: { content: '{"partial":' } }] }], code: 'AI_OUTPUT_TRUNCATED' }
@@ -381,12 +424,203 @@ async function testModelSelectionAndFallback() {
       );
       assert.equal(requests.length, 1, `${code || status} does not trigger the model fallback`);
     }
+
+    /* 7b. A 429 is waited out and sent again to the SAME model — never moved to the fallback. */
+    const rateLimit = [429, { error: { message: 'Rate limit reached', code: 'rate_limit_exceeded' } }];
+    const policy = aiClient._retryPolicy;
+    const oldPolicy = Object.assign({}, policy);
+    Object.assign(policy, { baseDelayMs: 1, jitterMs: 0, sleep: async () => {} });
+    try {
+      script(rateLimit, rateLimit, rateLimit, rateLimit, [200, okBody('must not be reached')]);
+      await assert.rejects(aiClient.chatCompletion(messages), error => error.status === 429);
+      assert.equal(requests.length, 1 + policy.maxRetries, 'a 429 is retried maxRetries times, then reported');
+      assert.ok(requests.every(request => request.body.model === 'openai/gpt-oss-120b'),
+        'every retry of a 429 uses the same model — the fallback is only for a missing model');
+    } finally {
+      Object.assign(policy, oldPolicy);
+    }
   } finally {
     global.fetch = oldFetch;
     console.warn = oldWarn;
     for (const [name, value] of [['GROQ_API_KEY', saved.key], ['GROQ_MODEL', saved.model], ['GROQ_FALLBACK_MODEL', saved.fallback]]) {
       if (value === undefined) delete process.env[name];
       else process.env[name] = value;
+    }
+  }
+}
+
+async function testRateLimitBackoff() {
+  const envNames = ['GROQ_API_KEY', 'GROQ_API_KEY_1', 'GROQ_API_KEY_2', 'DEEPSEEK_API_KEY', 'GROQ_MODEL', 'GROQ_FALLBACK_MODEL'];
+  const saved = Object.fromEntries(envNames.map(name => [name, process.env[name]]));
+  const oldFetch = global.fetch;
+  const oldWarn = console.warn;
+  const policy = aiClient._retryPolicy;
+  const oldPolicy = Object.assign({}, policy);
+  const messages = [{ role: 'user', content: 'Explain an IELTS overview.' }];
+  const requests = [];
+  const waits = [];
+  let queued = [];
+  const okReply = content => ({
+    ok: true, status: 200,
+    json: async () => ({ choices: [{ finish_reason: 'stop', message: { content } }], usage: null })
+  });
+  /* a Groq 429: optional Retry-After header, optional text of the error */
+  const limited = (retryAfter, message) => ({
+    ok: false, status: 429,
+    headers: { get: name => (String(name).toLowerCase() === 'retry-after' && retryAfter !== undefined ? String(retryAfter) : null) },
+    text: async () => JSON.stringify({ error: { message: message || 'Rate limit reached for model on tokens per minute (TPM): Limit 8000.', code: 'rate_limit_exceeded' } })
+  });
+  const failed = status => ({ ok: false, status, text: async () => JSON.stringify({ error: { message: 'boom' } }) });
+  const script = (...responses) => { queued = responses.slice(); requests.length = 0; waits.length = 0; };
+  const between = (value, low, high) => value >= low && value <= high;
+  /* the shipped policy, except that "sleeping" only records the wait */
+  const resetPolicy = () => Object.assign(policy, shippedRetryPolicy, { sleep: async ms => { waits.push(ms); } });
+
+  try {
+    for (const name of envNames) delete process.env[name];
+    process.env.GROQ_API_KEY = 'rate-limit-key';
+    console.warn = () => {};
+    global.fetch = async (url, options) => {
+      requests.push({ url: String(url), key: options.headers.Authorization, model: JSON.parse(options.body).model });
+      if (!queued.length) throw new Error('unexpected extra request');
+      return queued.shift();
+    };
+    resetPolicy();
+
+    /* 0. The shipped policy: 2–3 s, then doubling. */
+    assert.equal(shippedRetryPolicy.maxRetries, 3);
+    assert.equal(shippedRetryPolicy.baseDelayMs, 2000, 'the first wait starts at 2 s …');
+    assert.equal(shippedRetryPolicy.jitterMs, 1000, '… plus up to 1 s of jitter, so 2–3 s');
+    assert.equal(shippedRetryPolicy.factor, 2);
+    assert.equal(shippedRetryPolicy.maxDelayMs, 10000, 'one request never sleeps longer than 10 s');
+
+    /* 1. One 429: wait 2–3 s, send the same request again, the caller sees only the answer. */
+    script(limited(), okReply('Recovered after one wait.'));
+    const recovered = await aiClient.chatCompletion(messages);
+    assert.equal(recovered.content, 'Recovered after one wait.');
+    assert.equal(requests.length, 2);
+    assert.equal(waits.length, 1);
+    assert.ok(between(waits[0], 2000, 3000), `the first wait is 2–3 s (was ${waits[0]} ms)`);
+    assert.equal(requests[0].model, requests[1].model, 'the retry goes to the same model');
+
+    /* 1b. The jitter is real, and always inside 2–3 s. */
+    const firstWaits = new Set();
+    for (let i = 0; i < 40; i++) {
+      script(limited(), okReply('ok'));
+      await aiClient.chatCompletion(messages);
+      assert.ok(between(waits[0], 2000, 3000));
+      firstWaits.add(waits[0]);
+    }
+    assert.ok(firstWaits.size > 5, 'waits are spread out so parallel clients do not retry in lockstep');
+
+    /* 2. Several 429s in a row: the wait doubles — 2–3 s, 4–5 s, 8–9 s. */
+    script(limited(), limited(), limited(), okReply('Third retry worked.'));
+    assert.equal((await aiClient.chatCompletion(messages)).content, 'Third retry worked.');
+    assert.equal(requests.length, 4);
+    assert.ok(between(waits[0], 2000, 3000) && between(waits[1], 4000, 5000) && between(waits[2], 8000, 9000),
+      `exponential backoff 2–3 s, 4–5 s, 8–9 s (was ${waits.join(', ')})`);
+
+    /* 3. The quota never clears: after maxRetries waits the 429 is reported, with no invented hint. */
+    script(limited(), limited(), limited(), limited(), okReply('must not be reached'));
+    await assert.rejects(aiClient.chatCompletion(messages), error => error.status === 429 && error.retryAfterMs === undefined);
+    assert.equal(requests.length, 1 + policy.maxRetries);
+    assert.equal(waits.length, policy.maxRetries);
+
+    /* 4. Groq's own number wins when it is longer than the backoff. */
+    script(limited(5), okReply('ok'));
+    await aiClient.chatCompletion(messages);
+    assert.deepEqual(waits, [5250], 'Retry-After: 5 → wait 5 s plus a 250 ms margin');
+    script(limited(undefined, 'Rate limit reached … Please try again in 7.66s. Need more tokens? Upgrade.'), okReply('ok'));
+    await aiClient.chatCompletion(messages);
+    assert.deepEqual(waits, [7910], 'with no header the "try again in 7.66s" sentence is used');
+    script(limited(0.5), okReply('ok'));
+    await aiClient.chatCompletion(messages);
+    assert.ok(between(waits[0], 2000, 3000), 'a hint shorter than the backoff does not shorten it');
+
+    /* 4b. A wait longer than one request may hold (a daily quota, say) is not slept through. */
+    script(limited(120), okReply('must not be reached'));
+    await assert.rejects(
+      aiClient.chatCompletion(messages),
+      error => error.status === 429 && error.retryAfterMs === 120000
+    );
+    assert.equal(requests.length, 1, 'no second request');
+    assert.equal(waits.length, 0, 'no sleeping');
+    script(limited(undefined, 'Rate limit reached … Please try again in 2m59.56s.'), okReply('must not be reached'));
+    await assert.rejects(aiClient.chatCompletion(messages), error => error.status === 429 && error.retryAfterMs === 179560);
+
+    /* 4c. The longest wait the policy allows is a cap on the backoff too. */
+    Object.assign(policy, { maxDelayMs: 3000, maxRetries: 5 });
+    script(limited(), limited(), limited(), limited(), okReply('ok'));
+    await aiClient.chatCompletion(messages);
+    assert.ok(waits.length === 4 && waits.every(ms => ms <= 3000) && waits[3] === 3000, `capped at 3 s (was ${waits.join(', ')})`);
+    resetPolicy();
+
+    /* 5. Several keys: every key is tried at once; only a whole pool of 429s waits. */
+    delete process.env.GROQ_API_KEY;
+    process.env.GROQ_API_KEY_1 = 'key-a';
+    process.env.GROQ_API_KEY_2 = 'key-b';
+    script(limited(), okReply('the other key answered'));
+    assert.equal((await aiClient.chatCompletion(messages)).content, 'the other key answered');
+    assert.equal(requests.length, 2);
+    assert.notEqual(requests[0].key, requests[1].key, 'the second key is tried');
+    assert.equal(waits.length, 0, 'no waiting while another key is available');
+    script(limited(), limited(), okReply('answered after the pool waited'));
+    assert.equal((await aiClient.chatCompletion(messages)).content, 'answered after the pool waited');
+    assert.equal(requests.length, 3);
+    assert.equal(waits.length, 1, 'one wait after BOTH keys said 429');
+    assert.equal(requests[2].key, requests[0].key, 'the next pass starts with the same key order');
+
+    /* 6. DeepSeek counts as part of the pool: a 429 from Groq goes there first, without waiting. */
+    delete process.env.GROQ_API_KEY_2;
+    process.env.DEEPSEEK_API_KEY = 'ds-key';
+    script(limited(), okReply('deepseek answered'));
+    assert.equal((await aiClient.chatCompletion(messages)).content, 'deepseek answered');
+    assert.ok(requests[1].url.startsWith(aiClient.DEEPSEEK_BASE));
+    assert.equal(waits.length, 0);
+    script(limited(), limited(), limited(), okReply('second pass'));
+    assert.equal((await aiClient.chatCompletion(messages)).content, 'second pass');
+    assert.equal(waits.length, 1, 'both providers were rate limited → one wait, then a second pass');
+    assert.equal(requests.length, 4);
+
+    /* 7. When retries run out, the 429 is what is reported — not the error of a later fallback entry. */
+    Object.assign(policy, { maxRetries: 0 });
+    script(limited(30), failed(503));
+    await assert.rejects(aiClient.chatCompletion(messages), error => error.status === 429 && error.retryAfterMs === 30000);
+    resetPolicy();
+    delete process.env.DEEPSEEK_API_KEY;
+    delete process.env.GROQ_API_KEY_1;
+    process.env.GROQ_API_KEY = 'rate-limit-key';
+
+    /* 8. Only 429s are waited for. */
+    script(failed(500), okReply('must not be reached'));
+    await assert.rejects(aiClient.chatCompletion(messages), error => error.status === 500);
+    assert.deepEqual([requests.length, waits.length], [1, 0], 'a 500 is not slept on');
+    script(failed(400), okReply('must not be reached'));
+    await assert.rejects(aiClient.chatCompletion(messages), error => error.status === 400);
+    assert.deepEqual([requests.length, waits.length], [1, 0], 'a 400 is not retried');
+    script(limited(), failed(400), okReply('must not be reached'));
+    await assert.rejects(aiClient.chatCompletion(messages), error => error.status === 400);
+    assert.deepEqual([requests.length, waits.length], [2, 1], 'after a 429 wait, a hard error ends the request at once');
+
+    /* 9. Retry-After parsing. */
+    const header = value => ({ headers: { get: name => (name === 'retry-after' ? value : null) } });
+    assert.equal(aiClient._parseRetryAfterMs(header('7'), ''), 7000);
+    assert.equal(aiClient._parseRetryAfterMs(header('0.5'), ''), 500);
+    const dateHint = aiClient._parseRetryAfterMs(header(new Date(Date.now() + 30000).toUTCString()), '');
+    assert.ok(between(dateHint, 27000, 30000), 'an HTTP date is turned into a delay');
+    assert.equal(aiClient._parseRetryAfterMs(header(''), 'try again in 250ms'), 250);
+    assert.equal(aiClient._parseRetryAfterMs({}, 'Please try again in 7.66s.'), 7660);
+    assert.equal(aiClient._parseRetryAfterMs({}, 'Please try again in 2m59.56s. Need more tokens?'), 179560);
+    assert.equal(aiClient._parseRetryAfterMs({}, 'please TRY AGAIN IN 1h2m3s'), 3723000);
+    assert.equal(aiClient._parseRetryAfterMs(header('abc'), 'no hint here'), undefined);
+    assert.equal(aiClient._parseRetryAfterMs(null, ''), undefined);
+  } finally {
+    global.fetch = oldFetch;
+    console.warn = oldWarn;
+    Object.assign(policy, oldPolicy);
+    for (const name of envNames) {
+      if (saved[name] === undefined) delete process.env[name];
+      else process.env[name] = saved[name];
     }
   }
 }
@@ -414,17 +648,21 @@ function testNoLegacyProviderRemnants() {
       assert.ok(!pattern.test(source), `${file} still refers to the previous provider (${pattern})`);
     }
     assert.ok(!/llama-3\.3-70b-versatile/.test(source), `${file} still refers to the retired Groq model llama-3.3-70b-versatile`);
+    assert.ok(!/llama-3\.1-8b-instant/.test(source),
+      `${file} still refers to llama-3.1-8b-instant, which Groq no longer serves on the Free and Developer tiers`);
   }
   assert.ok(aiClient.endpoint().startsWith('https://api.groq.com/openai/v1'),
     'the API base is Groq');
-  assert.equal(aiClient.MODEL, 'openai/gpt-oss-120b', 'the default primary model is pinned in the client');
-  assert.equal(aiClient.DEFAULT_FALLBACK_MODEL, 'openai/gpt-oss-20b', 'the default fallback model is pinned in the client');
+  assert.equal(aiClient.MODEL, 'openai/gpt-oss-20b', 'the default primary model is pinned in the client');
+  assert.equal(aiClient.DEFAULT_MODEL, 'openai/gpt-oss-20b');
+  assert.equal(aiClient.DEFAULT_FALLBACK_MODEL, 'openai/gpt-oss-120b', 'the default fallback model is pinned in the client');
 }
 
 (async () => {
   await testClientConfigurationAndWireFormat();
   await testProviderErrorsAndTruncation();
   await testModelSelectionAndFallback();
+  await testRateLimitBackoff();
   testNoLegacyProviderRemnants();
   await testEndpointMigration();
   console.log('AI CLIENT TESTS OK ✓');

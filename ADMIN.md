@@ -143,7 +143,7 @@ Modal oynada quyidagilar bor:
 | **Test raqami/nomi** | Avtomatik to'ldiriladi — keyingi bo'sh raqam (`Practice Test 6`). Test id `test6` ko'rinishida yaratiladi |
 | **Qiyinlik darajasi** | `Standard IELTS` yoki `Hard` (uzunroq gaplar, zichroq leksika, nozik distraktorlar) |
 | **Ixtiyoriy mavzu yo'nalishi** | Bo'sh qoldirilsa — quyidagi ombordan tanlanadi; to'ldirilsa — butun test shu mavzuda |
-| **Generatsiya qilish** | `Listening → Reading → Writing → Speaking` progress bilan ishlaydi |
+| **Generatsiya qilish** | `Listening → Reading → Writing → Speaking` tartibida, har biri kichik **bo'laklarga** bo'linib (Listening 1/4…4/4, Reading 1/3…3/3, Writing, Speaking) ketma-ket so'raladi; progress shu bo'laklar bo'yicha ko'rsatiladi |
 | **Nashr qilish** | Belgilangan bo'lsa test `is_published = true` bilan yoziladi (o'quvchilarga ko'rinadi); belgilanmasa — qoralama |
 
 **Takrorlanishning oldini olish (Dynamic Topic & Diversity Pool).**
@@ -154,7 +154,7 @@ Har bir generatsiyada:
 - har bir bo'lim uchun `Math.random()` bilan **alohida tasodifiy mavzu** tanlanadi;
 - savol turlari (T/F/NG, Headings, Multiple Choice, Summary fill-in, Table completion…) har safar
   **boshqacha kombinatsiyada** aralashtiriladi (Listening: 4×10, Reading: 13+14+13 = 40 savol);
-- Groq so'rovi `temperature: 0.85` bilan yuboriladi — natija har safar boshqacha. Listening va Reading 4096 tokenlik limitga sig'ishi uchun qismlarga bo'lib so'raladi.
+- Groq so'rovi `temperature: 0.85` bilan yuboriladi — natija har safar boshqacha. Listening va Reading 4096 tokenlik limitga (va Free tarifning daqiqalik token limitiga) sig'ishi uchun **alohida HTTP so'rovlarga** bo'linadi — pastdagi "Bo'laklab generatsiya va 429" ga qarang.
 
 **Format 100% IELTS bo'yicha:** Listening (4 part, 40 savol, 4 to'liq transcript), Reading (3 akademik passage,
 40 savol — javob kaliti va tushuntirish bilan), Writing (Task 1 grafik/jadval + Task 2 insho), Speaking
@@ -177,7 +177,26 @@ qoralama sifatida saqlanadini boshqaradi; qo'lda tuzilgan yangi testdan farqi �
 yaratilgan test darhol muharrirga uzatiladi. Agar test id allaqachon mavjud bo'lsa, modal
 ogohlantiradi: generatsiya natijasi mavjud bo'limlarning ustiga yoziladi.
 
-Barcha matnli AI so'rovlari **`lib/aiClient.js`** orqali `https://api.groq.com/openai/v1/chat/completions` manziliga yuboriladi. Asosiy model — `GROQ_MODEL` (standart `openai/gpt-oss-120b`); zaxira model — `GROQ_FALLBACK_MODEL` (standart `openai/gpt-oss-20b`), u asosiy model 404 / `model_not_found` / `model_decommissioned` qaytarganda ishlatiladi. Barcha so'rovlarda `max_completion_tokens: 4096` va serverdagi yagona `GROQ_API_KEY` ishlatiladi. Model yoki endpointni boshqa API fayllarda alohida belgilamang.
+**Bo'laklab generatsiya va 429.** Groq Free tarifida token limiti kichik (hujjatlarga ko'ra `gpt-oss-20b` uchun taxminan 8 000 token/daqiqa), shuning uchun mock bitta og'ir so'rov bilan emas, **9 ta kichik so'rov** bilan yaratiladi (`POST /api/generate-mock`):
+
+| Bo'lim | So'rovlar | Maydon |
+| --- | --- | --- |
+| Listening | 4 ta (Part 1…4) | `part: 1…4` |
+| Reading | 3 ta (Passage 1…3) | `passage: 1…3` |
+| Writing | 1 ta | — |
+| Speaking | 1 ta | — |
+
+So'rovlar **ketma-ket** yuboriladi (bir vaqtda bitta). Har javobda aynan bitta Part/Passage va `chunk: { kind, number, index, total }` bo'ladi; `questionOffset` savol id'larini davom ettiradi (Part 2 → `l11…l20`). Brauzer (`mockGenerator.js`) bo'laklarni bitta bo'limga birlashtiradi, audio/diagramma bosqichidan o'tkazadi va odatdagidek saqlaydi. `part`/`passage`siz so'rov avvalgidek butun bo'limni qaytaradi (serverda bo'laklar ketma-ket bajariladi).
+
+429 (so'rov yoki token limiti) **xato emas, pauza** sifatida qaraladi:
+
+1. **Server** (`lib/aiClient.js`): avval boshqa kalitlar / DeepSeek sinaladi; hammasi 429 bersa, **2–3 s, 4–5 s, 8–9 s** kutib so'rov qayta yuboriladi (eng ko'pi 3 marta; Groq `Retry-After` yoki xabardagi "try again in …" uzunroq vaqt aytsa — shuncha, +0,25 s). Groq 10 soniyadan ko'p kutishni so'rasa (kunlik limit yoki daqiqalik limitning uzoq qismi), server funksiyani band qilib kutmaydi: `429 RATE_LIMITED` + `retryAfterMs` qaytaradi va kutishni brauzer o'z zimmasiga oladi.
+2. **Brauzer** (`mockGenerator.js`): `RATE_LIMITED` javobini xato deb ko'rsatmaydi; xuddi shu bo'lakni **2–3 s, 4–5 s, 8–9 s … (60 s gacha)** kutib, eng ko'pi 6 marta qayta yuboradi. Holat qatorida sanoq: *"Groq so'rov limiti — 12 soniyadan so'ng avtomatik qayta uriniladi (2/6)…"*.
+3. Faqat limit ochilmasa (kunlik kvota yoki barcha urinishlar tugadi) modal aniq xabar bilan to'xtaydi: *"Groq bepul limiti hozircha to'lgan (429). Taxminan N daqiqadan so'ng qayta urinib ko'ring"*. To'liq tayyor bo'lgan bo'limlar saqlanib qoladi. Boshqa xatolar (masalan 500) kutilmaydi va darhol ko'rsatiladi.
+
+Serverning o'z IP limiti (`TOO_MANY_REQUESTS`, 5 daqiqada 120 so'rov) boshqa narsa — u kutish bilan hal bo'lmaydi va xato sifatida ko'rsatiladi. Bitta mock ~30–40 ming token ishlatadi (taxminiy hisob): 200 000 token/kun limitida kuniga bir necha mock mumkin va 8K token/daqiqada bir mock bir necha daqiqa davom etishi mumkin.
+
+Barcha matnli AI so'rovlari **`lib/aiClient.js`** orqali `https://api.groq.com/openai/v1/chat/completions` manziliga yuboriladi. Asosiy model — `GROQ_MODEL` (standart `openai/gpt-oss-20b` — Groq Free tarifida hozir ham xizmat qiladigan model); zaxira model — `GROQ_FALLBACK_MODEL` (standart `openai/gpt-oss-120b`), u asosiy model 404 / `model_not_found` / `model_decommissioned` qaytarganda ishlatiladi. 1-Click generator uchun alohida `GROQ_GENERATOR_MODEL` berish mumkin (bo'sh bo'lsa `GROQ_MODEL`) — Groq limitni har model uchun alohida hisoblaydi, shuning uchun generator Coach/baholash kvotasini yemaydi. `llama-3.1-8b-instant` va `llama-3.3-70b-versatile` Groq'da Free/Developer tariflarida 2026-08-16 dan to'xtatilgan, shu sabab ishlatilmaydi. Barcha so'rovlarda `max_completion_tokens: 4096` va serverdagi `GROQ_API_KEY` (xohlasangiz `GROQ_API_KEY_1…N`) ishlatiladi. Model yoki endpointni boshqa API fayllarda alohida belgilamang.
 
 **`GROQ_API_KEY` kiritilmagan bo'lsa** bo'lim generatsiyasi uni sozlash bo'yicha xabar qaytaradi. Kalitni [Groq Console](https://console.groq.com/keys) dan oling va Vercel → Settings → Environment Variables ga qo'shib qayta deploy qiling. Quiz kalit bo'lmasa lokal savol bankiga qaytadi.
 
@@ -260,8 +279,9 @@ Nashrdan olinsa, keyingi sahifa yangilanishida yo'qoladi.
 | Jadvallar bo'sh, lekin xato yo'q | RLS hammasini filtrlayapti | `role` ustunini tekshiring; `select public.is_admin();` `true` qaytarishi kerak |
 | Test tanlash oynasida yangi test yo'q | Test yoki uning bo'limi nashr qilinmagan | Ham meta, ham kerakli bo'limlar `Published` bo'lishi kerak |
 | "Iltimos, avval GROQ_API_KEY sozlang" | Serverda Groq kaliti yo'q | Vercel → Settings → Environment Variables → `GROQ_API_KEY` qo'shing va qayta deploy qiling |
-| `Groq API error (429)` | So'rov tezligi yoki kvota limiti | Biroz kuting, Groq Console’dagi loyiha limiti va server kalitini tekshiring. Boshqa HTTP xatolarda endpoint qaytargan Groq xabarini tekshiring. |
-| `Groq API error (404)` yoki `model_not_found` | Asosiy model Groq'da o'chirilgan yoki kalitga ruxsat yo'q | Server avtomatik `GROQ_FALLBACK_MODEL` ga o'tadi (logda `[aiClient]` xabari chiqadi). Doimiy yechim: Vercel → Environment Variables'da `GROQ_MODEL` ni o'chiring yoki `openai/gpt-oss-120b` ga o'rnating, so'ng qayta deploy qiling. |
+| "Groq bepul limiti hozircha to'lgan (429)" / `Groq API error (429)` | Groq Free limiti (token/daqiqa yoki token/kun) | Generator buni o'zi kutib qayta uriniladi (2–3 s, 4–5 s, … 60 s gacha). Xabar chiqsa — kunlik limit tugagan yoki barcha urinishlar ishlatilgan: xabardagi daqiqadan so'ng qayta bosing (saqlangan bo'limlar o'z o'rnida). Groq Console → Limits sahifasi va `GROQ_GENERATOR_MODEL` ni tekshiring. |
+| Generator 504 / `FUNCTION_INVOCATION_TIMEOUT` | Vercel funksiyasi 429 kutishlariga ulgurmadi (eski 10 s limit) | `vercel.json` da `api/*.js` uchun `maxDuration: 60` borligini tekshiring va qayta deploy qiling |
+| `Groq API error (404)` yoki `model_not_found` | Asosiy model Groq'da o'chirilgan yoki kalitga ruxsat yo'q | Server avtomatik `GROQ_FALLBACK_MODEL` ga o'tadi (logda `[aiClient]` xabari chiqadi). Doimiy yechim: Vercel → Environment Variables'da `GROQ_MODEL` ni o'chiring yoki `openai/gpt-oss-20b` ga o'rnating, so'ng qayta deploy qiling. |
 | Listening bo'limida audio yo'q | Edge TTS xizmati javob bermadi | `audioUrl` bo'sh — muharrirga kirib MP3 ni qo'lda yuklang; transcript saqlangan |
 | AI generator tugmasi ishlamaydi | `mockGenerator.js` / `lib/topicPool.js` yuklanmagan | `index.html` skriptlari va `sw.js` precache ro'yxatini tekshiring |
 | AI IELTS'dan tashqari savolga javob berdi | So'rov guardrails'dan o'tib ketdi | `public/lib/aiGuardrails.js` yuklangani va `api/*` da `withGuardrails` borligini tekshiring; brauzer keshi'ni tozalang |
@@ -279,16 +299,16 @@ supabaseClient.js                            admin API + Supabase Storage media 
 admin.js                                     panel mantiqiy qatlami + IELTS konstruktor + JSON muharriri
 mockGenerator.js                             admin UI: 1-Click AI generator modal (progress, saqlash, tahrirlash)
 lib/topicPool.js                             48 mavzu + savol turi aralashtirish (brauzer va Node uchun UMD)
-lib/aiClient.js                             yagona Groq API klienti, openai/gpt-oss-120b (zaxira gpt-oss-20b), 4096 token
+lib/aiClient.js                             yagona Groq API klienti, openai/gpt-oss-20b (zaxira gpt-oss-120b), 4096 token, 429 da backoff
 lib/edgeTts.js                               Microsoft Edge TTS (MP3)
-api/generate-mock.js                         POST /api/generate-mock — bo'lim va audio generatsiyasi
+api/generate-mock.js                         POST /api/generate-mock — bo'lim (butun yoki bo'lak: part/passage) va audio generatsiyasi
 tests/generator.test.js                      pool, endpoint, TTS, i18n, wiring testlari
 tests/generatorClient.test.js                modal oqimi: generatsiya → upload → saqlash → xulosa
 lib/aiGuardrails.js                         qat'iy System Instruction + mavzudan tashqari so'rovni rad etish
 lib/aiCache.js                              7 kunlik TTL AI kesh (sha256 kalit, upsert, xotira nusxasi)
 supabase/migrations/202610060002_ai_cache.sql  public.ai_cache — AI javoblari keshi (RLS, policy yo'q)
 tests/aiGuardrails.test.js                  guardrails + 7 kunlik kesh testlari (PGlite bilan)
-tests/aiClient.test.js                      Groq wire format, 4096 token va endpoint ulanish testlari
+tests/aiClient.test.js                      Groq wire format, standart modellar, 429 backoff, 4096 token va endpoint ulanish testlari
 script.js                                    #/admin route, learner runner, audio/image rendering
 styles.css                                   admin builder + media + exam content stillari
 tests/admin.test.js                          guard/RLS, media migratsiyasi, format, validatsiya, XSS testlari
