@@ -60,6 +60,27 @@ async function callAI(systemPrompt, userContent, temperature = 0.25) {
 }
 
 /* ---------- prompts ---------- */
+const TRANSFORM_SYSTEM = `You are an exacting but supportive IELTS sentence-transformation examiner. Assess ONE candidate sentence written to upgrade a simple source sentence toward Band 7+ style.
+
+Score the actual sentence, not the candidate's effort. Check whether it preserves the source meaning and uses these requested features naturally:
+1. Inversion or another accurate emphatic structure (for example, “Not only do…”, “Rarely has…”, or “Were … to …”).
+2. A well-controlled complex grammatical structure (for example, a subordinate, concessive, conditional or relative clause).
+3. A precise academic collocation that fits the context rather than an unnatural “fancy” phrase.
+4. Overall grammar, punctuation, clarity and naturalness.
+
+Give a sentence-level estimate only; this is NOT a full IELTS Writing band score. A polished response need not copy the model answer. If the candidate omits a requested feature, explain how to add it. Never invent strengths or errors that are not present in the candidate sentence.
+
+Respond ONLY with valid JSON, no markdown fences, no preamble, in exactly this shape:
+{
+  "score": <integer from 0 to 100>,
+  "band": <sentence-level estimate from 0 to 9, in 0.5 increments>,
+  "criteria": { "inversion": <0-9>, "complexGrammar": <0-9>, "academicCollocation": <0-9>, "accuracyNaturalness": <0-9> },
+  "strengths": ["specific evidence-based strength"],
+  "improvements": ["specific actionable improvement"],
+  "modelAnswer": "one possible improved sentence preserving the source meaning",
+  "summary": "brief explanation of the score"
+}`;
+
 const WRITING_SYSTEM = `You are a certified IELTS examiner with years of experience marking Academic Writing Task 1 and Task 2. Score strictly and realistically, exactly as a real examiner would — do not inflate scores out of politeness.
 
 The candidate has written responses to one or more writing tasks. Grade EACH TASK INDEPENDENTLY using the official IELTS public band descriptors. Each criterion is scored on the 1-9 scale (whole or half bands):
@@ -144,6 +165,28 @@ function normalizeSpeaking(parsed) {
   };
 }
 
+function clampScore(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.max(0, Math.min(100, Math.round(number))) : 0;
+}
+function normalizeSentenceTransform(parsed) {
+  const criteria = parsed.criteria && typeof parsed.criteria === 'object' ? parsed.criteria : {};
+  return {
+    score: clampScore(parsed.score),
+    band: clampBand(parsed.band),
+    criteria: {
+      inversion: clampBand(criteria.inversion),
+      complexGrammar: clampBand(criteria.complexGrammar),
+      academicCollocation: clampBand(criteria.academicCollocation),
+      accuracyNaturalness: clampBand(criteria.accuracyNaturalness)
+    },
+    strengths: list(parsed.strengths),
+    improvements: list(parsed.improvements),
+    modelAnswer: str(parsed.modelAnswer).slice(0, 800),
+    summary: str(parsed.summary).slice(0, 1200)
+  };
+}
+
 /* ---------- handler ---------- */
 module.exports = async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -161,8 +204,8 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  const { mode, prompt, response, tasks, parts } = req.body || {};
-  if (mode !== 'writing' && mode !== 'speaking') {
+  const { mode, prompt, response, tasks, parts, sourceSentence, candidateSentence } = req.body || {};
+  if (!['writing', 'speaking', 'sentence_transform'].includes(mode)) {
     res.status(400).json({ error: 'Invalid mode' });
     return;
   }
@@ -170,7 +213,7 @@ module.exports = async function handler(req, res) {
   /* Strict IELTS boundary (lib/aiGuardrails.js): anything that clearly
      belongs to another domain is refused before a language-model call is made. */
   const scopeText = [
-    prompt, response,
+    prompt, response, sourceSentence, candidateSentence,
     ...(Array.isArray(tasks) ? tasks.flatMap((t) => [t && t.prompt, t && t.response]) : []),
     ...(Array.isArray(parts) ? parts.flatMap((p) => ((p && p.qa) || []).flatMap((qa) => [qa && qa.q, qa && qa.a])) : [])
   ].filter(Boolean).join('\n');
@@ -180,6 +223,22 @@ module.exports = async function handler(req, res) {
   }
 
   try {
+    if (mode === 'sentence_transform') {
+      const source = str(sourceSentence).trim().slice(0, 1000);
+      const candidate = str(candidateSentence).trim().slice(0, 1200);
+      if (!source || candidate.length < 10) {
+        res.status(400).json({ error: 'Provide the source sentence and a complete transformation before asking for feedback.' });
+        return;
+      }
+      const userContent = `SOURCE SENTENCE:\n${source}\n\nTRANSFORMATION CHALLENGE:\n${str(prompt).trim().slice(0, 1000) || 'Preserve the meaning and use inversion, complex grammar and an academic collocation.'}\n\nCANDIDATE SENTENCE:\n${candidate}`;
+      const { data: parsed } = await aiCache.withCache(
+        `grade:sentence-transform:${guard.cleanPrompt(userContent).slice(0, 4000)}`,
+        () => callAI(guard.withGuardrails(TRANSFORM_SYSTEM), userContent, 0.2)
+      );
+      res.status(200).json(normalizeSentenceTransform(parsed));
+      return;
+    }
+
     if (mode === 'writing') {
       const list = (Array.isArray(tasks) && tasks.length) ? tasks : [{ title: 'Task', prompt, response }];
       const clean = list.map((t, i) => ({

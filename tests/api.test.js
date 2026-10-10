@@ -1,4 +1,5 @@
 'use strict';
+const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path').join(__dirname, '..');
 
@@ -56,6 +57,22 @@ function makeRes() {
   await grade({ method: 'POST', headers: { 'x-forwarded-for': '9.9.9.9' }, socket: {}, body: { mode: 'writing', tasks: [{ title: 'Task 1', prompt: 'p', response: 'a '.repeat(200) }, { title: 'Task 2', prompt: 'p', response: 'b '.repeat(300) }] } }, r);
   console.log('writing mock:', r.statusCode, '| overall band =', r.body.band, '| tasks =', r.body.tasks.map(t => t.title + ':' + t.band).join(', '));
   console.log('  expected overall = round((6.5/3 + 7*2/3)*2)/2 =', Math.round((6.5 / 3 + 7 * 2 / 3) * 2) / 2);
+
+  const transformPayload = { score: 84, band: 7.5, criteria: { inversion: 8, complexGrammar: 7, academicCollocation: 8, accuracyNaturalness: 7.5 }, strengths: ['The inversion is accurate.'], improvements: ['Add a more precise collocation.'], modelAnswer: 'Not only are buses affordable, but they also reduce congestion.', summary: 'Clear and controlled transformation.' };
+  let transformRequest = '';
+  global.fetch = async (_url, options) => {
+    transformRequest = JSON.parse(options.body).messages[1].content;
+    return { ok: true, json: async () => ({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(transformPayload) } }] }) };
+  };
+  r = makeRes();
+  await grade({ method: 'POST', headers: { 'x-forwarded-for': '7.7.7.7' }, socket: {}, body: { mode: 'sentence_transform', sourceSentence: 'Many people use buses because they are cheap.', prompt: 'Use inversion and a complex clause.', candidateSentence: 'Not only are buses affordable, but they also reduce congestion in busy cities.' } }, r);
+  assert.equal(r.statusCode, 200);
+  assert.equal(r.body.score, 84);
+  assert.equal(r.body.band, 7.5);
+  assert.equal(r.body.criteria.inversion, 8);
+  assert(r.body.modelAnswer.includes('buses'));
+  assert(transformRequest.includes('SOURCE SENTENCE') && transformRequest.includes('CANDIDATE SENTENCE'));
+  console.log('sentence transformation mock:', r.statusCode, '| score =', r.body.score, '| band =', r.body.band);
 
   global.fetch = async () => ({ ok: true, json: async () => ({ choices: [{ finish_reason: 'stop', message: { content: 'Here is your 7-day plan targeting Writing...' } }] }) });
   r = makeRes();

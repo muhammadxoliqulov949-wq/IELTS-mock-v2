@@ -297,6 +297,47 @@ export async function refreshDailyStreak() {
   return result;
 }
 
+/* Adaptive drill results are stored as owner-scoped learning_activity rows.
+   The server derives the UTC day and verifies the skill, tier, score and time. */
+export async function recordAdaptiveDrill({ reference, skill, tier, score, durationSeconds }) {
+  const owner = currentUser?.id;
+  if (!owner) throw new Error('Sign in to save adaptive drills.');
+  if (!/^[A-Za-z0-9:_-]{8,80}$/.test(String(reference || ''))) throw new Error('Invalid drill reference.');
+  if (!['listening', 'reading', 'writing', 'speaking'].includes(skill)) throw new Error('Invalid drill skill.');
+  if (![1, 2, 3].includes(Number(tier))) throw new Error('Invalid adaptive tier.');
+  if (!Number.isInteger(Number(score)) || Number(score) < 0 || Number(score) > 100) throw new Error('Invalid drill score.');
+  if (!Number.isInteger(Number(durationSeconds)) || Number(durationSeconds) < 0 || Number(durationSeconds) > 3600) throw new Error('Invalid drill duration.');
+  const result = await learnerRPC('record_adaptive_drill', {
+    p_reference: String(reference),
+    p_skill: skill,
+    p_tier: Number(tier),
+    p_score: Number(score),
+    p_duration_seconds: Number(durationSeconds)
+  });
+  if (currentUser?.id !== owner) throw new Error('Account changed. Please sign in again.');
+  await loadProfile(true);
+  if (currentUser?.id !== owner) throw new Error('Account changed. Please sign in again.');
+  return result;
+}
+
+export async function loadLearningActivity(days = 180) {
+  const sb = await requireClient();
+  if (!currentUser) return [];
+  const owner = currentUser.id;
+  const age = Math.max(7, Math.min(365, Number(days) || 180));
+  const since = new Date();
+  since.setUTCDate(since.getUTCDate() - age);
+  const { data, error } = await sb.from('learning_activity')
+    .select('activity_date,kind,reference,created_at,skill,score,duration_seconds,tier')
+    .eq('user_id', owner)
+    .gte('activity_date', since.toISOString().slice(0, 10))
+    .order('activity_date', { ascending: false })
+    .limit(500);
+  if (error) throw error;
+  if (currentUser?.id !== owner) throw new Error('Account changed. Please reload your activity.');
+  return data || [];
+}
+
 /* Server derives the reward from the completed topic or saved mock result;
    the client deliberately has no p_amount parameter. */
 export async function addUserCoins(source, reference) {

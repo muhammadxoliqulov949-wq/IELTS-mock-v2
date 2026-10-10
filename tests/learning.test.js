@@ -54,7 +54,7 @@ function catalogueTests() {
   assert(!read('lib/roadmapContent.js').includes('quizKeys'));
   assert(!read('scripts/build.js').includes("'scripts/roadmap-seed.js'"));
   const html = read('index.html'), build = require('../scripts/build').staticFiles, sw = read('sw.js');
-  for (const file of ['learning.css', 'miniGames.js', 'lib/learningPath.js', 'lib/roadmapContent.js']) {
+  for (const file of ['learning.css', 'miniGames.js', 'lib/learningPath.js', 'lib/roadmapContent.js', 'lib/adaptiveDrills.js']) {
     assert(html.includes(file) && sw.includes('/' + file) && build.includes(file));
   }
   assert(html.indexOf('miniGames.js') < html.indexOf('script.js'));
@@ -95,7 +95,9 @@ async function databaseTests() {
   const db = new PGlite();
   const alice = '11111111-1111-4111-8111-111111111111', bob = '22222222-2222-4222-8222-222222222222';
   const dave = '44444444-4444-4444-8444-444444444444', eve = '55555555-5555-4555-8555-555555555555';
+  const frank = '66666666-6666-4666-8666-666666666666';
   const migration = read('supabase/migrations/202610060003_interactive_learning.sql');
+  const adaptiveMigration = read('supabase/migrations/202610100001_adaptive_drills.sql');
   const first = publicTopics[0];
   const call = async (sql, parameters = []) => (await db.query(sql, parameters)).rows[0]?.result;
   const as = async user => { await db.exec(`reset role; set role authenticated; set request.jwt.claim.sub='${user}';`); };
@@ -118,11 +120,12 @@ async function databaseTests() {
       create policy owner_name on public.profiles for update to authenticated using(id=auth.uid()) with check(id=auth.uid());
       create table public.mock_results(id uuid primary key default gen_random_uuid(),user_id uuid,name text,test_id text,scores jsonb default '{}',listening numeric,reading numeric,writing numeric,speaking numeric,updated_at timestamptz default now(),unique(user_id,test_id));
       alter table public.mock_results enable row level security;
-      insert into auth.users values('${alice}'),('${bob}'),('${dave}'),('${eve}');
-      insert into public.profiles(id,email,name) values('${alice}','secret-alice@example.com','Alice'),('${bob}','secret-bob@example.com','Bob'),('${dave}','dave-private@example.com','Dave'),('${eve}','eve-private@example.com','Eve');
+      insert into auth.users values('${alice}'),('${bob}'),('${dave}'),('${eve}'),('${frank}');
+      insert into public.profiles(id,email,name) values('${alice}','secret-alice@example.com','Alice'),('${bob}','secret-bob@example.com','Bob'),('${dave}','dave-private@example.com','Dave'),('${eve}','eve-private@example.com','Eve'),('${frank}','frank-private@example.com','Frank');
     `);
     await db.exec(read('supabase/migrations/202610060001_roadmap_gamification.sql'));
     await db.exec(migration);
+    await db.exec(adaptiveMigration);
     const count = (await db.query('select stage,count(*) n from public.topics group by stage order by stage')).rows;
     assert(count.every(row => Number(row.n) === 10));
     await as(alice);
@@ -132,6 +135,18 @@ async function databaseTests() {
     await assert.rejects(db.query("select public.record_learning_activity('game','fake')"), /permission denied/);
     await assert.rejects(db.query('select public.grade_topic_quiz_internal($1,$2::jsonb)', [first.id, JSON.stringify(quizAnswers(first.id))]), /permission denied/);
     for (const table of ['learning_activity', 'user_game_progress', 'coin_transactions']) await assert.rejects(db.query(`delete from public.${table}`), /permission denied/);
+    await as(frank);
+    let drill = await call('select public.record_adaptive_drill($1,$2,$3,$4,$5) result', ['activity-ref-1', 'reading', 2, 85, 75]);
+    assert.equal(drill.recorded, true); assert.equal(drill.kind, 'drill'); assert.equal(drill.skill, 'reading');
+    assert.equal(drill.tier, 2); assert.equal(drill.score, 85); assert.equal(drill.duration_seconds, 75);
+    assert.equal(drill.current_streak, 1); assert.equal(drill.active_today, true);
+    const retry = await call('select public.record_adaptive_drill($1,$2,$3,$4,$5) result', ['activity-ref-1', 'reading', 2, 85, 75]);
+    assert.equal(retry.recorded, false, 'retries do not duplicate a drill activity');
+    assert.equal(Number((await db.query("select count(*) from public.learning_activity where kind='drill'")).rows[0].count), 1);
+    await assert.rejects(db.query('select public.record_adaptive_drill($1,$2,$3,$4,$5)', ['bad ref', 'reading', 2, 85, 75]), /Invalid drill reference/);
+    await assert.rejects(db.query('select public.record_adaptive_drill($1,$2,$3,$4,$5)', ['activity-ref-2', 'grammar', 2, 85, 75]), /Invalid drill skill/);
+    await as(alice);
+    assert.equal(Number((await db.query("select count(*) from public.learning_activity where kind='drill'")).rows[0].count), 0, 'RLS hides another learner’s activity');
     let result = await call('select public.update_daily_streak() result');
     assert.equal(result.current_streak, 0); assert.equal(result.last_active_date, null);
     assert.equal((await call('select public.update_daily_streak() result')).current_streak, 0);
@@ -237,7 +252,7 @@ async function databaseTests() {
     const board = (await db.query('select * from public.get_leaderboard(1)')).rows;
     assert.equal(board[0].level_badge, 'C1 Master'); assert.equal(board[0].coins, 1182); assert.equal(board[0].current_streak, 1);
     assert(!Object.hasOwn(board[0], 'email') && !Object.hasOwn(board[0], 'user_id'));
-    await admin(); await db.exec(migration); await as(alice);
+    await admin(); await db.exec(migration); await db.exec(adaptiveMigration); await as(alice);
     assert.equal((await db.query('select * from public.user_topic_progress')).rows.length, 40);
     assert.equal((await db.query('select coins from public.profiles')).rows[0].coins, 1182);
     assert.equal((await submit(originalSession, matches)).coins_awarded, 0);
@@ -367,10 +382,16 @@ function uiTests() {
     localStorage: { getItem: key => storage.get(key) || null, setItem: (key, value) => storage.set(key, String(value)), removeItem: key => storage.delete(key) },
     window: { IELTS_CLOUD: cloud, addEventListener() {}, scrollY: 0, location: { hash: '#/roadmap', origin: 'https://preview.example' } }
   });
-  for (const file of ['data.js', 'content2.js', 'content3.js', 'content4.js', 'i18n.js', 'services.js', 'lib/learningPath.js', 'lib/roadmapContent.js', 'miniGames.js', 'script.js']) vm.runInContext(read(file), context, { filename: file });
+  for (const file of ['data.js', 'content2.js', 'content3.js', 'content4.js', 'i18n.js', 'services.js', 'lib/learningPath.js', 'lib/roadmapContent.js', 'lib/adaptiveDrills.js', 'miniGames.js', 'script.js']) vm.runInContext(read(file), context, { filename: file });
   const run = code => vm.runInContext(code, context);
+  run("store.lang='uz'; applyPrefs()");
+  const gate = run('roadmapPage()');
+  assert(gate.includes('diagnostic-gate-banner'));
+  assert(gate.includes('Darajangizni aniqlash va shaxsiy mashqlar rejasini ochish uchun avval diagnostik test topshiring'));
+  assert(!gate.includes('roadmap-path-item'), 'Roadmap remains locked before a complete same-test diagnostic');
+  run("store.lang='en'; applyPrefs(); store.attempts=['listening','reading','writing','speaking'].map((section,index)=>({section,test:'test1',band:[6,5.5,6.5,6][index],date:Date.now()+index}))");
   const page = run('roadmapPage()');
-  assert(page.includes('Your English adventure') && page.includes('learning-preview-banner'));
+  assert(page.includes('Your English adventure') && page.includes('daily-quest-stream'));
   assert.equal((page.match(/<article class="test-card roadmap-topic-card/g) || []).length, 10);
   assert.equal((page.match(/class="roadmap-path-node"[^>]*disabled/g) || []).length, 9);
   run("openRoadmapTopic('a1-a2-present-simple','play')");
@@ -379,14 +400,37 @@ function uiTests() {
   assert(!modal.includes('data-roadmap-submit')); assert(modal.includes('lesson-quiz-gate'));
   run("closeRoadmapTopic(); openRoadmapTopic('a1-a2-present-continuous')"); assert.equal(run('roadmapState.topicId'), null);
   state.status = 'ready'; state.user = { id: 'learner', email: 'secret@example.com' }; state.profile = { id: 'learner', coins: 20, current_streak: 3, last_active_date: new Date().toISOString().slice(0, 10) };
-  run("signIn({id:'learner',name:'Learner',coins:20,current_streak:3,last_active_date:new Date().toISOString().slice(0,10),auth:'supabase'}); roadmapState.topics=window.IELTS_ROADMAP_CONTENT; roadmapState.loadedUser='learner';");
-  const signed = run('roadmapPage()'); assert(signed.includes('data-daily-streak') && signed.includes('data-coin-wallet')); assert(!signed.includes('learning-preview-banner'));
+  run("signIn({id:'learner',name:'Learner',coins:20,current_streak:3,last_active_date:new Date().toISOString().slice(0,10),auth:'supabase'}); roadmapState.topics=window.IELTS_ROADMAP_CONTENT; roadmapState.loadedUser='learner'; store.attempts=['listening','reading','writing','speaking'].map((section,index)=>({section,test:'test1',band:[6,5.5,6.5,6][index],date:Date.now()+index}))");
+  const signed = run('roadmapPage()'); assert(signed.includes('data-daily-streak') && signed.includes('data-coin-wallet')); assert(signed.includes('daily-quest-stream'));
+  run("store.drillResults=[{reference:'recovery-ref',syncStatus:'saving'}]; save(true)");
+  const recovered = JSON.parse(storage.get('ielts-v2-store:supabase:learner')).drillResults[0];
+  assert.equal(recovered.syncStatus, 'pending', 'interrupted cloud writes are retryable after reload');
+  run('store.drillResults=[]; save(true)');
+  const overview = run('adaptiveDrillsPage()');
+  assert(overview.includes('data-open-drill="writing"') && overview.includes('data-open-drill="speaking"') && overview.includes('data-open-drill="reading"') && overview.includes('data-open-drill="listening"'));
+  for (const skill of ['writing', 'speaking', 'reading', 'listening']) {
+    run(`drillState=freshDrillState(); drillState.activeSkill='${skill}'`);
+    const lab = run('adaptiveDrillsPage()');
+    assert(lab.includes('drill-lab-card'), skill + ' adaptive lab renders');
+    if (skill === 'reading') assert(lab.includes('data-reading-token="key"') && lab.includes('data-reading-token="distractor"'));
+    if (skill === 'writing') assert(lab.includes('data-writing-submit'));
+    if (skill === 'speaking') assert(lab.includes('data-shadow-record'));
+    if (skill === 'listening') assert(lab.includes('data-dictation-play'));
+  }
+  run("store.learningActivities=[{kind:'drill',reference:'adaptive:test-ref',skill:'reading',duration_seconds:75,tier:2,score:80,activity_date:new Date().toISOString().slice(0,10)}]; store.drillResults=[{reference:'test-ref',skill:'reading',duration_seconds:75,tier:2,score:80,date:Date.now(),activity_date:new Date().toISOString().slice(0,10)}]");
+  const metrics = run('({events:adaptiveActivityEvents().length,minutes:SERVICES.studyMinutes([],adaptiveActivityEvents())})');
+  assert.equal(metrics.events, 1, 'local and Supabase copies of a drill collapse into one event');
+  assert.equal(metrics.minutes, 2, 'completed drill duration contributes to study time');
+  run("store.learningActivities=[]; store.drillResults=[{reference:'offline-ref-01',skill:'reading',tier:2,syncStatus:'error',syncError:'Network unavailable'}]; drillState=freshDrillState()");
+  const retryQueue = run('adaptiveDrillsPage()');
+  assert(retryQueue.includes('Saved drills waiting for cloud sync') && retryQueue.includes('data-drill-sync="offline-ref-01"'));
+  run('store.drillResults=[]');
   run("roadmapState.progress['a1-a2-present-simple']={is_completed:true,score_percentage:80}; openRoadmapTopic('a1-a2-present-continuous','quiz')");
   assert(run('roadmapTopicModalHtml()').includes('data-roadmap-submit'));
   for (const lang of ['en', 'uz', 'ru']) {
     run(`store.lang='${lang}'; applyPrefs()`);
     const raw = run('roadmapPage()'); assert(!raw.includes('roadmap_path_title')); assert(!raw.includes('game_word_match_title'));
-    const keys = Object.keys(context.window.IELTS_I18N.dict.en).filter(key => /^(game_|streak_)/.test(key));
+    const keys = Object.keys(context.window.IELTS_I18N.dict.en).filter(key => /^(game_|streak_|skill_|quest_|drill_)/.test(key));
     for (const key of keys) assert(context.window.IELTS_I18N.dict[lang][key], lang + ':' + key);
   }
   log('guest/signed-in roadmap, locked buttons, lesson tabs, persistent wallet/flame and complete EN/UZ/RU copy');
@@ -418,6 +462,8 @@ async function sdkTests() {
       return response({ points: 150, remaining_ms: 58000 });
     }
     if (u.includes('/rpc/submit_topic_game')) return response({ coins_awarded: 10, coins_balance: 10, current_streak: 1 });
+    if (u.includes('/rpc/record_adaptive_drill')) return response({ recorded: true, kind: 'drill', skill: 'reading', tier: 2, score: 82, duration_seconds: 75, activity_date: new Date().toISOString().slice(0, 10), current_streak: 1, active_today: true });
+    if (u.includes('/rest/v1/learning_activity')) return response([{ kind: 'drill', reference: 'adaptive:reference-0001', skill: 'reading', score: 82, duration_seconds: 75, tier: 2, activity_date: new Date().toISOString().slice(0, 10) }]);
     if (u.includes('/rest/v1/topics')) return response([publicTopics[0]]);
     if (u.includes('/rest/v1/user_topic_progress')) return response([]);
     if (u.includes('/rest/v1/user_game_progress')) return response([{ topic_id: publicTopics[0].id, game_type: 'word_match', best_score: 100 }]);
@@ -431,6 +477,14 @@ async function sdkTests() {
     assert.equal(sdk.getState().profile.current_streak, 1);
     const data = await sdk.loadRoadmap(); assert.equal(data.games.length, 1); assert(data.topics[0].game_data);
     await sdk.startTopicGame(publicTopics[0].id, 'word_match'); await sdk.answerSpeedQuestion('session', 0, 2); await sdk.submitTopicGame('session', [[0, 0]]); await sdk.refreshDailyStreak();
+    const drillResult = await sdk.recordAdaptiveDrill({ reference: 'reference-0001', skill: 'reading', tier: 2, score: 82, durationSeconds: 75 });
+    assert.equal(drillResult.recorded, true);
+    const drillRpc = requests.find(request => request.url.includes('/rpc/record_adaptive_drill'));
+    assert.deepEqual(drillRpc.body, { p_reference: 'reference-0001', p_skill: 'reading', p_tier: 2, p_score: 82, p_duration_seconds: 75 });
+    const activities = await sdk.loadLearningActivity(30);
+    assert.equal(activities[0].kind, 'drill');
+    assert(requests.some(request => request.url.includes('/learning_activity') && request.url.includes('user_id=eq.' + id)));
+    await assert.rejects(sdk.recordAdaptiveDrill({ reference: 'short', skill: 'reading', tier: 2, score: 82, durationSeconds: 75 }), /Invalid drill reference/);
     const start = requests.find(request => request.url.includes('/rpc/start_topic_game'));
     assert.deepEqual(start.body, { p_topic_id: publicTopics[0].id, p_game_type: 'word_match' });
     const answer = requests.find(request => request.url.includes('/rpc/answer_speed_question'));

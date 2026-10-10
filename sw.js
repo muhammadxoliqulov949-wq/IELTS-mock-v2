@@ -1,5 +1,5 @@
 /* Bandly AI — service worker */
-const CACHE = 'bandly-v15';
+const CACHE = 'bandly-v18';
 const PRECACHE = [
   '/',
   '/index.html',
@@ -8,6 +8,7 @@ const PRECACHE = [
   '/miniGames.js',
   '/lib/learningPath.js',
   '/lib/roadmapContent.js',
+  '/lib/adaptiveDrills.js',
   '/data.js',
   '/content2.js',
   '/content3.js',

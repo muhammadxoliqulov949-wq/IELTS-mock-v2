@@ -71,8 +71,9 @@ Har foydalanuvchi/test uchun **bitta satr** saqlanadi — mavjud saytning bir ma
 3. `supabase/migrations/202610060001_roadmap_gamification.sql` — dastlabki 12 mavzu, `profiles.coins`, quiz kalitlari, progress, immutable coin ledger va leaderboard.
 4. `supabase/migrations/202610060002_ai_cache.sql` — AI javoblari uchun **7 kunlik** kesh (`public.ai_cache`).
 5. `supabase/migrations/202610060003_interactive_learning.sql` — 40 mavzu / 200 quiz savoli / 120 mini-o‘yin, `game_data`, streak, sequential unlock va server game grader’lari.
+6. `supabase/migrations/202610100001_adaptive_drills.sql` — adaptiv mashqlar uchun `learning_activity` drill metama’lumotlari va idempotent, egaga bog‘langan `record_adaptive_drill` RPC.
 
-**Avvalgi migratsiyalar bazangizda allaqachon qo‘llangan bo‘lsa, faqat yangi `202610060003_interactive_learning.sql` ni bajaring.** U eski 12 mavzuning ID’larini saqlaydi, har bosqichga 7 tadan yangi mavzu qo‘shadi; mavjud progress, balans va ledger o‘chirilmaydi. SQL faylda seed ham bor, alohida JSON import shart emas. Bu repo o‘zgarishlari hosted Supabase’ga avtomatik qo‘llanmaydi.
+**Avvalgi migratsiyalar (003 gacha) bazangizda qo‘llangan bo‘lsa, 003 va 004 migratsiyalarini shu tartibda bajaring. 003 ham allaqachon qo‘llangan bo‘lsa, faqat `202610100001_adaptive_drills.sql` ni bajaring.** Mavjud progress, balans va coin ledger o‘chirilmaydi; Adaptiv mashqlar coin bermaydi, lekin activity, davomiylik va streak’ni yangilaydi. Bu repo o‘zgarishlari hosted Supabase’ga avtomatik qo‘llanmaydi.
 
 Admin panel MP3, xarita/reja va Writing Task 1 rasmlarini brauzerdan Supabase Storage’ga yuboradi. Bucket public read (learner `<audio>`/`<img>` uchun), lekin insert/update/delete faqat authenticated `public.is_admin()` orqali ruxsat etiladi. Maksimal fayl 50 MB; ruxsat etilgan media MIME turi bucket’da cheklangan. **Service-role kaliti talab qilinmaydi va browserga berilmaydi.** `ADMIN.md` da UI, kontent JSON shakli va xatolarni hal qilish bo‘yicha yo‘riqnoma bor.
 

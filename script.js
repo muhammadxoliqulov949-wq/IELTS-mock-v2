@@ -6,6 +6,7 @@ const I18N = window.IELTS_I18N || { t: (k) => k, current: () => 'en', setLang() 
 const t = (k) => I18N.t(k);
 const CLOUD = window.IELTS_CLOUD || null;
 const LEARNING = window.IELTS_LEARNING_PATH || null;
+const ADAPTIVE = window.IELTS_ADAPTIVE_DRILLS || null;
 const STORAGE = 'ielts-v2-store';
 /* Local storage is a results cache, never an authentication authority.
    Only Supabase's restored/verified session can activate an account. */
@@ -44,6 +45,7 @@ const MASCOT_TIPS = {
   '/vocabulary': 'mascot_tip_vocabulary',
   '/quiz': 'mascot_tip_quiz',
   '/roadmap': 'mascot_tip_roadmap',
+  '/drills': 'mascot_tip_roadmap',
   '/leaderboard': 'mascot_tip_leaderboard',
   '/settings': 'mascot_tip_settings',
   '/login': 'mascot_tip_login',
@@ -108,7 +110,7 @@ function storageKey() {
 }
 let store = load();
 function storeDefaults() {
-  return { attempts: [], mistakes: [], feedback: {}, coachMessages: [], selectedTest: 'test1', theme: 'dark', lang: 'en', vocabKnown: {}, fullMock: null, quizzes: [], mascotMuted: false, mascotSeen: {} };
+  return { attempts: [], mistakes: [], feedback: {}, coachMessages: [], selectedTest: 'test1', theme: 'dark', lang: 'en', vocabKnown: {}, fullMock: null, quizzes: [], learningActivities: [], drillResults: [], mascotMuted: false, mascotSeen: {} };
 }
 function load() {
   try {
@@ -120,7 +122,15 @@ function load() {
 }
 function save(skipCloud = false) {
   const { user, ...data } = store;
-  localStorage.setItem(storageKey(), JSON.stringify(data));
+  const persisted = {
+    ...data,
+    /* In-flight RPCs may be interrupted by a tab close or account switch.
+       The server operation is idempotent, so a restored `saving` record must
+       be retried rather than getting stranded forever. */
+    drillResults: (data.drillResults || []).map(record => record && record.syncStatus === 'saving'
+      ? { ...record, syncStatus: 'pending' } : record)
+  };
+  localStorage.setItem(storageKey(), JSON.stringify(persisted));
   if (!skipCloud && CLOUD) scheduleCloudSync();
 }
 /* Stop any in-flight recording when leaving a Listening page, changing test,
@@ -138,6 +148,8 @@ function stopListeningAudio() {
 /* Switch account: persist the current scope, swap the session, reload data. */
 function resetSectionStates() {
   stopListeningAudio();
+  stopDrillMedia();
+  drillState = freshDrillState();
   listeningState = { partIndex: 0, answers: {}, played: {}, deadline: null, audio: null };
   readingState = { passageIndex: 0, answers: {}, deadline: null };
   writingState = { answers: {}, deadline: null };
@@ -161,6 +173,7 @@ function signOut() {
   resetSectionStates();
 }
 let pendingRoute = null; /* where to return after a successful sign-in */
+let mobileMenuOpener = null;
 function go(path) { location.hash = path; }
 function route() { return location.hash.slice(1) || '/'; }
 
@@ -177,6 +190,16 @@ function freshRoadmapState() {
 let roadmapState = freshRoadmapState();
 let roadmapQuizRevision = 0;
 let lastRoadmapTrigger = null;
+function freshDrillState() {
+  return { activeSkill: null, writingText: '', reading: { key: null, distractor: null },
+    dictationIndex: 0, dictationAnswers: [], dictationFeedback: [], dictationDeadline: null,
+    speakingTranscript: '', speakingMatch: null, speakingConfidence: null, audioPlayed: false,
+    saving: false, result: null, error: '', recognition: null, syncReference: null };
+}
+let drillState = freshDrillState();
+let drillTimer = null;
+let activityLoadTask = null;
+let activityLoadedFor = null;
 let leaderboardState = { rows: [], loading: false, error: '', loadedUser: null };
 function currentCoins() {
   const state = CLOUD && CLOUD.getState ? CLOUD.getState() : null;
@@ -238,11 +261,11 @@ function dailyGoalDone() {
 function applyLearningResult(result) {
   if (!store.user) return;
   const profile = CLOUD && CLOUD.getState && CLOUD.getState().profile;
-  const latest = profile && profile.id === store.user.id ? profile : result;
+  const latest = profile && profile.id === store.user.id ? profile : {};
   store.user = { ...store.user,
-    coins: Math.max(0, Number(latest.coins ?? result.coins_balance ?? store.user.coins) || 0),
-    current_streak: Number(latest.current_streak ?? result.current_streak) || 0,
-    last_active_date: latest.last_active_date ?? result.last_active_date ?? null
+    coins: Math.max(0, Number(result.coins_balance ?? result.coins ?? latest.coins ?? store.user.coins) || 0),
+    current_streak: Number(result.current_streak ?? latest.current_streak) || 0,
+    last_active_date: result.last_active_date ?? latest.last_active_date ?? null
   };
   if (activeUser && activeUser.id === store.user.id) activeUser = { ...activeUser, ...store.user };
 }
@@ -284,6 +307,34 @@ function weakestSkill() {
   }).filter(x => x.band !== null);
   if (!scored.length) return null;
   return scored.sort((a, b) => a.band - b.band)[0].s;
+}
+function diagnosticAssessment() {
+  return ADAPTIVE && typeof ADAPTIVE.diagnosticFor === 'function' ? ADAPTIVE.diagnosticFor(store.attempts) : null;
+}
+function diagnosticProgress(testId = store.selectedTest) {
+  const skills = ['listening', 'reading', 'writing', 'speaking'];
+  const scores = Object.fromEntries(skills.map(skill => {
+    const attempt = attemptFor(skill, testId);
+    return [skill, attempt && attempt.band != null && Number.isFinite(Number(attempt.band)) ? Number(attempt.band) : null];
+  }));
+  const done = skills.filter(skill => scores[skill] !== null).length;
+  const next = skills.find(skill => scores[skill] === null) || null;
+  return { scores, done, total: skills.length, next };
+}
+function tierLabel(tier) { return t(`roadmap_tier_${Number(tier) || 1}`); }
+function drillSkillLabel(skill) {
+  const key = `skill_${skill}`;
+  const label = t(key);
+  return label === key ? (BAND_LABEL[skill] || skill) : label;
+}
+function tierCardHtml(assessment, compact = false) {
+  if (!assessment) return '';
+  const skills = ['listening', 'reading', 'writing', 'speaking'];
+  return `<section class="adaptive-assessment-card ${compact ? 'is-compact' : ''}" aria-label="${esc(t('roadmap_diagnostic_complete'))}">
+    <div class="adaptive-assessment-top"><span class="tier-mark tier-mark--${assessment.tier}">${esc(tierLabel(assessment.tier))}</span><span class="adaptive-band"><small>${esc(t('roadmap_overall_score'))}</small><strong>${esc(assessment.overall)}</strong><em>/9</em></span></div>
+    <div class="adaptive-skill-scores">${skills.map(skill => `<span class="adaptive-skill-score ${skill === assessment.weakestSkill ? 'is-weakest' : ''}"><small>${esc(t('skill_' + skill) === 'skill_' + skill ? BAND_LABEL[skill] : t('skill_' + skill))}</small><strong>${esc(assessment.bands[skill])}</strong></span>`).join('')}</div>
+    <p class="micro"><strong>${esc(t('roadmap_weakest_skill'))}:</strong> <span class="cap">${esc(t('skill_' + assessment.weakestSkill) === 'skill_' + assessment.weakestSkill ? BAND_LABEL[assessment.weakestSkill] : t('skill_' + assessment.weakestSkill))}</span> · ${esc(t('roadmap_tier_range_' + assessment.tier))}</p>
+  </section>`;
 }
 
 /* ---------------- SHELL / NAV ---------------- */
@@ -381,6 +432,7 @@ function navLinks(active) {
     rest: [
       ...(isAdminUser() ? [{ key: 'admin', label: '⚙ ' + t('admin_title'), active: active === 'admin' }] : []),
       { key: 'dashboard', label: t('nav_dashboard'), active: active === 'dashboard' },
+      { key: 'drills', label: t('nav_drills'), active: active === 'drills' },
       { key: 'leaderboard', label: t('nav_leaderboard'), active: active === 'leaderboard' },
       { key: 'mistakes', label: t('nav_mistakes'), active: active === 'mistakes' },
       { key: 'lessons', label: t('nav_lessons'), active: active === 'lessons' },
@@ -397,7 +449,17 @@ function shell(body, active) {
   const nextLang = store.lang === 'en' ? 'UZ' : store.lang === 'uz' ? 'RU' : 'EN';
   const displayName = String(user ? (user.name || user.email || 'User') : 'User');
   const firstName = displayName.split(' ')[0];
-  return `<header class="site-header" id="siteHeader">
+  const examRoute = ['listening', 'reading', 'writing', 'speaking'].includes(active);
+  const phoneMockActive = ['', 'home', 'mock', 'fullmock', 'listening', 'reading', 'writing', 'speaking'].includes(active);
+  const phoneMoreActive = !['', 'home', 'mock', 'fullmock', 'listening', 'reading', 'writing', 'speaking', 'roadmap', 'drills', 'dashboard'].includes(active);
+  const phoneNav = examRoute ? '' : `<nav class="phone-tabbar" aria-label="${esc(t('phone_nav_label'))}">
+    <a class="phone-tabbar-item ${phoneMockActive ? 'is-active' : ''}" href="#/mock" aria-label="${esc(t('nav_mock'))}" ${active === 'mock' ? 'aria-current="page"' : ''}>${learningIcon('book')}<span>${esc(t('phone_nav_mock'))}</span></a>
+    <a class="phone-tabbar-item ${active === 'roadmap' ? 'is-active' : ''}" href="#/roadmap" aria-label="${esc(t('nav_roadmap'))}" ${active === 'roadmap' ? 'aria-current="page"' : ''}>${learningIcon('flag')}<span>${esc(t('phone_nav_roadmap'))}</span></a>
+    <a class="phone-tabbar-item ${active === 'drills' ? 'is-active' : ''}" href="#/drills" aria-label="${esc(t('nav_drills'))}" ${active === 'drills' ? 'aria-current="page"' : ''}>${learningIcon('bolt')}<span>${esc(t('phone_nav_drills'))}</span></a>
+    <a class="phone-tabbar-item ${active === 'dashboard' ? 'is-active' : ''}" href="#/dashboard" aria-label="${esc(t('nav_dashboard'))}" ${active === 'dashboard' ? 'aria-current="page"' : ''}>${learningIcon('trophy')}<span>${esc(t('phone_nav_dashboard'))}</span></a>
+    <button type="button" id="phoneMenuBtn" class="phone-tabbar-item phone-tabbar-more ${phoneMoreActive ? 'is-active' : ''}" aria-label="${esc(t('phone_nav_more'))}" aria-controls="mobileMenu" aria-expanded="false"><span class="phone-tabbar-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>${esc(t('phone_nav_more'))}</span></button>
+  </nav>`;
+  return `<header class="site-header${examRoute ? ' site-header--exam' : ''}" id="siteHeader">
   <nav class="nav" id="mainNav" aria-label="Main navigation">
     <a class="brand" href="#/" aria-label="IELTS Mock — ${esc(MASCOT_NAME)}"><span class="brand-mark brand-mark--mascot">${mascotPicture(MASCOT.head, '', '', 'eager')}</span><span class="brand-name">IELTS Mock</span></a>
     <div class="nav-links">
@@ -424,7 +486,7 @@ function shell(body, active) {
           <button class="user-logout" data-logout>${t('nav_logout')}</button>
         </div>
       </div>` : `<a class="btn btn-primary btn-sm nav-login" href="#/login">${t('nav_login')}</a>`}
-      <button class="hamburger" id="hamburgerBtn" aria-label="${t('menu')}" aria-expanded="false" title="${t('menu')}"><span></span><span></span><span></span></button>
+      <button class="hamburger" id="hamburgerBtn" aria-label="${t('menu')}" aria-controls="mobileMenu" aria-expanded="false" title="${t('menu')}"><span></span><span></span><span></span></button>
     </div>
   </nav>
 </header>
@@ -444,7 +506,8 @@ function shell(body, active) {
     ${user ? `<button class="btn btn-ghost" data-logout>${t('nav_logout')}</button>` : `<a class="btn btn-primary" href="#/login">${t('nav_login')}</a>`}
   </div>
 </div>
-<footer class="footer">
+${phoneNav}
+<footer class="footer${examRoute ? '' : ' footer--phone-nav'}">
   <div class="footer-inner">
     <div class="footer-brand"><span class="brand-mark brand-mark--mascot sm">${mascotPicture(MASCOT.head, '', '', false)}</span><span>IELTS Mock <em>${t('footer_by')}</em></span></div>
     <nav class="footer-links" aria-label="Footer">
@@ -633,10 +696,13 @@ function mockHub() {
   ];
   const overall = SERVICES.overallBand(store.attempts);
   const activeTest = SERVICES.getSkillContent('listening', store.selectedTest);
+  const assessment = diagnosticAssessment();
+  const progress = diagnosticProgress(store.selectedTest);
   return shell(`
     <section class="section">
       <div class="section-header"><div><div class="eyebrow">${t('home_mock_eyebrow')}</div><h1 style="font-family:var(--font-display);font-size:30px;margin:10px 0 0">${t('fullmock_title')}</h1><p class="micro">${t('fullmock_subtitle')}</p></div><div class="test-switch">${testSwitch()}</div></div>
       <p class="micro" style="margin:14px 0 20px">${esc(SERVICES.testLabel(store.selectedTest, store.lang))} — ${activeTest && activeTest.difficulty ? esc(activeTest.difficulty) : ''}</p>
+      ${assessment ? tierCardHtml(assessment, true) : `<section class="diagnostic-progress-card"><div><span class="eyebrow">${esc(t('roadmap_diagnostic_progress'))}</span><strong>${esc(t2('roadmap_diagnostic_sections', { done: progress.done }))}</strong><p class="micro">${esc(t('roadmap_diagnostic_required_hint'))}</p></div><div class="diagnostic-progress-meter" role="progressbar" aria-valuemin="0" aria-valuemax="4" aria-valuenow="${progress.done}"><i style="width:${progress.done / progress.total * 100}%"></i></div><button class="btn btn-primary" data-go="/${progress.next || 'listening'}">${esc(t('roadmap_start_diagnostic'))} ↗</button></section>`}
       <div class="mock-flow">
         ${steps.map((s, i) => {
           const a = attemptFor(s.key, store.selectedTest);
@@ -853,6 +919,13 @@ function speaking() {
 }
 
 /* ---------------- RESULTS ---------------- */
+function diagnosticResultsHtml() {
+  const assessment = diagnosticAssessment();
+  if (assessment) return `<div class="diagnostic-results-wrap">${tierCardHtml(assessment)}<button class="btn btn-primary" data-go="/roadmap">${esc(t('roadmap_daily_quests'))} ↗</button></div>`;
+  const progress = diagnosticProgress(store.selectedTest);
+  if (!progress.done) return '';
+  return `<section class="diagnostic-progress-card"><div><span class="eyebrow">${esc(t('roadmap_diagnostic_progress'))}</span><strong>${esc(t2('roadmap_diagnostic_sections', { done: progress.done }))}</strong><p class="micro">${esc(t('roadmap_diagnostic_required_hint'))}</p></div><div class="diagnostic-progress-meter" role="progressbar" aria-valuemin="0" aria-valuemax="4" aria-valuenow="${progress.done}"><i style="width:${progress.done / progress.total * 100}%"></i></div><button class="btn btn-primary" data-go="/${progress.next || 'listening'}">${esc(t('roadmap_start_diagnostic'))} ↗</button></section>`;
+}
 function resultsPage() {
   const attempts = [...store.attempts].sort((a, b) => b.date - a.date);
   return shell(`
@@ -860,6 +933,7 @@ function resultsPage() {
       <div class="eyebrow">${t('results_eyebrow')}</div>
       <h1 style="font-family:var(--font-display);font-size:28px;margin:10px 0 10px">${t('results_title')}</h1>
       <p style="color:var(--muted);font-size:14.5px;margin-bottom:26px">${t('results_sub')}</p>
+      ${diagnosticResultsHtml()}
       ${cloudResultsPanel()}
       ${attempts.length ? `
         <div class="result-grid">
@@ -1098,7 +1172,10 @@ function bind() {
 
   const r = route();
   if (r !== '/listening') stopListeningAudio();
+  if (r !== '/drills') stopDrillMedia();
   if (r === '/roadmap') bindRoadmap();
+  if (r === '/drills') bindAdaptiveDrills();
+  if (['/roadmap', '/drills', '/dashboard'].includes(r)) loadLearningActivities();
   if (r === '/leaderboard') bindLeaderboard();
 
   /* The admin panel binds its own handlers for #/admin. */
@@ -1218,9 +1295,10 @@ function bind() {
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Grading failed');
         if (storageKey() !== submissionScope || store.selectedTest !== submissionTest) return;
-        store.attempts.push({ section: 'writing', test: submissionTest, band: data.band, date: Date.now(), feedback: data });
+        const assignment = recordMockAttempt({ section: 'writing', test: submissionTest, band: data.band, date: Date.now(), feedback: data });
         store.feedback.writing = data;
         save();
+        notifyTierAssignment(assignment);
         clearTimerAndDeadline('writing');
         resetSectionStates();
         const resultBox = document.querySelector('#writing-result');
@@ -1278,9 +1356,10 @@ function bind() {
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Grading failed');
         if (storageKey() !== submissionScope || store.selectedTest !== submissionTest) return;
-        store.attempts.push({ section: 'speaking', test: submissionTest, band: data.band, date: Date.now(), feedback: data });
+        const assignment = recordMockAttempt({ section: 'speaking', test: submissionTest, band: data.band, date: Date.now(), feedback: data });
         store.feedback.speaking = data;
         save();
+        notifyTierAssignment(assignment);
         clearTimerAndDeadline('speaking');
         resetSectionStates();
         const resultBox = document.querySelector('#speaking-result');
@@ -1678,6 +1757,7 @@ function bindPremium() {
 
 function bindNavExtras() {
   const hamburger = document.querySelector('#hamburgerBtn');
+  const phoneMenuButton = document.querySelector('#phoneMenuBtn');
   const mobileMenu = document.querySelector('#mobileMenu');
   const closeMenu = document.querySelector('#closeMenuBtn');
 
@@ -1690,11 +1770,28 @@ function bindNavExtras() {
     };
   }
 
-  if (hamburger && mobileMenu) {
-    const close = () => { mobileMenu.classList.remove('open'); if (hamburger) hamburger.setAttribute('aria-expanded', 'false'); };
-    hamburger.onclick = () => { mobileMenu.classList.add('open'); hamburger.setAttribute('aria-expanded', 'true'); };
-    if (closeMenu) closeMenu.onclick = close;
-    mobileMenu.querySelectorAll('a').forEach(a => a.onclick = close);
+  if (mobileMenu) {
+    const triggers = [hamburger, phoneMenuButton].filter(Boolean);
+    const setExpanded = value => triggers.forEach(trigger => trigger.setAttribute('aria-expanded', String(value)));
+    const open = trigger => {
+      mobileMenuOpener = trigger;
+      mobileMenu.classList.add('open');
+      setExpanded(true);
+      if (closeMenu && typeof closeMenu.focus === 'function') closeMenu.focus({ preventScroll: true });
+    };
+    const close = (restoreFocus = false) => {
+      mobileMenu.classList.remove('open');
+      setExpanded(false);
+      const opener = mobileMenuOpener;
+      mobileMenuOpener = null;
+      if (restoreFocus && opener && opener.isConnected !== false && typeof opener.focus === 'function') {
+        opener.focus({ preventScroll: true });
+      }
+    };
+    if (hamburger) hamburger.onclick = () => open(hamburger);
+    if (phoneMenuButton) phoneMenuButton.onclick = () => open(phoneMenuButton);
+    if (closeMenu) closeMenu.onclick = () => close(true);
+    mobileMenu.querySelectorAll('a').forEach(a => a.onclick = () => close(false));
   }
 
   bindDocOnce();
@@ -1764,9 +1861,17 @@ function bindDocOnce() {
     }
     if (e.key !== 'Escape') return;
     const mm = document.querySelector('#mobileMenu');
+    const wasMobileMenuOpen = !!(mm && mm.classList.contains('open'));
     if (mm) mm.classList.remove('open');
     const hb = document.querySelector('#hamburgerBtn');
+    const phoneMenuButton = document.querySelector('#phoneMenuBtn');
     if (hb) hb.setAttribute('aria-expanded', 'false');
+    if (phoneMenuButton) phoneMenuButton.setAttribute('aria-expanded', 'false');
+    const menuOpener = mobileMenuOpener;
+    mobileMenuOpener = null;
+    if (wasMobileMenuOpen && menuOpener && menuOpener.isConnected !== false && typeof menuOpener.focus === 'function') {
+      menuOpener.focus({ preventScroll: true });
+    }
     if (lessonModalId) { lessonModalId = null; render(); }
     if (roadmapState.topicId) closeRoadmapTopic();
   });
@@ -1797,23 +1902,36 @@ function gradeReading() {
   return { section: 'reading', test: store.selectedTest, band, raw: correct, total, date: Date.now() };
 }
 
+function recordMockAttempt(attempt) {
+  const previouslyAssessed = !!diagnosticAssessment();
+  store.attempts.push(attempt);
+  save();
+  const assessment = diagnosticAssessment();
+  return { newlyAssigned: !previouslyAssessed && !!assessment, assessment };
+}
+function notifyTierAssignment(assignment) {
+  if (assignment && assignment.newlyAssigned && assignment.assessment) {
+    notify(t2('tier_assigned_toast', { tier: tierLabel(assignment.assessment.tier), band: assignment.assessment.overall }));
+  }
+}
+
 function submitListening() {
   stopListeningAudio();
   const a = gradeListening();
-  store.attempts.push(a);
-  save();
+  const assignment = recordMockAttempt(a);
   clearTimerAndDeadline('listening');
   notify(t2('complete_listening', { band: a.band, raw: a.raw, total: a.total }));
+  notifyTierAssignment(assignment);
   resetSectionStates();
   go('/results');
 }
 
 function submitReading() {
   const a = gradeReading();
-  store.attempts.push(a);
-  save();
+  const assignment = recordMockAttempt(a);
   clearTimerAndDeadline('reading');
   notify(t2('complete_reading', { band: a.band, raw: a.raw, total: a.total }));
+  notifyTierAssignment(assignment);
   resetSectionStates();
   go('/results');
 }
@@ -1900,18 +2018,22 @@ function finalizeTimeout(section) {
       .then(res => res.json().then(data => ({ ok: res.ok, data })))
       .then(({ ok, data }) => {
         if (!ok || !data || storageKey() !== submissionScope) return;
+        const previouslyAssessed = !!diagnosticAssessment();
         attempt.band = data.band;
         attempt.feedback = data;
         store.feedback.writing = data;
         save();
+        const assessment = diagnosticAssessment();
+        notifyTierAssignment({ newlyAssigned: !previouslyAssessed && !!assessment, assessment });
         if (route() === '/writing') render();
       })
       .catch(() => {});
   }
-  if (attempt) { store.attempts.push(attempt); save(); }
+  const assignment = attempt ? recordMockAttempt(attempt) : null;
   clearDeadline(section);
   resetSectionStates();
   notify(t('time_up'));
+  notifyTierAssignment(assignment);
   return completedView(section, attempt);
 }
 
@@ -1949,9 +2071,11 @@ function dashboard() {
   const overall = SERVICES.overallBand(store.attempts);
   const weakest = weakestSkill();
   const trend = SERVICES.bandTrend(store.attempts);
-  const week = SERVICES.weeklyActivity(store.attempts);
+  const activityEvents = adaptiveActivityEvents();
+  const week = SERVICES.weeklyActivity(store.attempts, activityEvents);
   const plan = SERVICES.personalPlan(store.attempts);
-  const minutes = SERVICES.studyMinutes(store.attempts);
+  const minutes = SERVICES.studyMinutes(store.attempts, activityEvents);
+  const drillAttempts = (store.drillResults || []).length;
   const user = store.user;
   return shell(`
     <section class="section">
@@ -1963,7 +2087,8 @@ function dashboard() {
         <div class="stat"><span>${t('overall_band')}</span><strong>${overall ?? '—'}<small> /9</small></strong></div>
         <div class="stat"><span>${t('weakest_skill')}</span><strong class="cap">${weakest || '—'}</strong></div>
         <div class="stat"><span>${t('study_minutes')}</span><strong>${minutes}<small> min</small></strong></div>
-        <div class="stat"><span>${t('attempts_stat')}</span><strong>${store.attempts.length}</strong></div>
+        <div class="stat"><span>${t('streak_label')}</span><strong>${currentStreak()}<small> ${esc(t('streak_days', { n: '' }).replace('{n}', '').trim())}</small></strong></div>
+        <div class="stat"><span>${t('attempts_stat')}</span><strong>${store.attempts.length + drillAttempts}</strong></div>
       </div>
       <div class="dash-grid">
         <div class="glass dash-panel">
@@ -2140,7 +2265,60 @@ function roadmapPlaygroundCard(next) {
     <div class="roadmap-quick-games">${types.map((type, i) => `<button class="roadmap-quick-game game-choice--${colors[i]}" data-roadmap-play="${type}" data-roadmap-topic="${esc(playable?.id || '')}" ${playable ? '' : 'disabled'}><span class="quick-game-icon">${learningIcon(icons[i])}</span><span><strong>${esc(t('game_' + type + '_title'))}</strong><small>${i === 1 ? '60 ' + esc(t('game_seconds')) : i === 0 ? esc(t2('game_pairs_count', { n: 0, total: 5 })) : esc(t2('game_sentence_count', { n: 1, total: 3 }))}</small></span>${learningIcon('arrow')}</button>`).join('')}</div><span class="roadmap-mini-reward">🪙 +5–15 ${esc(t('roadmap_coins'))}</span>
   </section>`;
 }
+function adaptiveActivityEvents() {
+  const remote = Array.isArray(store.learningActivities) ? store.learningActivities : [];
+  const local = (Array.isArray(store.drillResults) ? store.drillResults : []).map(result => ({
+    kind: 'drill', reference: `adaptive:${result.reference}`, skill: result.skill,
+    tier: result.tier, score: result.score, duration_seconds: result.duration_seconds,
+    activity_date: result.activity_date || (ADAPTIVE ? ADAPTIVE.utcDate(result.date) : ''),
+    created_at: new Date(Number(result.date) || Date.now()).toISOString()
+  }));
+  const unique = new Map();
+  for (const activity of [...remote, ...local]) {
+    const kind = String(activity && activity.kind || 'activity');
+    const reference = String(activity && activity.reference || `${activity && activity.skill || ''}:${activity && activity.created_at || ''}`);
+    const day = activity && (activity.activity_date || (ADAPTIVE && ADAPTIVE.activityDate(activity)) || '');
+    const key = `${kind}:${reference}:${day}`;
+    if (!unique.has(key)) unique.set(key, activity);
+  }
+  return [...unique.values()];
+}
+function diagnosticGatePage() {
+  const progress = diagnosticProgress(store.selectedTest), next = progress.next;
+  const href = progress.done ? `/${next || 'listening'}` : '/mock';
+  return shell(`<section class="section learning-page diagnostic-gate-page">
+    <div class="learning-breadcrumb"><span>${learningIcon('flag')} ${esc(t('nav_roadmap'))}</span><a href="#/mock">${esc(t('nav_mock'))} ↗</a></div>
+    <div class="diagnostic-gate-banner">
+      <div class="diagnostic-gate-orbit" aria-hidden="true"><span>✦</span><i>◉</i><b>↗</b></div>
+      <div class="diagnostic-gate-copy"><span class="eyebrow">${esc(t('roadmap_diagnostic_progress'))}</span><h1>${esc(t('roadmap_diagnostic_required_title'))}</h1><p>${esc(t('roadmap_diagnostic_required_body'))}</p><small>${esc(t('roadmap_diagnostic_required_hint'))}</small></div>
+      <button class="btn btn-primary" data-go="${esc(href)}">${esc(t(progress.done ? 'roadmap_start_diagnostic' : 'roadmap_start_diagnostic'))} ↗</button>
+    </div>
+    <div class="diagnostic-progress-card"><div class="diagnostic-progress-heading"><span>${esc(t('roadmap_diagnostic_progress'))}</span><strong>${esc(t2('roadmap_diagnostic_sections', { done: progress.done }))}</strong></div>
+      <div class="diagnostic-progress-meter" role="progressbar" aria-label="${esc(t('roadmap_diagnostic_progress'))}" aria-valuemin="0" aria-valuemax="4" aria-valuenow="${progress.done}"><i style="width:${progress.done / progress.total * 100}%"></i></div>
+      <div class="diagnostic-skill-checks">${['listening', 'reading', 'writing', 'speaking'].map(skill => `<span class="${progress.scores[skill] !== null ? 'is-done' : ''}"><i>${progress.scores[skill] !== null ? '✓' : '·'}</i>${esc(drillSkillLabel(skill))}${progress.scores[skill] !== null ? ` · ${esc(progress.scores[skill])}` : ''}</span>`).join('')}</div>
+    </div>
+    <div class="diagnostic-unlock-preview"><div><span class="eyebrow">${esc(t('roadmap_daily_quests'))}</span><h2>${esc(t('drills_title'))}</h2><p class="micro">${esc(t('roadmap_daily_quests_hint'))}</p></div><div class="drill-skill-preview">${['writing','speaking','reading','listening'].map(skill => `<span>${esc(t('quest_' + skill + '_title'))}</span>`).join('')}</div></div>
+  </section>`, 'roadmap');
+}
+function dailyQuestStreamHtml(assessment) {
+  const missions = ADAPTIVE ? ADAPTIVE.dailyQuests(assessment, new Date(), adaptiveActivityEvents()) : [];
+  const done = missions.filter(mission => mission.completed).length;
+  const icon = { listening: '♪', reading: '⌕', writing: '✎', speaking: '◖' };
+  return `<section class="daily-quest-stream" aria-labelledby="dailyQuestTitle">
+    <header class="daily-quest-heading"><div><span class="eyebrow">${esc(t('roadmap_diagnostic_complete'))} · ${esc(tierLabel(assessment.tier))}</span><h2 id="dailyQuestTitle">${esc(t('roadmap_daily_quests'))}</h2><p>${esc(t('roadmap_daily_quests_hint'))}</p></div><div class="quest-progress-count"><strong>${done}<small> / ${missions.length}</small></strong><span>${esc(t2('roadmap_quest_progress', { done, total: missions.length }))}</span></div></header>
+    <div class="daily-quest-grid">${missions.map(mission => `<article class="daily-quest-card ${mission.priority ? 'is-priority' : ''} ${mission.completed ? 'is-complete' : ''}">
+      <div class="quest-card-top"><span class="quest-index">${String(mission.index).padStart(2, '0')}</span><span class="quest-skill-icon" aria-hidden="true">${icon[mission.skill] || '✦'}</span>${mission.priority ? `<span class="quest-priority">${esc(t('roadmap_priority'))}</span>` : ''}${mission.completed ? `<span class="quest-done-mark" aria-label="${esc(t('roadmap_quest_done'))}">✓</span>` : ''}</div>
+      <span class="eyebrow">${esc(drillSkillLabel(mission.skill))} · ${esc(t2('drills_tier_content', { tier: mission.tier }))}</span>
+      <h3>${esc(t('quest_' + mission.skill + '_title'))}</h3><p>${esc(t('quest_' + mission.skill + '_hint'))}</p>
+      ${mission.band !== null ? `<small class="quest-band-note">${esc(t('roadmap_overall_score'))}: ${esc(mission.band)} / 9</small>` : ''}
+      <button class="btn ${mission.completed ? 'btn-ghost' : 'btn-primary'}" data-start-drill="${mission.skill}">${esc(t(mission.completed ? 'roadmap_quest_again' : 'roadmap_quest_start'))} ↗</button>
+    </article>`).join('')}</div>
+    <button class="btn btn-ghost quest-hub-link" data-go="/drills">${esc(t('roadmap_open_drills'))} ↗</button>
+  </section>`;
+}
 function roadmapPage() {
+  const assessment = diagnosticAssessment();
+  if (!assessment) return diagnosticGatePage();
   const signedIn = cloudUserActive(), topics = roadmapTopics();
   const active = ROADMAP_STAGES.find(stage => stage.id === roadmapState.activeStage) || ROADMAP_STAGES[0];
   const stageTopics = topics.filter(topic => topic.stage === active.id);
@@ -2165,10 +2343,12 @@ function roadmapPage() {
   }
   return shell(`<section class="section roadmap-page learning-page">
     <div class="learning-breadcrumb"><span>${learningIcon('flag')} ${esc(t('nav_roadmap'))}</span><a href="#/leaderboard">${learningIcon('trophy')} ${esc(t('nav_leaderboard'))} ↗</a></div>
-    <div class="learning-hero"><div><div class="eyebrow">${esc(t('roadmap_eyebrow'))}</div><h1>${esc(t('roadmap_title'))}<span class="learning-title-spark" aria-hidden="true">✦</span></h1><p>${esc(t('roadmap_subtitle'))}</p><div class="learning-stats"><span><strong>40</strong> ${esc(t('roadmap_lessons_stat'))}</span><i></i><span><strong>120</strong> ${esc(t('roadmap_games_stat'))}</span><i></i><span><strong>4</strong> ${esc(t('roadmap_levels_stat'))}</span></div></div>
+    <div class="learning-hero"><div><div class="eyebrow">${esc(t('roadmap_eyebrow'))}</div><h1>${esc(t('roadmap_title'))}<span class="learning-title-spark" aria-hidden="true">✦</span></h1><p>${esc(t('roadmap_subtitle'))}</p><div class="learning-stats"><span><strong>4</strong> ${esc(t('roadmap_lessons_stat'))}</span><i></i><span><strong>4</strong> ${esc(t('roadmap_games_stat'))}</span><i></i><span><strong>3</strong> ${esc(t('roadmap_levels_stat'))}</span></div></div>
       <div class="roadmap-wallet-summary glass"><span class="wallet-coin" aria-hidden="true">${learningIcon('coin')}</span><div><strong>${esc(formatCoins(currentCoins()))}</strong><span>${esc(t('coins_balance_label'))}</span></div><span class="learning-wallet-divider"></span><span class="wallet-fire" aria-hidden="true">${learningIcon('flame')}</span><div><strong>${currentStreak()}</strong><span>${esc(t('streak_label'))}</span></div></div>
     </div>
-    ${!signedIn ? `<div class="learning-preview-banner"><span class="preview-banner-icon">${learningIcon('star')}</span><div><strong>${esc(t('roadmap_preview_title'))}</strong><p>${esc(t('roadmap_preview_hint'))}</p></div><a class="btn btn-ghost btn-sm" href="#/login">${esc(t('roadmap_preview_cta'))} →</a></div>` : ''}
+    ${tierCardHtml(assessment, true)}
+    ${dailyQuestStreamHtml(assessment)}
+    <details class="roadmap-legacy-library"><summary><span><strong>${esc(t('roadmap_path_title'))}</strong><small>${esc(t('roadmap_stage_browse'))}</small></span><i aria-hidden="true">＋</i></summary>
     <div class="learning-layout"><main class="learning-main">
       <div class="roadmap-overview glass"><div><span>${esc(t('roadmap_overall_progress'))}</span><strong>${average}%</strong></div><div class="roadmap-overview-bar"><i style="width:${average}%"></i></div><p class="micro">${completeCount}/${topics.length || 40} ${esc(t('roadmap_topics_completed'))}</p></div>
       <div class="roadmap-tabs" role="tablist" aria-label="${esc(t('roadmap_levels'))}">${stageTabs}</div>
@@ -2183,7 +2363,7 @@ function roadmapPage() {
         ${next ? `<button class="btn btn-primary" data-roadmap-open="${esc(next.id)}">${esc(t(completeCount ? 'roadmap_continue' : 'roadmap_begin'))} ${learningIcon('arrow')}</button>` : ''}
       </section>
       <div class="learning-companion-note">${mascotAvatar()}<p>${esc(t('mascot_tip_roadmap'))}</p></div>
-    </aside></div>
+    </aside></div></details>
   </section>`, 'roadmap');
 }
 
@@ -2287,6 +2467,7 @@ function bindRoadmap() {
   document.querySelectorAll('[data-roadmap-open]').forEach(button => button.onclick = () => openRoadmapTopic(button.dataset.roadmapOpen));
   document.querySelectorAll('[data-roadmap-next]').forEach(button => button.onclick = () => openRoadmapTopic(button.dataset.roadmapNext));
   document.querySelectorAll('[data-roadmap-play]').forEach(button => button.onclick = () => openRoadmapTopic(button.dataset.roadmapTopic, 'play', button.dataset.roadmapPlay));
+  document.querySelectorAll('[data-start-drill]').forEach(button => button.onclick = () => openAdaptiveDrill(button.dataset.startDrill));
   document.querySelectorAll('[data-roadmap-lesson-tab]').forEach(button => {
     button.onclick = () => setRoadmapLessonTab(button.dataset.roadmapLessonTab);
     button.onkeydown = event => {
@@ -2352,6 +2533,426 @@ function bindRoadmap() {
   };
   if (roadmapGames) roadmapGames.bind();
   if (cloudUserActive() && roadmapState.loadedUser !== store.user.id && !roadmapState.loading && !roadmapState.error) loadRoadmapData();
+}
+
+/* ---------------- ADAPTIVE SKILL DRILLS ---------------- */
+function stopDrillMedia() {
+  if (drillTimer) clearInterval(drillTimer);
+  drillTimer = null;
+  const recognition = drillState && drillState.recognition;
+  if (recognition) {
+    try { recognition.onresult = null; recognition.onerror = null; recognition.onend = null; recognition.abort ? recognition.abort() : recognition.stop(); } catch {}
+    drillState.recognition = null;
+  }
+  if (typeof window !== 'undefined' && window.speechSynthesis) {
+    try { window.speechSynthesis.cancel(); } catch {}
+  }
+}
+function openAdaptiveDrill(skill) {
+  if (!['listening', 'reading', 'writing', 'speaking'].includes(skill)) return;
+  stopDrillMedia();
+  drillState = freshDrillState();
+  drillState.activeSkill = skill;
+  drillState.startedAt = Date.now();
+  if (route() === '/drills') render();
+  else go('/drills');
+}
+function drillTier() {
+  const assessment = diagnosticAssessment();
+  return assessment ? assessment.tier : 1;
+}
+function drillReference() {
+  try { if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID(); } catch {}
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 14)}`;
+}
+function drillElapsedSeconds() {
+  return Math.max(0, Math.min(3600, Math.round((Date.now() - (Number(drillState.startedAt) || Date.now())) / 1000)));
+}
+function recordToActivity(record, activityDate) {
+  return {
+    kind: 'drill', reference: `adaptive:${record.reference}`, skill: record.skill,
+    tier: record.tier, score: record.score, duration_seconds: record.duration_seconds,
+    activity_date: activityDate || record.activity_date || (ADAPTIVE ? ADAPTIVE.utcDate(record.date) : ''),
+    created_at: new Date(Number(record.date) || Date.now()).toISOString()
+  };
+}
+async function syncAdaptiveRecord(record) {
+  if (!record || !cloudUserActive() || !CLOUD || typeof CLOUD.recordAdaptiveDrill !== 'function') {
+    if (record) record.syncStatus = 'error';
+    return false;
+  }
+  const owner = store.user.id, scope = storageKey();
+  const stillCurrent = () => cloudUserActive() && store.user.id === owner && storageKey() === scope;
+  record.syncStatus = 'saving';
+  if (drillState.result && drillState.result.reference === record.reference) {
+    drillState.result.syncStatus = 'saving'; drillState.saving = true;
+  }
+  save(true);
+  try {
+    const response = await CLOUD.recordAdaptiveDrill({
+      reference: record.reference, skill: record.skill, tier: record.tier,
+      score: record.score, durationSeconds: record.duration_seconds
+    });
+    if (!stillCurrent()) return false;
+    record.syncStatus = 'synced';
+    record.activity_date = response.activity_date || record.activity_date;
+    const activity = recordToActivity(record, record.activity_date);
+    store.learningActivities = (store.learningActivities || []).filter(item =>
+      !(item.kind === 'drill' && String(item.reference || '').replace(/^adaptive:/, '') === record.reference)
+    ).concat(activity);
+    applyLearningResult(response);
+    if (drillState.result && drillState.result.reference === record.reference) {
+      drillState.result.syncStatus = 'synced'; drillState.saving = false;
+    }
+    save(true);
+    if (['/drills', '/roadmap', '/dashboard'].includes(route())) render();
+    return true;
+  } catch (error) {
+    if (!stillCurrent()) return false;
+    record.syncStatus = 'error'; record.syncError = String(error && error.message || error || '');
+    if (drillState.result && drillState.result.reference === record.reference) {
+      drillState.result.syncStatus = 'error'; drillState.saving = false;
+      drillState.result.syncError = record.syncError;
+    }
+    save(true);
+    if (['/drills', '/roadmap', '/dashboard'].includes(route())) render();
+    return false;
+  }
+}
+function persistAdaptiveDrill(skill, score, details) {
+  const tier = drillTier(), now = Date.now();
+  const record = {
+    reference: drillReference(), kind: 'drill', skill, tier,
+    score: Math.max(0, Math.min(100, Math.round(Number(score) || 0))),
+    duration_seconds: drillElapsedSeconds(), date: now,
+    activity_date: ADAPTIVE ? ADAPTIVE.utcDate(now) : new Date(now).toISOString().slice(0, 10),
+    syncStatus: 'pending'
+  };
+  store.drillResults = [...(store.drillResults || []), record].slice(-400);
+  drillState.result = { ...record, feedback: details || null, syncStatus: 'saving' };
+  drillState.syncReference = record.reference;
+  drillState.saving = true; drillState.error = '';
+  save(true);
+  render();
+  return syncAdaptiveRecord(record);
+}
+async function retryAdaptiveDrill(reference) {
+  const record = (store.drillResults || []).find(item => item.reference === reference);
+  if (!record || !cloudUserActive()) return;
+  if (drillState.result && drillState.result.reference === reference) drillState.saving = true;
+  await syncAdaptiveRecord(record);
+}
+async function syncPendingAdaptiveDrills() {
+  if (drillState.saving || !cloudUserActive() || !CLOUD || typeof CLOUD.recordAdaptiveDrill !== 'function') return;
+  const pending = (store.drillResults || []).filter(item => item.syncStatus === 'pending').slice(-5);
+  for (const record of pending) {
+    if (!cloudUserActive()) return;
+    const synced = await syncAdaptiveRecord(record);
+    if (!synced) return;
+  }
+}
+function speakDrillText(text, rate = 1) {
+  if (!window.speechSynthesis || typeof SpeechSynthesisUtterance === 'undefined') {
+    notify(t('listening_speech_unavailable'));
+    return false;
+  }
+  try {
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(String(text || ''));
+    utterance.lang = 'en-US'; utterance.rate = rate;
+    window.speechSynthesis.speak(utterance);
+    return true;
+  } catch { notify(t('listening_speech_unavailable')); return false; }
+}
+function drillSyncStatusHtml(result) {
+  if (!result) return '';
+  const status = result.syncStatus || 'pending';
+  const key = status === 'saving' ? 'drills_saving' : status === 'synced' ? 'drills_sync_complete' : status === 'error' ? 'drills_sync_failed' : 'drills_sync_pending';
+  return `<div class="drill-sync-state ${status === 'error' ? 'is-error' : status === 'synced' ? 'is-synced' : ''}" role="status"><span>${status === 'synced' ? '✓' : status === 'error' ? '!' : '◷'}</span><p>${esc(t(key))}</p>${status === 'error' ? `<button class="btn btn-ghost btn-sm" data-drill-sync="${esc(result.reference)}">${esc(t('drills_retry_sync'))} ↻</button>` : ''}${status === 'error' && /record_adaptive_drill|function .* does not exist|schema cache|PGRST202/i.test(String(result.syncError || '')) ? `<small>${esc(t('drill_migration_hint'))}</small>` : ''}</div>`;
+}
+function drillResultShell(score, content, result) {
+  return `<section class="drill-result-card ${Number(score) >= 70 ? 'is-strong' : ''}" role="status"><div class="drill-result-score"><strong>${esc(score)}<small>%</small></strong><span>${esc(t('drill_result_score'))}</span></div><div class="drill-result-copy"><h3>${esc(Number(score) >= 70 ? t('drill_complete') : t('drill_complete_low'))}</h3>${content || ''}</div>${drillSyncStatusHtml(result)}<button class="btn btn-ghost btn-sm drill-reset" data-drill-reset="${esc(result.skill)}">${esc(t('drill_reset'))} ↻</button></section>`;
+}
+function writingFeedbackHtml(result) {
+  if (!result || !result.feedback) return '';
+  const data = result.feedback;
+  const labels = {
+    inversion: t('writing_criteria_inversion'), complexGrammar: t('writing_criteria_grammar'),
+    academicCollocation: t('writing_criteria_collocation'), accuracyNaturalness: t('writing_criteria_accuracy')
+  };
+  return `<div class="writing-feedback"><div class="writing-ai-band"><span>${esc(t('writing_ai_score'))}</span><strong>${esc(data.score)}<small>/100</small></strong><span>${esc(t('writing_band_estimate'))}: <b>${esc(data.band)}</b> / 9</span></div>
+    <div class="writing-rubric">${Object.entries(labels).map(([key, label]) => `<div><span>${esc(label)}</span><strong>${esc(data.criteria && data.criteria[key] != null ? data.criteria[key] : '—')}</strong></div>`).join('')}</div>
+    <p class="micro">${esc(data.summary || '')}</p>
+    ${data.strengths && data.strengths.length ? `<div><strong>${esc(t('writing_strengths'))}</strong><ul>${data.strengths.map(item => `<li>${esc(item)}</li>`).join('')}</ul></div>` : ''}
+    ${data.improvements && data.improvements.length ? `<div><strong>${esc(t('writing_improvements'))}</strong><ul>${data.improvements.map(item => `<li>${esc(item)}</li>`).join('')}</ul></div>` : ''}
+    <details><summary>${esc(t('writing_model_version'))}</summary><p>${esc(data.modelAnswer || '')}</p></details><small>${esc(t('writing_ai_note'))}</small>
+  </div>`;
+}
+function writingDrillHtml(tier) {
+  const round = ADAPTIVE.writingRound(tier, new Date());
+  const result = drillState.result && drillState.result.skill === 'writing' ? drillState.result : null;
+  return `<article class="drill-lab-card writing-lab-card"><div class="drill-lab-eyebrow">${esc(t('writing_lab_title'))} · ${esc(t2('drills_tier_content', { tier }))}</div><h2>${esc(t('writing_lab_title'))}</h2><p class="drill-lab-intro">${esc(t('writing_lab_intro'))}</p>
+    <div class="transform-source"><span>${esc(t('writing_simple_sentence'))}</span><p>${esc(round.source)}</p></div>
+    <div class="transform-instruction"><span>${esc(t('writing_transformation_task'))}</span><p>${esc(round.cue)}</p><div class="transform-focus"><i>Inversion</i><i>${esc(t('writing_criteria_grammar'))}</i><i>${esc(t('writing_criteria_collocation'))}</i></div></div>
+    <label class="drill-field-label" for="sentenceTransformInput">${esc(t('writing_transform_placeholder'))}</label><textarea id="sentenceTransformInput" class="drill-textarea" maxlength="1200" rows="4" data-writing-response ${drillState.saving || result ? 'disabled' : ''} placeholder="${esc(t('writing_transform_placeholder'))}">${esc(drillState.writingText || '')}</textarea>
+    ${drillState.error ? `<p class="drill-inline-error" role="alert">${esc(drillState.error)}</p>` : ''}
+    <div class="drill-action-row"><span>${esc(t('writing_ai_note'))}</span><button class="btn btn-primary" data-writing-submit ${drillState.saving || result ? 'disabled' : ''}>${esc(t(drillState.saving ? 'writing_checking' : 'writing_check'))} ↗</button></div>
+    ${result ? drillResultShell(result.score, writingFeedbackHtml(result), result) : ''}
+  </article>`;
+}
+function readingParagraphHtml(round) {
+  const selected = drillState.reading || { key: null, distractor: null };
+  return round.paragraph.map(part => {
+    if (!part.id) return esc(part.text);
+    const role = part.id === round.keyId ? 'key' : 'distractor';
+    const isSelected = selected[role] === part.id;
+    return `<button type="button" class="reading-token ${role} ${isSelected ? 'is-selected' : ''}" data-reading-token="${esc(part.id)}" aria-pressed="${isSelected}">${esc(part.text)}</button>`;
+  }).join('');
+}
+function readingDrillHtml(tier) {
+  const round = ADAPTIVE.readingRound(tier, new Date());
+  const result = drillState.result && drillState.result.skill === 'reading' ? drillState.result : null;
+  const selected = drillState.reading || { key: null, distractor: null };
+  const keySelected = !!selected.key, distractorSelected = !!selected.distractor;
+  const feedback = result && result.feedback;
+  return `<article class="drill-lab-card reading-lab-card"><div class="drill-lab-eyebrow">${esc(t('reading_lab_title'))} · ${esc(t2('drills_tier_content', { tier }))}</div><h2>${esc(t('reading_lab_title'))}</h2><p class="drill-lab-intro">${esc(t('reading_lab_intro'))}</p>
+    <div class="reading-statement"><span>${esc(t('reading_statement'))}</span><strong>${esc(round.statement)}</strong></div>
+    <div class="reading-passage-card"><span class="eyebrow">${esc(t('nav_reading'))} · IELTS passage</span><p>${readingParagraphHtml(round)}</p></div>
+    <div class="reading-select-guide"><span class="${keySelected ? 'is-active' : ''}"><i>1</i>${esc(t('reading_select_key'))}</span><span class="${distractorSelected ? 'is-active' : ''}"><i>2</i>${esc(t('reading_select_distractor'))}</span></div>
+    <div class="drill-action-row"><span>${keySelected ? esc(t('reading_selection_key')) : esc(t('reading_select_key'))}${distractorSelected ? ` · ${esc(t('reading_selection_distractor'))}` : ''}</span><button class="btn btn-primary" data-reading-submit ${!keySelected || !distractorSelected || drillState.saving || result ? 'disabled' : ''}>${esc(t('reading_check'))} ↗</button></div>
+    ${result ? drillResultShell(result.score, `<p>${esc(feedback && feedback.explanation || '')}</p><p><strong>${esc(t('reading_selection_key'))}:</strong> ${esc(feedback && feedback.keyText || '')}<br><strong>${esc(t('reading_selection_distractor'))}:</strong> ${esc(feedback && feedback.distractorText || '')}</p>`, result) : ''}
+  </article>`;
+}
+function speakingDrillHtml(tier) {
+  const line = ADAPTIVE.shadowingLine(new Date());
+  const result = drillState.result && drillState.result.skill === 'speaking' ? drillState.result : null;
+  const feedback = result && result.feedback || {};
+  const match = drillState.speakingMatch;
+  const isListening = !!drillState.recognition;
+  const missing = match ? match.expectedWords.filter((word, index) => match.heardWords[index] !== word) : [];
+  return `<article class="drill-lab-card speaking-lab-card"><div class="drill-lab-eyebrow">${esc(t('speaking_lab_title'))} · ${esc(t2('drills_tier_content', { tier }))}</div><h2>${esc(t('speaking_lab_title'))}</h2><p class="drill-lab-intro">${esc(t('speaking_lab_intro'))}</p>
+    <div class="shadow-model-card"><span class="eyebrow">${esc(t('speaking_model_sentence'))}</span><p>${esc(line)}</p><button class="btn btn-ghost btn-sm" data-shadow-audio>${esc(t(drillState.audioPlayed ? 'speaking_listen_again' : 'speaking_play_model'))} ♪</button></div>
+    <p class="micro shadow-permission-note">${esc(t('speaking_permission'))}</p>
+    ${drillState.error ? `<p class="drill-inline-error" role="alert">${esc(drillState.error)}</p>` : ''}
+    <button class="btn btn-primary shadow-record-button" data-shadow-record ${isListening || result ? 'disabled' : ''}>${isListening ? esc(t('speaking_listening')) : esc(t('speaking_start_shadow'))} 🎙</button>
+    ${match ? `<div class="shadow-transcript"><span>${esc(t('speaking_transcript'))}</span><p>${esc(drillState.speakingTranscript || '')}</p><strong>${esc(t('speaking_transcript_match'))}: ${match.score}%</strong>${missing.length ? `<small>${esc(t('speaking_missing_words'))}: ${esc([...new Set(missing)].join(', '))}</small>` : ''}${drillState.speakingConfidence != null ? `<small>Recognition confidence: ${Math.round(drillState.speakingConfidence * 100)}%</small>` : ''}<p class="micro">${esc(t('speaking_pronunciation_note'))}</p></div>` : ''}
+    ${result ? drillResultShell(result.score, `<p>${esc(feedback.transcript || '')}</p><p class="micro">${esc(t('speaking_pronunciation_note'))}</p>`, result) : ''}
+  </article>`;
+}
+function dictationDrillHtml(tier) {
+  const items = ADAPTIVE.dictationRound(tier, new Date());
+  const result = drillState.result && drillState.result.skill === 'listening' ? drillState.result : null;
+  const index = Math.max(0, Math.min(items.length - 1, Number(drillState.dictationIndex) || 0));
+  const item = items[index];
+  const feedback = drillState.dictationFeedback[index];
+  const hasPlayed = Number(drillState.dictationDeadline) > 0;
+  const remaining = hasPlayed ? Math.max(0, Math.ceil((drillState.dictationDeadline - Date.now()) / 1000)) : null;
+  const itemKey = item.type === 'number' ? 'listening_item_number' : item.type === 'name' ? 'listening_item_name' : 'listening_item_phrase';
+  const kindKey = 'listening_' + item.type;
+  const correct = (drillState.dictationFeedback || []).filter(entry => entry && entry.correct).length;
+  const rows = result && result.feedback && result.feedback.rows || [];
+  const review = result ? `<div class="dictation-review">${rows.map((row, rowIndex) => `<div class="dictation-review-row ${row.correct ? 'is-correct' : 'is-incorrect'}"><span>${row.correct ? '✓' : '×'} ${esc(t(row.labelKey))}</span><strong>${esc(row.answer || '—')}</strong><small>${esc(row.expected)}</small></div>`).join('')}</div>` : '';
+  return `<article class="drill-lab-card dictation-lab-card"><div class="drill-lab-eyebrow">${esc(t('listening_lab_title'))} · ${esc(t2('drills_tier_content', { tier }))}</div><h2>${esc(t('listening_lab_title'))}</h2><p class="drill-lab-intro">${esc(t('listening_lab_intro'))}</p>
+    ${!result ? `<div class="dictation-progress"><span>${esc(t(itemKey))} · ${index + 1}/${items.length}</span><strong data-dictation-clock>${remaining === null ? '—' : esc(t2('listening_countdown', { seconds: remaining }))}</strong></div>
+      <div class="dictation-audio-stage"><span class="dictation-sound-wave" aria-hidden="true">◖ ))</span><p>${esc(t(kindKey))}</p><button class="btn btn-primary" data-dictation-play>${esc(t(hasPlayed ? 'listening_replay_item' : 'listening_play_item'))} ♪</button></div>
+      <label class="drill-field-label" for="dictationAnswer">${esc(t('listening_answer_placeholder'))}</label><input id="dictationAnswer" class="drill-input" type="text" maxlength="180" autocomplete="off" data-dictation-answer value="${esc(drillState.dictationAnswers[index] || '')}" ${feedback || drillState.saving ? 'disabled' : ''} placeholder="${esc(t('listening_answer_placeholder'))}"/>
+      ${feedback ? `<p class="dictation-item-feedback ${feedback.correct ? 'is-correct' : 'is-incorrect'}">${esc(t(feedback.correct ? 'listening_answer_correct' : feedback.timedOut ? 'listening_time_up' : 'listening_answer_incorrect'))} ${!feedback.correct ? `<strong>${esc(item.answer)}</strong>` : ''}</p>` : ''}
+      <div class="drill-action-row">${feedback && index < items.length - 1 ? `<button class="btn btn-primary" data-dictation-next>${esc(t('listening_next_item'))} ↗</button>` : feedback ? `<button class="btn btn-primary" data-dictation-finish>${esc(t('listening_submit_item'))} ✓</button>` : `<button class="btn btn-ghost" data-dictation-submit ${drillState.saving ? 'disabled' : ''}>${esc(t('listening_submit_item'))} ↗</button>`}</div>` : ''}
+    ${result ? drillResultShell(result.score, `<p>${esc(t('listening_round_complete'))} · ${correct}/${items.length}</p>${review}`, result) : ''}
+  </article>`;
+}
+function drillSyncQueueHtml() {
+  const currentReference = drillState.result && drillState.result.reference;
+  const failed = (store.drillResults || []).filter(record => record && record.syncStatus === 'error' && record.reference !== currentReference).slice(-5).reverse();
+  if (!failed.length) return '';
+  return `<section class="drill-sync-queue" aria-label="${esc(t('drill_unsynced_title'))}"><div><strong>${esc(t('drill_unsynced_title'))}</strong><p>${esc(t('drill_unsynced_body'))}</p></div>${failed.map(record => `<div class="drill-sync-queue-row"><span>${esc(drillSkillLabel(record.skill))} · ${esc(t2('drills_tier_content', { tier: record.tier || 1 }))}</span><button class="btn btn-ghost btn-sm" data-drill-sync="${esc(record.reference)}">${esc(t('drills_retry_sync'))} ↻</button></div>${/record_adaptive_drill|function .* does not exist|schema cache|PGRST202/i.test(String(record.syncError || '')) ? `<small>${esc(t('drill_migration_hint'))}</small>` : ''}`).join('')}</section>`;
+}
+function adaptiveDrillsPage() {
+  const cloudState = CLOUD && CLOUD.getState ? CLOUD.getState() : null;
+  if (!cloudState || cloudState.status !== 'ready') {
+    return shell(`<section class="section adaptive-drills-page learning-page"><div class="glass drills-auth-gate"><h1>${esc(t('drills_signin_title'))}</h1><p>${esc(cloudState && cloudState.status === 'loading' ? t('auth_connecting') : t('auth_unavailable'))}</p></div></section>`, 'drills');
+  }
+  if (!cloudUserActive()) {
+    return shell(`<section class="section adaptive-drills-page learning-page"><div class="glass drills-auth-gate"><div class="warn-icon">🔐</div><h1>${esc(t('drills_signin_title'))}</h1><p>${esc(t('drills_signin_body'))}</p><a class="btn btn-primary" href="#/login">${esc(t('nav_login'))} ↗</a></div></section>`, 'drills');
+  }
+  const assessment = diagnosticAssessment(), tier = assessment ? assessment.tier : 1;
+  const weak = assessment ? assessment.weakestSkill : null;
+  const skills = ['writing', 'speaking', 'reading', 'listening'];
+  const labHtml = drillState.activeSkill === 'writing' ? writingDrillHtml(tier)
+    : drillState.activeSkill === 'speaking' ? speakingDrillHtml(tier)
+      : drillState.activeSkill === 'reading' ? readingDrillHtml(tier)
+        : drillState.activeSkill === 'listening' ? dictationDrillHtml(tier) : '';
+  return shell(`<section class="section adaptive-drills-page learning-page">
+    <div class="learning-breadcrumb"><span>${learningIcon('bolt')} ${esc(t('nav_drills'))}</span><a href="#/roadmap">${esc(t('nav_roadmap'))} ↗</a></div>
+    <div class="adaptive-drills-hero"><div><span class="eyebrow">${esc(t('roadmap_tier_label'))} · ${esc(tierLabel(tier))}</span><h1>${esc(t('drills_title'))}</h1><p>${esc(t('drills_subtitle'))}</p></div><div class="drill-hero-actions"><span class="tier-mark tier-mark--${tier}">${esc(t('roadmap_tier_range_' + tier))}</span><button class="btn btn-ghost btn-sm" data-go="/roadmap">${esc(t('drills_return_roadmap'))} ↗</button></div></div>
+    ${assessment ? tierCardHtml(assessment, true) : `<div class="drill-provisional-banner"><span>✦</span><p>${esc(t('drills_provisional'))}</p><button class="btn btn-ghost btn-sm" data-go="/mock">${esc(t('roadmap_start_diagnostic'))} ↗</button></div>`}
+    ${drillSyncQueueHtml()}
+    ${!drillState.activeSkill ? `<div class="drill-overview-heading"><h2>${esc(t('drills_choose_skill'))}</h2><p class="micro">${esc(t('drills_assessment'))}: ${weak ? esc(drillSkillLabel(weak)) : esc(tierLabel(tier))}</p></div><div class="drill-overview-grid">${skills.map((skill, index) => `<button class="drill-overview-card ${skill === weak ? 'is-priority' : ''}" data-open-drill="${skill}"><span class="drill-overview-index">0${index + 1}</span><span class="drill-overview-icon" aria-hidden="true">${({ writing: '✎', speaking: '◖', reading: '⌕', listening: '♪' })[skill]}</span><strong>${esc(t('quest_' + skill + '_title'))}</strong><p>${esc(t('quest_' + skill + '_hint'))}</p>${skill === weak ? `<small>${esc(t('drills_priority_badge'))}</small>` : ''}<span class="drill-overview-cta">${esc(t('drills_start'))} →</span></button>`).join('')}</div>` : `<div class="drill-workbench"><div class="drill-skill-tabs" role="tablist" aria-label="${esc(t('drills_choose_skill'))}">${skills.map(skill => `<button class="${drillState.activeSkill === skill ? 'active' : ''} ${skill === weak ? 'is-priority' : ''}" role="tab" aria-selected="${drillState.activeSkill === skill}" data-open-drill="${skill}">${esc(t('quest_' + skill + '_title'))}${skill === weak ? ' ✦' : ''}</button>`).join('')}<button class="drill-close-tab" data-close-drill aria-label="${esc(t('modal_close'))}">×</button></div>${labHtml}</div>`}
+  </section>`, 'drills');
+}
+function startDictationAudio() {
+  if (drillState.saving || drillState.result) return;
+  const items = ADAPTIVE.dictationRound(drillTier(), new Date());
+  const index = Math.max(0, Math.min(items.length - 1, Number(drillState.dictationIndex) || 0));
+  const item = items[index];
+  const seconds = Math.max(10, 15 - (drillTier() - 1) * 2);
+  if (!drillState.dictationDeadline || drillState.dictationDeadline <= Date.now()) {
+    drillState.dictationDeadline = Date.now() + seconds * 1000;
+    if (drillTimer) clearInterval(drillTimer);
+    drillTimer = setInterval(() => {
+      const remaining = Math.max(0, Math.ceil((drillState.dictationDeadline - Date.now()) / 1000));
+      const clock = document.querySelector('[data-dictation-clock]');
+      if (clock) clock.textContent = t2('listening_countdown', { seconds: remaining });
+      if (remaining <= 0) {
+        clearInterval(drillTimer); drillTimer = null;
+        if (!drillState.dictationFeedback[index]) {
+          drillState.dictationFeedback[index] = { correct: false, timedOut: true };
+          render();
+        }
+      }
+    }, 200);
+  }
+  speakDrillText(item.spoken, Math.min(1.4, 1.08 + (drillTier() - 1) * 0.12));
+  document.querySelector('[data-dictation-answer]')?.focus?.({ preventScroll: true });
+}
+function submitDictationItem() {
+  if (drillState.saving || drillState.result) return;
+  const items = ADAPTIVE.dictationRound(drillTier(), new Date());
+  const index = Math.max(0, Math.min(items.length - 1, Number(drillState.dictationIndex) || 0));
+  const item = items[index];
+  const answer = String(document.querySelector('[data-dictation-answer]')?.value || drillState.dictationAnswers[index] || '').trim();
+  if (!answer) { notify(t('drill_error_short')); return; }
+  drillState.dictationAnswers[index] = answer;
+  const correct = ADAPTIVE.dictationCorrect(item, answer);
+  drillState.dictationFeedback[index] = { correct, answer };
+  if (drillTimer) clearInterval(drillTimer);
+  drillTimer = null;
+  render();
+}
+async function finishDictationRound() {
+  const items = ADAPTIVE.dictationRound(drillTier(), new Date());
+  const rows = items.map((item, index) => ({
+    labelKey: item.type === 'number' ? 'listening_item_number' : item.type === 'name' ? 'listening_item_name' : 'listening_item_phrase',
+    expected: item.answer,
+    answer: drillState.dictationAnswers[index] || '',
+    correct: !!(drillState.dictationFeedback[index] && drillState.dictationFeedback[index].correct)
+  }));
+  const correct = rows.filter(row => row.correct).length;
+  const score = Math.round(correct / items.length * 100);
+  await persistAdaptiveDrill('listening', score, { correct, total: items.length, rows });
+}
+function bindAdaptiveDrills() {
+  document.querySelectorAll('[data-open-drill]').forEach(button => button.onclick = () => openAdaptiveDrill(button.dataset.openDrill));
+  document.querySelectorAll('[data-start-drill]').forEach(button => button.onclick = () => openAdaptiveDrill(button.dataset.startDrill));
+  const close = document.querySelector('[data-close-drill]');
+  if (close) close.onclick = () => { stopDrillMedia(); drillState = freshDrillState(); render(); };
+  document.querySelectorAll('[data-writing-response]').forEach(input => input.oninput = () => { drillState.writingText = input.value; });
+  const writeSubmit = document.querySelector('[data-writing-submit]');
+  if (writeSubmit) writeSubmit.onclick = async () => {
+    if (drillState.saving || drillState.result) return;
+    const candidate = String(drillState.writingText || '').trim();
+    if (candidate.length < 10) { notify(t('drill_error_short')); document.querySelector('[data-writing-response]')?.focus?.(); return; }
+    const tier = drillTier(), round = ADAPTIVE.writingRound(tier, new Date());
+    const scope = storageKey(), owner = store.user.id;
+    drillState.saving = true; drillState.error = '';
+    render();
+    try {
+      const response = await fetch('/api/grade', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: 'sentence_transform', sourceSentence: round.source, candidateSentence: candidate, prompt: round.cue })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'AI sentence assessment failed.');
+      if (storageKey() !== scope || !store.user || store.user.id !== owner || drillState.activeSkill !== 'writing') return;
+      await persistAdaptiveDrill('writing', data.score, data);
+    } catch (error) {
+      if (storageKey() !== scope || !store.user || store.user.id !== owner) return;
+      drillState.saving = false; drillState.error = String(error.message || t('drill_ai_unavailable'));
+      render();
+    }
+  };
+  document.querySelectorAll('[data-reading-token]').forEach(button => button.onclick = () => {
+    if (drillState.result || drillState.saving) return;
+    const round = ADAPTIVE.readingRound(drillTier(), new Date());
+    const id = button.dataset.readingToken;
+    drillState.reading = drillState.reading || { key: null, distractor: null };
+    if (id === round.keyId) drillState.reading.key = id;
+    else if (id === round.distractorId) drillState.reading.distractor = id;
+    render();
+  });
+  const readSubmit = document.querySelector('[data-reading-submit]');
+  if (readSubmit) readSubmit.onclick = async () => {
+    if (drillState.saving || drillState.result) return;
+    const round = ADAPTIVE.readingRound(drillTier(), new Date());
+    if (!drillState.reading.key || !drillState.reading.distractor) return;
+    const keyCorrect = drillState.reading.key === round.keyId;
+    const distractorCorrect = drillState.reading.distractor === round.distractorId;
+    const score = Math.round((Number(keyCorrect) + Number(distractorCorrect)) / 2 * 100);
+    await persistAdaptiveDrill('reading', score, {
+      keyCorrect, distractorCorrect, explanation: round.explanation,
+      keyText: round.paragraph.find(part => part.id === round.keyId)?.text || '',
+      distractorText: round.paragraph.find(part => part.id === round.distractorId)?.text || ''
+    });
+  };
+  const playModel = document.querySelector('[data-shadow-audio]');
+  if (playModel) playModel.onclick = () => {
+    const line = ADAPTIVE.shadowingLine(new Date());
+    if (speakDrillText(line, 0.92)) { drillState.audioPlayed = true; render(); }
+  };
+  const shadowRecord = document.querySelector('[data-shadow-record]');
+  if (shadowRecord) shadowRecord.onclick = () => {
+    const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!Recognition) { drillState.error = t('speaking_no_support'); render(); return; }
+    const recognition = new Recognition();
+    recognition.lang = 'en-US'; recognition.interimResults = false; recognition.continuous = false; recognition.maxAlternatives = 3;
+    drillState.error = ''; drillState.speakingTranscript = ''; drillState.speakingMatch = null;
+    drillState.startedAt = Date.now(); drillState.recognition = recognition;
+    recognition.onresult = event => {
+      if (route() !== '/drills' || drillState.activeSkill !== 'speaking') return;
+      const choice = event.results && event.results[0] && event.results[0][0];
+      const transcript = choice && choice.transcript || '';
+      const line = ADAPTIVE.shadowingLine(new Date());
+      const match = ADAPTIVE.transcriptMatch(line, transcript);
+      drillState.speakingTranscript = transcript;
+      drillState.speakingMatch = match;
+      drillState.speakingConfidence = Number.isFinite(Number(choice && choice.confidence)) ? Number(choice.confidence) : null;
+      drillState.recognition = null;
+      const details = { transcript, confidence: drillState.speakingConfidence, expected: line, match };
+      persistAdaptiveDrill('speaking', match.score, details);
+    };
+    recognition.onerror = event => {
+      if (drillState.activeSkill !== 'speaking') return;
+      drillState.recognition = null;
+      drillState.error = event && event.error === 'no-speech' ? t('speaking_no_speech') : String(event && event.error || t('speaking_no_speech'));
+      render();
+    };
+    recognition.onend = () => {
+      if (drillState.recognition !== recognition) return;
+      drillState.recognition = null;
+      if (!drillState.speakingTranscript) { drillState.error = t('speaking_no_speech'); render(); }
+    };
+    try { recognition.start(); render(); }
+    catch { drillState.recognition = null; drillState.error = t('speaking_no_support'); render(); }
+  };
+  const dictationPlay = document.querySelector('[data-dictation-play]');
+  if (dictationPlay) dictationPlay.onclick = startDictationAudio;
+  document.querySelectorAll('[data-dictation-answer]').forEach(input => input.oninput = () => {
+    const index = Math.max(0, Number(drillState.dictationIndex) || 0);
+    drillState.dictationAnswers[index] = input.value;
+  });
+  const dictationSubmit = document.querySelector('[data-dictation-submit]');
+  if (dictationSubmit) dictationSubmit.onclick = submitDictationItem;
+  const dictationNext = document.querySelector('[data-dictation-next]');
+  if (dictationNext) dictationNext.onclick = () => {
+    if (drillTimer) clearInterval(drillTimer);
+    drillTimer = null; drillState.dictationIndex++;
+    drillState.dictationDeadline = null; render();
+  };
+  const dictationFinish = document.querySelector('[data-dictation-finish]');
+  if (dictationFinish) dictationFinish.onclick = finishDictationRound;
+  document.querySelectorAll('[data-drill-sync]').forEach(button => button.onclick = () => retryAdaptiveDrill(button.dataset.drillSync));
+  document.querySelectorAll('[data-drill-reset]').forEach(button => button.onclick = () => openAdaptiveDrill(button.dataset.drillReset));
+  if (cloudUserActive()) syncPendingAdaptiveDrills();
 }
 
 function celebrateCoinReward(amount, balance) {
@@ -2613,6 +3214,7 @@ function render() {
       if (value !== null && /^[\w-]*$/.test(value)) { modalFocus = `[${attribute}="${value}"]`; break; }
     }
   }
+  if (r !== '/drills' && drillState.recognition) stopDrillMedia();
   if (r !== '/roadmap' && roadmapState.topicId) {
     if (roadmapGames) roadmapGames.reset();
     roadmapQuizRevision++;
@@ -2630,6 +3232,7 @@ function render() {
   else if (r === '/coach') html = coach();
   else if (r === '/dashboard') html = dashboard();
   else if (r === '/roadmap') html = roadmapPage();
+  else if (r === '/drills') html = adaptiveDrillsPage();
   else if (r === '/leaderboard') html = leaderboardPage();
   else if (r === '/lessons') html = lessons();
   else if (r === '/vocabulary') html = vocabulary();
@@ -2682,6 +3285,26 @@ let cloudRows = [];
 let cloudStatus = 'idle';
 let cloudError = '';
 
+async function loadLearningActivities(force = false) {
+  if (!cloudUserActive() || !CLOUD || typeof CLOUD.loadLearningActivity !== 'function') return;
+  const owner = store.user.id;
+  if (!force && activityLoadedFor === owner) return;
+  if (activityLoadTask) return activityLoadTask;
+  const task = (async () => {
+    try {
+      const rows = await CLOUD.loadLearningActivity();
+      if (!cloudUserActive() || !store.user || store.user.id !== owner) return;
+      store.learningActivities = Array.isArray(rows) ? rows : [];
+      activityLoadedFor = owner;
+      save(true);
+      if (['/roadmap', '/drills', '/dashboard'].includes(route())) render();
+    } catch { /* The drill RPC will show an explicit schema/network retry when needed. */ }
+  })();
+  activityLoadTask = task;
+  try { await task; }
+  finally { if (activityLoadTask === task) activityLoadTask = null; }
+}
+
 function cloudText(key) {
   const messages = {
     en: { title: 'Supabase mock results', loading: 'Connecting to Supabase…', auth: 'Secure account with Supabase. Your results are private.', confirm: 'Check your email to confirm your account, then sign in.', disabled: 'Supabase is not configured. Sign-in and tests are unavailable.', configError: 'Supabase is unavailable or misconfigured. Reload after checking the server settings.', login: 'Sign in to your Supabase account to save and load cloud results.', syncing: 'Synchronizing results…', synced: 'Results synchronized with Supabase.', error: 'Cloud sync failed. Local results are kept; use Retry after checking your connection and database setup.', refresh: 'Refresh / Retry', empty: 'No cloud results yet. Finish a test section to save your progress.', pending: 'Incomplete / awaiting grading', name: 'Name', overall: 'Overall band' },
@@ -2702,6 +3325,8 @@ function applyCloudUser(user) {
   if (!user && !store.user) return;
   clearDynamicTests();
   cloudRows = []; cloudLastLoad = 0; cloudStatus = 'idle'; cloudError = '';
+  activityLoadedFor = null; activityLoadTask = null;
+  drillState = freshDrillState();
   if (roadmapGames) roadmapGames.reset();
   roadmapQuizRevision++;
   roadmapState = freshRoadmapState();

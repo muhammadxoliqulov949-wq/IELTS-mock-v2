@@ -35,7 +35,23 @@ async function guestFlow(browser) {
   page.on('pageerror', error => errors.push(error.message));
   try {
     await page.goto(base + '/#/roadmap');
+    await page.evaluate(() => {
+      const key = 'ielts-v2-store', store = JSON.parse(localStorage.getItem(key) || '{}');
+      store.lang = 'uz'; store.attempts = []; localStorage.setItem(key, JSON.stringify(store));
+    });
+    await page.reload();
+    await expect(page.locator('.diagnostic-gate-banner')).toBeVisible();
+    await expect(page.locator('.diagnostic-gate-copy p')).toContainText('Darajangizni aniqlash va shaxsiy mashqlar rejasini ochish uchun avval diagnostik test topshiring');
+    await expect(page.locator('.roadmap-path-item')).toHaveCount(0);
+    await page.evaluate(() => {
+      const key = 'ielts-v2-store', store = JSON.parse(localStorage.getItem(key) || '{}');
+      store.lang = 'en'; store.selectedTest = 'test1';
+      store.attempts = [['listening', 6], ['reading', 5.5], ['writing', 6.5], ['speaking', 6]].map(([section, band], index) => ({ section, band, test: 'test1', date: Date.now() + index }));
+      localStorage.setItem(key, JSON.stringify(store));
+    });
+    await page.reload();
     await expect(page.locator('.roadmap-path-item')).toHaveCount(10);
+    await expect(page.locator('.daily-quest-card')).toHaveCount(4);
     await expect(page.locator('.roadmap-path-node:disabled')).toHaveCount(9);
     await overflow(page); await screenshot(page, 'roadmap-desktop');
     for (const stage of ['A2-B1', 'B1-B2', 'B2-C1']) {
@@ -133,13 +149,14 @@ async function fixture() {
     alter table public.mock_results enable row level security;
     insert into auth.users values('${id}'); insert into public.profiles(id,email,name) values('${id}','${user.email}','Learner One');
   `);
-  for (const migration of ['202610060001_roadmap_gamification.sql', '202610060003_interactive_learning.sql']) await db.exec(fs.readFileSync(path.join(root, 'supabase/migrations', migration), 'utf8'));
+  for (const migration of ['202610060001_roadmap_gamification.sql', '202610060003_interactive_learning.sql', '202610100001_adaptive_drills.sql']) await db.exec(fs.readFileSync(path.join(root, 'supabase/migrations', migration), 'utf8'));
   await db.exec(`update public.profiles set coins=1250,current_streak=3,last_active_date=(now() at time zone 'UTC')::date-1;
     set role authenticated; set request.jwt.claim.sub='${id}';`);
   const rpc = {
     update_daily_streak: [], start_topic_game: ['p_topic_id', 'p_game_type'],
     answer_speed_question: ['p_session_id', 'p_question_index', 'p_choice'],
     submit_topic_game: ['p_session_id', 'p_answers'], submit_topic_quiz: ['p_topic_id', 'p_answers'],
+    record_adaptive_drill: ['p_reference', 'p_skill', 'p_tier', 'p_score', 'p_duration_seconds'],
     get_leaderboard: ['p_limit']
   };
   const requests = [], errors = [];
@@ -161,7 +178,7 @@ async function fixture() {
         const rows = await db.query(name === 'get_leaderboard' ? `select * from public.${name}(${params})` : `select public.${name}(${params}) result`, args);
         return send(name === 'get_leaderboard' ? rows.rows : rows.rows[0].result);
       }
-      if (['topics', 'user_topic_progress', 'user_game_progress', 'profiles', 'mock_results'].includes(name)) {
+      if (['topics', 'user_topic_progress', 'user_game_progress', 'learning_activity', 'profiles', 'mock_results'].includes(name)) {
         const rows = await db.query(`select * from public.${name}${name === 'topics' ? ' order by stage,order_index' : ''}`);
         // PostgREST serializes SQL DATE as YYYY-MM-DD; PGlite returns a Date.
         return send(rows.rows.map(row => Object.fromEntries(Object.entries(row).map(([key, value]) => [key, key.endsWith('_date') && value instanceof Date ? value.toISOString().slice(0, 10) : value]))));
@@ -191,13 +208,34 @@ async function accountFlow(browser) {
     await page.locator('#auth-form [type="submit"]').click();
     await expect(page.locator('[data-daily-streak] strong')).toHaveText('3'); // login does not count
     await page.goto(base + '/#/roadmap');
+    await expect(page.locator('.diagnostic-gate-banner')).toBeVisible();
+    await page.evaluate(() => {
+      const key = 'ielts-v2-store:supabase:11111111-1111-4111-8111-111111111111';
+      const store = JSON.parse(localStorage.getItem(key) || '{}');
+      store.selectedTest = 'test1';
+      store.attempts = [['listening', 6], ['reading', 5.5], ['writing', 6.5], ['speaking', 6]].map(([section, band], index) => ({ section, band, test: 'test1', date: Date.now() + index }));
+      store.cloudSynced = Object.fromEntries(store.attempts.map(attempt => [window.IELTS_CLOUD.sectionKey(attempt), window.IELTS_CLOUD.fingerprint(attempt)]));
+      localStorage.setItem(key, JSON.stringify(store));
+    });
+    await page.reload();
     await expect(page.locator('.roadmap-path-item')).toHaveCount(10);
+    await expect(page.locator('.daily-quest-card')).toHaveCount(4);
+    await page.locator('[data-start-drill="reading"]').click();
+    await expect(page.locator('.reading-passage-card')).toBeVisible();
+    await page.locator('[data-reading-token="key"]').click();
+    await page.locator('[data-reading-token="distractor"]').click();
+    await page.locator('[data-reading-submit]').click();
+    await expect(page.locator('.drill-sync-state.is-synced')).toBeVisible();
+    await expect(page.locator('.drill-result-score strong')).toContainText('100');
+    await expect.poll(async () => page.evaluate(() => window.IELTS_CLOUD.getState().profile.current_streak)).toBe(4);
+    await page.goto(base + '/#/roadmap');
+    await expect(page.locator('.daily-quest-card.is-complete')).toHaveCount(1);
     await page.locator('.roadmap-path-node:not(:disabled)').click(); await page.locator('#lesson-tab-play').click();
     await page.locator('[data-game-start="word_match"]').click();
     await page.locator('[data-match-card="0-w"]').focus();
     await page.evaluate(() => window.IELTS_CLOUD.loadProfile(true));
     await expect(page.locator('[data-match-card="0-w"]')).toBeFocused();
-    await expect(page.locator('[data-daily-streak] strong')).toHaveText('3');
+    await expect(page.locator('[data-daily-streak] strong')).toHaveText('4');
     for (let i = 0; i < 5; i++) {
       await page.locator(`[data-match-card="${i}-w"]`).click(); await page.locator(`[data-match-card="${i}-m"]`).click();
       if (i < 4) await expect(page.locator('.match-card.is-matched')).toHaveCount((i + 1) * 2);
