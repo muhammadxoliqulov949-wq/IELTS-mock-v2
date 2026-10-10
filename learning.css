@@ -780,3 +780,313 @@ body[data-theme="light"] .drill-textarea, body[data-theme="light"] .drill-input 
 .drill-sync-queue-row > span { color: var(--muted); font-size: 9px; }
 .drill-sync-queue-row .btn { min-height: 31px; padding: 5px 8px; font-size: 9px; white-space: nowrap; }
 .drill-sync-queue > small { color: var(--muted); font-size: 8px; line-height: 1.5; }
+
+/* =====================================================================
+   MOBILE-FIRST FINISHING — Roadmap, lessons, and adaptive practice
+   ===================================================================== */
+@media (max-width: 900px) {
+  .learning-page, .adaptive-drills-page, .learning-main, .learning-sidebar { min-width: 0; }
+  .learning-layout { gap: 22px; }
+  .roadmap-modal-backdrop { overscroll-behavior: contain; }
+  .learning-modal { overscroll-behavior: contain; }
+  .learning-page .roadmap-topic-card, .daily-quest-card, .drill-overview-card, .drill-lab-card { min-width: 0; }
+  .learning-main .roadmap-tab > span:not(.roadmap-tab-index) { font-size: 10px; line-height: 1.55; }
+  .learning-main .roadmap-tab small, .roadmap-tab-index { font-size: 10px; }
+  .learning-page .roadmap-topic-stage { font-size: 9px; }
+  .roadmap-current-badge { font-size: 8px; }
+  .roadmap-lock-label, .roadmap-game-count { font-size: 9px; }
+  .roadmap-topic-action { min-height: 44px; font-size: 10px; }
+  .daily-streak, .coin-wallet { min-height: 44px; }
+  .daily-quest-card > .eyebrow { font-size: 9px; }
+  .daily-quest-card > p, .drill-overview-card > p { font-size: 12px; line-height: 1.65; }
+  .daily-quest-card > .btn { min-height: 44px; font-size: 11px; }
+  .quest-band-note { font-size: 10px; }
+  .quest-progress-count > span { font-size: 10px; }
+  .drill-overview-card > small { font-size: 10px; }
+  .drill-overview-cta { font-size: 11px; }
+  .drill-skill-tabs button { min-height: 44px; font-size: 11px; }
+  .drill-lab-intro { font-size: 12px; line-height: 1.7; }
+  .drill-field-label { font-size: 12px; }
+  .drill-action-row > span { font-size: 11px; }
+  .drill-action-row .btn { font-size: 12px; }
+  .writing-rubric > div { font-size: 10px; }
+  .writing-feedback ul { font-size: 11px; }
+  .writing-feedback details summary { font-size: 11px; }
+  .writing-feedback details p, .writing-feedback > small { font-size: 10px; }
+  .reading-select-guide > span { font-size: 10px; }
+  .shadow-permission-note { font-size: 11px; }
+  .dictation-review-row { font-size: 10px; }
+  .drill-result-copy > p, .drill-sync-state > p { font-size: 11px; }
+  .drill-reset { min-height: 44px; font-size: 11px; }
+  .drill-sync-queue > div:first-child strong { font-size: 11px; }
+  .drill-sync-queue p, .drill-sync-queue-row > span { font-size: 10px; line-height: 1.55; }
+  .drill-sync-queue-row .btn { min-height: 44px; font-size: 10px; }
+  .drill-sync-queue > small { font-size: 9px; }
+  .shadow-record-button { min-height: 44px; }
+  .game-sound { width: 44px; height: 44px; }
+  .game-choice-description { font-size: 12px; line-height: 1.65; }
+  .game-choice-bottom { font-size: 10px; }
+  .game-practice-note, .game-reward-note { font-size: 11px; line-height: 1.65; }
+  .drill-skill-tabs { scrollbar-width: thin; -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain; }
+}
+
+@media (max-width: 600px) {
+  /* A compact, stable header; theme and language remain in the hamburger menu. */
+  .site-header { padding: max(8px, env(safe-area-inset-top)) max(10px, env(safe-area-inset-right)) 0 max(10px, env(safe-area-inset-left)); }
+  .site-header.scrolled { padding: max(8px, env(safe-area-inset-top)) max(10px, env(safe-area-inset-right)) 8px max(10px, env(safe-area-inset-left)); }
+  .site-header.scrolled .nav { max-width: none; padding: 6px 8px; }
+  .nav { min-height: 54px; padding: 6px 8px; gap: 7px; border-radius: 18px; }
+  .nav .brand { gap: 6px; font-size: 14px; }
+  .nav .brand-mark { width: 28px; height: 28px; }
+  .nav-actions { gap: 4px; }
+  .nav-actions > [data-toggle-theme], .nav-actions > [data-toggle-lang] { display: none; }
+  .nav:has(.nav-user) .brand-name { display: inline; }
+  .nav-user { gap: 4px; }
+  .daily-streak, .coin-wallet { min-height: 44px; padding: 6px 8px; gap: 5px; font-size: 12px; }
+  .daily-streak > span, .coin-wallet > span { font-size: 14px; }
+  .nav-user .user-name, .nav-user .caret { display: none; }
+  .nav .user-chip { width: 44px; min-width: 44px; min-height: 44px; padding: 4px; gap: 0; }
+  .user-chip img, .user-chip .avatar { width: 30px; height: 30px; }
+  .nav .hamburger { width: 44px; height: 44px; flex: 0 0 44px; }
+  .nav-login { min-height: 44px; padding: 8px 12px; font-size: 12px; }
+
+  .learning-page { padding-top: 18px; padding-bottom: 46px; }
+  .learning-breadcrumb { flex-wrap: wrap; gap: 8px 13px; margin-bottom: 21px; font-size: 12px; }
+  .learning-breadcrumb > span, .learning-breadcrumb > a { min-height: 34px; }
+  .learning-hero { display: grid; align-items: start; gap: 14px; margin-bottom: 22px; }
+  .learning-hero h1 { max-width: 100%; font-size: clamp(29px, 8.5vw, 36px); line-height: 1.13; overflow-wrap: anywhere; }
+  .learning-hero > div > p { font-size: 14px; line-height: 1.65; }
+  .learning-stats { gap: 8px 11px; margin-top: 14px; font-size: 12px; }
+  .learning-hero .roadmap-wallet-summary { width: fit-content; max-width: 100%; min-width: 0; min-height: 56px; padding: 11px 14px; }
+  .learning-preview-banner { align-items: flex-start; padding: 14px; border-radius: 14px; }
+  .learning-preview-banner p { font-size: 12px; line-height: 1.6; }
+  .learning-preview-banner .btn { min-height: 44px; }
+  .learning-main .roadmap-overview { padding: 14px; }
+  .learning-main .roadmap-tabs { gap: 9px; margin-bottom: 23px; }
+  .learning-main .roadmap-tab { min-height: 116px; padding: 13px 12px; gap: 6px; }
+  .learning-main .roadmap-tab strong { font-size: 15px; line-height: 1.25; }
+  .learning-main .roadmap-tab > span:not(.roadmap-tab-index) { font-size: 12px; line-height: 1.45; }
+  .roadmap-tab-index { font-size: 10px; }
+  .learning-main .roadmap-tab small { font-size: 10px; }
+  .learning-main .roadmap-stage-heading { align-items: flex-start; flex-direction: column; gap: 9px; }
+  .learning-main .roadmap-stage-heading h2 { font-size: 21px; line-height: 1.25; }
+  .learning-main .roadmap-stage-heading .micro { font-size: 12px; }
+  .roadmap-stage-counter { padding: 8px 11px; font-size: 17px; }
+  .roadmap-map-legend { gap: 8px 14px; font-size: 11px; }
+  .roadmap-map-legend > span { min-height: 28px; }
+  .roadmap-path { gap: 14px; padding-top: 6px; }
+  .roadmap-path-item { grid-template-columns: 44px minmax(0, 1fr); gap: 12px; }
+  .roadmap-path::before { left: 22px; top: 29px; bottom: 88px; }
+  .roadmap-path-node { width: 44px; height: 44px; }
+  .roadmap-path-node .learning-icon { width: 19px; height: 19px; }
+  .learning-page .roadmap-topic-card { min-height: 0; padding: 15px; border-radius: 14px; }
+  .learning-page .roadmap-topic-card h3 { margin: 8px 0 6px; font-size: 15px; line-height: 1.4; }
+  .learning-page .roadmap-summary-preview { margin-bottom: 10px; font-size: 12px; line-height: 1.65; }
+  .learning-page .roadmap-topic-stage { font-size: 10px; }
+  .roadmap-current-badge { padding: 4px 6px; font-size: 8px; }
+  .roadmap-lock-label, .roadmap-game-count { font-size: 10px; }
+  .roadmap-topic-footer { gap: 8px; }
+  .roadmap-topic-footer .roadmap-reward { font-size: 11px; }
+  .roadmap-topic-action { min-height: 44px; font-size: 11px; }
+  .roadmap-stage-finish { margin-left: 56px; padding: 13px; gap: 10px; }
+  .roadmap-stage-finish strong { font-size: 12px; }
+  .roadmap-stage-finish small { font-size: 11px; line-height: 1.6; }
+  .learning-sidebar { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+  .streak-card, .roadmap-milestone, .learning-companion-note { grid-column: auto; grid-row: auto; }
+  .streak-card { padding: 19px; }
+  .streak-day > span { font-size: 10px; }
+  .streak-day > i { width: 32px; height: 32px; }
+  .daily-goal { min-height: 44px; font-size: 12px; }
+  .daily-goal strong { font-size: 12px; }
+
+  .adaptive-drills-hero { gap: 14px; margin-bottom: 18px; }
+  .adaptive-drills-hero h1 { font-size: clamp(28px, 8vw, 35px); line-height: 1.15; }
+  .adaptive-drills-hero p { font-size: 14px; line-height: 1.65; }
+  .drill-hero-actions { width: 100%; justify-items: stretch; grid-template-columns: minmax(0, 1fr) auto; }
+  .drill-hero-actions .btn { min-height: 44px; }
+  .drill-provisional-banner { align-items: flex-start; flex-wrap: wrap; padding: 13px; }
+  .drill-provisional-banner p { flex-basis: calc(100% - 42px); font-size: 12px; }
+  .drill-provisional-banner > .btn { width: calc(100% - 42px); margin-left: 42px; white-space: normal; }
+  .adaptive-assessment-card { gap: 11px; padding: 15px; border-radius: 15px; }
+  .adaptive-assessment-card > p { font-size: 13px; line-height: 1.6; }
+  .adaptive-skill-score { min-height: 42px; padding: 8px; }
+  .adaptive-skill-score small { font-size: 12px; }
+  .diagnostic-gate-banner { padding: 17px; border-radius: 17px; }
+  .diagnostic-gate-copy h1 { font-size: clamp(23px, 7vw, 30px); }
+  .diagnostic-gate-copy p { font-size: 14px; line-height: 1.65; }
+  .diagnostic-gate-copy small { font-size: 12px; }
+  .diagnostic-progress-card { padding: 14px; }
+  .diagnostic-progress-heading { font-size: 12px; }
+  .diagnostic-skill-checks { gap: 9px; }
+  .diagnostic-skill-checks span { min-height: 30px; font-size: 12px; }
+  .diagnostic-unlock-preview { gap: 14px; padding: 15px; }
+  .diagnostic-unlock-preview h2 { font-size: 19px; }
+  .diagnostic-unlock-preview p { font-size: 13px; line-height: 1.65; }
+  .drill-skill-preview { width: 100%; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .drill-skill-preview span { font-size: 12px; }
+  .daily-quest-stream { padding: 15px; margin-bottom: 22px; border-radius: 17px; }
+  .daily-quest-heading { align-items: flex-start; gap: 12px; }
+  .daily-quest-heading h2 { font-size: 24px; }
+  .daily-quest-heading p { font-size: 13px; line-height: 1.65; }
+  .quest-progress-count { min-width: 60px; }
+  .quest-progress-count > strong { font-size: 23px; }
+  .quest-progress-count > span { font-size: 11px; }
+  .daily-quest-grid, .drill-overview-grid { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .daily-quest-card { min-height: 0; padding: 15px; }
+  .daily-quest-card > .eyebrow { font-size: 10px; }
+  .daily-quest-card h3 { font-size: 16px; }
+  .daily-quest-card > p { min-height: 0; font-size: 13px; line-height: 1.65; }
+  .quest-priority { font-size: 10px; }
+  .quest-band-note { font-size: 11px; }
+  .daily-quest-card > .btn { min-height: 46px; padding: 10px 13px; font-size: 13px; }
+  .quest-hub-link { min-height: 44px; font-size: 12px; }
+  .drill-overview-heading { align-items: flex-start; flex-direction: column; gap: 6px; }
+  .drill-overview-heading h2 { font-size: 21px; }
+  .drill-overview-card { min-height: 0; padding: 16px; }
+  .drill-overview-card > strong { font-size: 17px; }
+  .drill-overview-card > p { font-size: 13px; line-height: 1.65; }
+  .drill-overview-card > small { font-size: 11px; }
+  .drill-overview-cta { font-size: 12px; }
+  .drill-workbench { margin-top: 14px; }
+  .drill-skill-tabs { gap: 5px; padding: 5px; border-radius: 12px; }
+  .drill-skill-tabs button { min-height: 44px; padding: 8px 10px; font-size: 12px; }
+  .drill-skill-tabs .drill-close-tab { min-width: 44px; margin-left: auto; }
+  .drill-lab-card { margin-top: 12px; padding: 15px; border-radius: 17px; }
+  .drill-lab-card > h2 { font-size: 22px; line-height: 1.25; }
+  .drill-lab-eyebrow { font-size: 10px; }
+  .drill-lab-intro { margin-bottom: 16px; font-size: 13px; line-height: 1.65; }
+  .transform-source, .transform-instruction, .reading-statement, .reading-passage-card, .shadow-model-card { padding: 14px; }
+  .transform-source > span, .transform-instruction > span, .reading-statement > span, .reading-passage-card > .eyebrow, .shadow-model-card > .eyebrow { font-size: 10px; }
+  .transform-instruction > p { font-size: 14px; line-height: 1.65; }
+  .transform-focus i { padding: 6px 9px; font-size: 11px; }
+  .drill-field-label { margin-top: 15px; font-size: 13px; }
+  .drill-textarea, .drill-input { min-height: 48px; padding: 12px; font-size: 16px; }
+  .drill-textarea { min-height: 136px; }
+  .drill-action-row { align-items: stretch; flex-direction: column; gap: 9px; }
+  .drill-action-row > span { font-size: 12px; line-height: 1.5; }
+  .drill-action-row .btn { width: 100%; min-height: 46px; font-size: 13px; }
+  .drill-inline-error { font-size: 12px; line-height: 1.6; }
+  .writing-ai-band > span:first-child, .writing-ai-band > span:last-child { font-size: 11px; }
+  .writing-rubric > div { min-height: 40px; align-items: center; font-size: 11px; }
+  .writing-feedback ul { font-size: 12px; }
+  .writing-feedback details summary { min-height: 40px; display: flex; align-items: center; font-size: 12px; }
+  .writing-feedback details p, .writing-feedback > small { font-size: 11px; line-height: 1.6; }
+  .reading-statement strong { font-size: 15px; }
+  .reading-passage-card > p { font-size: 14px; line-height: 1.8; }
+  .reading-select-guide { gap: 7px 12px; }
+  .reading-select-guide > span { min-height: 32px; font-size: 12px; }
+  .shadow-model-card > p { font-size: 16px; line-height: 1.55; }
+  .shadow-permission-note { font-size: 12px; line-height: 1.6; }
+  .shadow-record-button { min-height: 48px; width: 100%; }
+  .shadow-transcript > span, .shadow-transcript > small { font-size: 11px; line-height: 1.55; }
+  .shadow-transcript > p { font-size: 13px; }
+  .dictation-progress { font-size: 12px; }
+  .dictation-progress strong { font-size: 13px; }
+  .dictation-audio-stage { padding: 17px; }
+  .dictation-audio-stage p { font-size: 12px; }
+  .dictation-item-feedback { font-size: 12px; line-height: 1.55; }
+  .dictation-review-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); font-size: 11px; line-height: 1.5; }
+  .dictation-review-row > small { font-size: 11px; }
+  .drill-result-card { grid-template-columns: 62px minmax(0, 1fr); gap: 10px; padding: 11px; }
+  .drill-result-score > span { font-size: 10px; }
+  .drill-result-copy h3 { font-size: 15px; line-height: 1.35; }
+  .drill-result-copy > p { font-size: 12px; line-height: 1.6; }
+  .drill-sync-state { align-items: flex-start; }
+  .drill-sync-state > p { font-size: 12px; line-height: 1.5; }
+  .drill-sync-state > small { font-size: 10px; }
+  .drill-reset { grid-column: 1 / -1; width: 100%; min-height: 44px; padding: 8px 10px; font-size: 12px; }
+  .drill-sync-queue { padding: 13px; }
+  .drill-sync-queue > div:first-child strong { font-size: 12px; }
+  .drill-sync-queue p, .drill-sync-queue-row > span { font-size: 11px; line-height: 1.55; }
+  .drill-sync-queue-row .btn { min-height: 44px; font-size: 11px; }
+  .drill-sync-queue > small { font-size: 10px; line-height: 1.55; }
+
+  .roadmap-modal-backdrop {
+    align-items: flex-end;
+    padding: max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) 0 max(8px, env(safe-area-inset-left));
+  }
+  .learning-modal {
+    width: 100%;
+    max-width: none;
+    max-height: 94vh;
+    max-height: min(94dvh, calc(100dvh - env(safe-area-inset-top) - 8px));
+    padding: 22px 16px calc(20px + env(safe-area-inset-bottom));
+    border-radius: 21px 21px 0 0;
+  }
+  .learning-modal-meta { gap: 8px; padding-right: 48px; font-size: 12px; line-height: 1.4; }
+  .learning-modal-meta .roadmap-topic-stage { font-size: 11px; }
+  .learning-modal h2 { margin: 13px 0 7px; font-size: clamp(21px, 6.5vw, 24px); line-height: 1.25; }
+  .learning-modal-subtitle { margin-bottom: 18px; font-size: 12px; line-height: 1.5; }
+  .lesson-navigation { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 3px; padding: 4px; margin-bottom: 18px; }
+  .lesson-tab { min-width: 0; min-height: 58px; flex-direction: column; gap: 4px; padding: 7px 3px; font-size: 11px; line-height: 1.25; }
+  .lesson-tab .learning-icon { width: 18px; height: 18px; }
+  .learning-modal .roadmap-cheatsheet { padding: 15px; }
+  .learning-modal .roadmap-cheatsheet > div { font-size: 14px; line-height: 1.8; }
+  .roadmap-ai-details > summary { min-height: 48px; padding: 12px; font-size: 12px; }
+  .lesson-guide-cta { align-items: stretch; flex-direction: column; gap: 11px; }
+  .lesson-guide-cta > span { max-width: none; font-size: 12px; }
+  .lesson-guide-cta > .btn { min-height: 46px; font-size: 13px; }
+  .learning-modal .roadmap-actions { gap: 8px; }
+  .learning-modal .roadmap-actions .btn { min-height: 46px; flex: 1 1 140px; font-size: 13px; }
+  .lesson-quiz-gate { padding: 14px; }
+  .lesson-quiz-gate p { font-size: 13px; }
+
+  .game-section-head { gap: 9px; margin-bottom: 17px; }
+  .game-section-head h3 { font-size: 19px; line-height: 1.25; }
+  .game-section-head .micro { font-size: 12px; }
+  .game-sound { min-width: 44px; min-height: 44px; }
+  .game-back, .game-text-button, .game-result-link { min-height: 44px; font-size: 12px; }
+  .game-choice-grid { grid-template-columns: minmax(0, 1fr); gap: 9px; }
+  .game-choice { min-height: 0; display: grid; grid-template-columns: 42px minmax(0, 1fr); gap: 5px 13px; padding: 15px; }
+  .game-choice-icon { grid-column: 1; grid-row: 1 / 4; width: 42px; height: 42px; margin-bottom: 0; }
+  .game-choice-title, .game-choice-description, .game-choice-bottom { grid-column: 2; margin-bottom: 0; }
+  .game-choice-title { font-size: 16px; line-height: 1.35; }
+  .game-choice-description { font-size: 13px; line-height: 1.55; }
+  .game-choice-bottom { gap: 7px; margin-top: 5px; padding-top: 8px; font-size: 11px; }
+  .game-choice-bottom strong { font-size: 11px; }
+  .game-practice-note, .game-reward-note { font-size: 12px; line-height: 1.6; }
+  .game-instruction { margin: 18px 0; }
+  .game-instruction h3 { font-size: 21px; line-height: 1.25; }
+  .game-instruction p { font-size: 13px; line-height: 1.6; }
+  .game-round-progress { font-size: 12px; }
+  .game-controls { gap: 8px; }
+  .game-controls .btn { min-height: 46px; flex: 1 1 140px; font-size: 13px; }
+  .game-feedback { min-height: 30px; font-size: 13px; line-height: 1.5; }
+  .game-loading p { font-size: 13px; }
+  .word-match-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .match-card { min-height: 92px; padding: 11px 9px; }
+  .match-card small { font-size: 9px; }
+  .match-card strong { font-size: 12px; line-height: 1.45; }
+  .speed-hud { gap: 10px; }
+  .speed-clock { min-width: 92px; padding: 9px 10px; }
+  .speed-clock > span, .speed-stat > span, .speed-footer { font-size: 11px; }
+  .speed-question { padding: 16px 0 20px; }
+  .speed-question > span { font-size: 10px; }
+  .speed-question h3 { font-size: clamp(27px, 9vw, 34px); overflow-wrap: anywhere; }
+  .speed-option { min-height: 54px; padding: 12px; font-size: 14px; }
+  .speed-option kbd { width: 30px; height: 30px; font-size: 11px; }
+  .game-result > .eyebrow { font-size: 11px; }
+  .game-result-stats { margin: 19px 0; padding: 14px 0; }
+  .game-result-stats > div { padding-inline: 9px; }
+  .game-result-stats strong { font-size: 20px; }
+  .game-result-stats span { font-size: 11px; line-height: 1.35; }
+  .game-result .btn { min-height: 46px; font-size: 13px; }
+}
+
+@media (max-width: 360px) {
+  .nav:has(.nav-user) .brand-name { display: none; }
+  .nav { gap: 5px; }
+  .nav-actions, .nav-user { gap: 3px; }
+  .daily-streak, .coin-wallet { padding-inline: 6px; }
+  .coin-wallet strong { max-width: 38px; overflow: hidden; text-overflow: ellipsis; }
+  .learning-main .roadmap-tab { padding: 11px 9px; }
+  .roadmap-stage-finish { margin-left: 52px; }
+  .learning-modal { padding-inline: 13px; }
+  .lesson-tab { font-size: 10px; }
+  .writing-rubric { grid-template-columns: minmax(0, 1fr); }
+  .drill-result-card { grid-template-columns: 56px minmax(0, 1fr); gap: 8px; }
+}
+
+@media (hover: none) {
+  .daily-quest-card:hover, .drill-overview-card:hover, .game-choice:hover, .speed-option:not(:disabled):hover, .match-card:not(:disabled):hover { transform: none; }
+}

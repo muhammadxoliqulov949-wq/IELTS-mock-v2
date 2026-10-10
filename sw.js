@@ -1,5 +1,5 @@
 /* Bandly AI — service worker */
-const CACHE = 'bandly-v16';
+const CACHE = 'bandly-v17';
 const PRECACHE = [
   '/',
   '/index.html',
