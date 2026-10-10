@@ -173,6 +173,7 @@ function signOut() {
   resetSectionStates();
 }
 let pendingRoute = null; /* where to return after a successful sign-in */
+let mobileMenuOpener = null;
 function go(path) { location.hash = path; }
 function route() { return location.hash.slice(1) || '/'; }
 
@@ -448,7 +449,17 @@ function shell(body, active) {
   const nextLang = store.lang === 'en' ? 'UZ' : store.lang === 'uz' ? 'RU' : 'EN';
   const displayName = String(user ? (user.name || user.email || 'User') : 'User');
   const firstName = displayName.split(' ')[0];
-  return `<header class="site-header" id="siteHeader">
+  const examRoute = ['listening', 'reading', 'writing', 'speaking'].includes(active);
+  const phoneMockActive = ['', 'home', 'mock', 'fullmock', 'listening', 'reading', 'writing', 'speaking'].includes(active);
+  const phoneMoreActive = !['', 'home', 'mock', 'fullmock', 'listening', 'reading', 'writing', 'speaking', 'roadmap', 'drills', 'dashboard'].includes(active);
+  const phoneNav = examRoute ? '' : `<nav class="phone-tabbar" aria-label="${esc(t('phone_nav_label'))}">
+    <a class="phone-tabbar-item ${phoneMockActive ? 'is-active' : ''}" href="#/mock" aria-label="${esc(t('nav_mock'))}" ${active === 'mock' ? 'aria-current="page"' : ''}>${learningIcon('book')}<span>${esc(t('phone_nav_mock'))}</span></a>
+    <a class="phone-tabbar-item ${active === 'roadmap' ? 'is-active' : ''}" href="#/roadmap" aria-label="${esc(t('nav_roadmap'))}" ${active === 'roadmap' ? 'aria-current="page"' : ''}>${learningIcon('flag')}<span>${esc(t('phone_nav_roadmap'))}</span></a>
+    <a class="phone-tabbar-item ${active === 'drills' ? 'is-active' : ''}" href="#/drills" aria-label="${esc(t('nav_drills'))}" ${active === 'drills' ? 'aria-current="page"' : ''}>${learningIcon('bolt')}<span>${esc(t('phone_nav_drills'))}</span></a>
+    <a class="phone-tabbar-item ${active === 'dashboard' ? 'is-active' : ''}" href="#/dashboard" aria-label="${esc(t('nav_dashboard'))}" ${active === 'dashboard' ? 'aria-current="page"' : ''}>${learningIcon('trophy')}<span>${esc(t('phone_nav_dashboard'))}</span></a>
+    <button type="button" id="phoneMenuBtn" class="phone-tabbar-item phone-tabbar-more ${phoneMoreActive ? 'is-active' : ''}" aria-label="${esc(t('phone_nav_more'))}" aria-controls="mobileMenu" aria-expanded="false"><span class="phone-tabbar-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>${esc(t('phone_nav_more'))}</span></button>
+  </nav>`;
+  return `<header class="site-header${examRoute ? ' site-header--exam' : ''}" id="siteHeader">
   <nav class="nav" id="mainNav" aria-label="Main navigation">
     <a class="brand" href="#/" aria-label="IELTS Mock — ${esc(MASCOT_NAME)}"><span class="brand-mark brand-mark--mascot">${mascotPicture(MASCOT.head, '', '', 'eager')}</span><span class="brand-name">IELTS Mock</span></a>
     <div class="nav-links">
@@ -475,7 +486,7 @@ function shell(body, active) {
           <button class="user-logout" data-logout>${t('nav_logout')}</button>
         </div>
       </div>` : `<a class="btn btn-primary btn-sm nav-login" href="#/login">${t('nav_login')}</a>`}
-      <button class="hamburger" id="hamburgerBtn" aria-label="${t('menu')}" aria-expanded="false" title="${t('menu')}"><span></span><span></span><span></span></button>
+      <button class="hamburger" id="hamburgerBtn" aria-label="${t('menu')}" aria-controls="mobileMenu" aria-expanded="false" title="${t('menu')}"><span></span><span></span><span></span></button>
     </div>
   </nav>
 </header>
@@ -495,7 +506,8 @@ function shell(body, active) {
     ${user ? `<button class="btn btn-ghost" data-logout>${t('nav_logout')}</button>` : `<a class="btn btn-primary" href="#/login">${t('nav_login')}</a>`}
   </div>
 </div>
-<footer class="footer">
+${phoneNav}
+<footer class="footer${examRoute ? '' : ' footer--phone-nav'}">
   <div class="footer-inner">
     <div class="footer-brand"><span class="brand-mark brand-mark--mascot sm">${mascotPicture(MASCOT.head, '', '', false)}</span><span>IELTS Mock <em>${t('footer_by')}</em></span></div>
     <nav class="footer-links" aria-label="Footer">
@@ -1745,6 +1757,7 @@ function bindPremium() {
 
 function bindNavExtras() {
   const hamburger = document.querySelector('#hamburgerBtn');
+  const phoneMenuButton = document.querySelector('#phoneMenuBtn');
   const mobileMenu = document.querySelector('#mobileMenu');
   const closeMenu = document.querySelector('#closeMenuBtn');
 
@@ -1757,11 +1770,28 @@ function bindNavExtras() {
     };
   }
 
-  if (hamburger && mobileMenu) {
-    const close = () => { mobileMenu.classList.remove('open'); if (hamburger) hamburger.setAttribute('aria-expanded', 'false'); };
-    hamburger.onclick = () => { mobileMenu.classList.add('open'); hamburger.setAttribute('aria-expanded', 'true'); };
-    if (closeMenu) closeMenu.onclick = close;
-    mobileMenu.querySelectorAll('a').forEach(a => a.onclick = close);
+  if (mobileMenu) {
+    const triggers = [hamburger, phoneMenuButton].filter(Boolean);
+    const setExpanded = value => triggers.forEach(trigger => trigger.setAttribute('aria-expanded', String(value)));
+    const open = trigger => {
+      mobileMenuOpener = trigger;
+      mobileMenu.classList.add('open');
+      setExpanded(true);
+      if (closeMenu && typeof closeMenu.focus === 'function') closeMenu.focus({ preventScroll: true });
+    };
+    const close = (restoreFocus = false) => {
+      mobileMenu.classList.remove('open');
+      setExpanded(false);
+      const opener = mobileMenuOpener;
+      mobileMenuOpener = null;
+      if (restoreFocus && opener && opener.isConnected !== false && typeof opener.focus === 'function') {
+        opener.focus({ preventScroll: true });
+      }
+    };
+    if (hamburger) hamburger.onclick = () => open(hamburger);
+    if (phoneMenuButton) phoneMenuButton.onclick = () => open(phoneMenuButton);
+    if (closeMenu) closeMenu.onclick = () => close(true);
+    mobileMenu.querySelectorAll('a').forEach(a => a.onclick = () => close(false));
   }
 
   bindDocOnce();
@@ -1831,9 +1861,17 @@ function bindDocOnce() {
     }
     if (e.key !== 'Escape') return;
     const mm = document.querySelector('#mobileMenu');
+    const wasMobileMenuOpen = !!(mm && mm.classList.contains('open'));
     if (mm) mm.classList.remove('open');
     const hb = document.querySelector('#hamburgerBtn');
+    const phoneMenuButton = document.querySelector('#phoneMenuBtn');
     if (hb) hb.setAttribute('aria-expanded', 'false');
+    if (phoneMenuButton) phoneMenuButton.setAttribute('aria-expanded', 'false');
+    const menuOpener = mobileMenuOpener;
+    mobileMenuOpener = null;
+    if (wasMobileMenuOpen && menuOpener && menuOpener.isConnected !== false && typeof menuOpener.focus === 'function') {
+      menuOpener.focus({ preventScroll: true });
+    }
     if (lessonModalId) { lessonModalId = null; render(); }
     if (roadmapState.topicId) closeRoadmapTopic();
   });

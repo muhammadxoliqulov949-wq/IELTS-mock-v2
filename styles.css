@@ -1868,3 +1868,65 @@ a, button { -webkit-tap-highlight-color: transparent; }
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
 }
+
+/* Persistent phone tab bar: the most-used learning destinations stay one tap away. */
+.phone-tabbar { display: none; }
+@media (max-width: 600px) {
+  .phone-tabbar {
+    position: fixed;
+    inset-inline: 0;
+    bottom: 0;
+    z-index: 75;
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    align-items: stretch;
+    gap: 4px;
+    min-height: 64px;
+    padding: 7px max(8px, env(safe-area-inset-right)) calc(7px + env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
+    border-top: 1px solid var(--panel-border);
+    background: var(--nav-scrolled);
+    -webkit-backdrop-filter: blur(18px) saturate(1.35);
+    backdrop-filter: blur(18px) saturate(1.35);
+    box-shadow: 0 -14px 36px -28px rgba(0, 0, 0, .7);
+  }
+  .phone-tabbar-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    min-width: 0;
+    min-height: 50px;
+    padding: 5px 2px;
+    border: 0;
+    border-radius: 13px;
+    background: transparent;
+    color: var(--muted);
+    font: 600 10px/1.1 var(--font-body);
+    text-align: center;
+    text-decoration: none;
+    cursor: pointer;
+    transition: color .18s ease, background .18s ease, transform .15s ease;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .phone-tabbar-item .learning-icon { width: 21px; height: 21px; }
+  .phone-tabbar-item > span:last-child { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .phone-tabbar-item.is-active { color: var(--cyan); background: var(--primary-soft); }
+  .phone-tabbar-item:active { transform: scale(.96); }
+  .phone-tabbar-dots { display: flex; align-items: center; justify-content: center; gap: 3px; width: 21px; height: 21px; }
+  .phone-tabbar-dots i { width: 4px; height: 4px; border-radius: 50%; background: currentColor; }
+  .nav-actions > .hamburger { display: none; }
+  .site-header--exam .nav-actions > .hamburger { display: flex; }
+  .footer--phone-nav { margin-bottom: calc(64px + env(safe-area-inset-bottom)); }
+  .toast { bottom: calc(74px + env(safe-area-inset-bottom)); }
+  .mascot-dock { right: max(12px, env(safe-area-inset-right)); bottom: calc(74px + env(safe-area-inset-bottom)); z-index: 70; }
+  body:has(.mobile-menu.open) .phone-tabbar { opacity: 0; pointer-events: none; }
+  body:has(.mobile-menu.open) .mascot-dock { opacity: 0; pointer-events: none; }
+}
+@media (max-width: 360px) {
+  .phone-tabbar { gap: 2px; padding-inline: max(6px, env(safe-area-inset-left)) max(6px, env(safe-area-inset-right)); }
+  .phone-tabbar-item { font-size: 9px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .phone-tabbar-item { transition: none; }
+}

@@ -235,7 +235,7 @@ function testFrontendWiring() {
   check(nav.includes("r === '/roadmap'") && nav.includes("r === '/leaderboard'"), 'hash router includes both new pages');
   check(nav.includes('data-roadmap-copy') && nav.includes('data-roadmap-submit'), 'topic modal has copy-prompt and quiz interactions');
   check(nav.includes("addUserCoins('mock'"), 'mock Listening and Reading results flow through the reward RPC');
-  check(html.includes('script.js?v=12') && html.includes('styles.css?v=11') && html.includes('learning.css?v=3') && fs.readFileSync(path.join(root, 'sw.js'), 'utf8').includes('bandly-v17'), 'updated app and responsive stylesheet cache versions are wired');
+  check(html.includes('script.js?v=13') && html.includes('i18n.js?v=11') && html.includes('styles.css?v=12') && html.includes('learning.css?v=3') && fs.readFileSync(path.join(root, 'sw.js'), 'utf8').includes('bandly-v18'), 'updated mobile app assets and cache versions are wired');
   check(/function public\.add_user_coins\(p_source text, p_reference text\)/.test(sql) && !/p_amount/.test(sql), 'coin RPC accepts no client-supplied reward amount');
 }
 
