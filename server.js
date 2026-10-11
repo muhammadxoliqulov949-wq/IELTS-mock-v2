@@ -16,6 +16,7 @@ const gradeHandler = require('./api/grade.js');
 const coachHandler = require('./api/coach.js');
 const quizHandler = require('./api/quiz.js');
 const generateMockHandler = require('./api/generate-mock.js');
+const deleteAccountHandler = require('./api/delete-account.js');
 
 const configHandler = require('./api/config.js');
 const { staticFiles } = require('./scripts/build.js');
@@ -124,6 +125,7 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname.startsWith('/api/coach')) return handleApi(coachHandler, req, res);
   if (url.pathname.startsWith('/api/quiz')) return handleApi(quizHandler, req, res);
   if (url.pathname.startsWith('/api/generate-mock')) return handleApi(generateMockHandler, req, res);
+  if (url.pathname.startsWith('/api/delete-account')) return handleApi(deleteAccountHandler, req, res);
 
   let filePath;
   try { filePath = url.pathname === '/' ? '/index.html' : decodeURIComponent(url.pathname); }

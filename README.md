@@ -50,6 +50,24 @@ To'liq yo'riqnoma: [ADMIN.md](ADMIN.md) → “4.5 AI Generator”.
 
 Tafsilotlar: [SUPABASE.md](SUPABASE.md) → “AI kesh (7 kunlik TTL) va IELTS guardrails” va [ADMIN.md](ADMIN.md) → “4.6 AI chegarasi (guardrails) va 7 kunlik kesh”.
 
+## 🗑️ Akkauntni o'chirish (Delete Account)
+
+Sozlamalar sahifasida (`#/settings`) **Danger Zone** bo'limi va qizil **“Akkauntni o'chirish”** tugmasi bor. Tugma hech narsani darhol o'chirmaydi — avval tasdiqlash oynasi (modal) ochiladi va faqat undagi ikkinchi tasdiqdan keyin API chaqiriladi.
+
+Oqim:
+
+1. **Danger Zone → Delete account** → modal: nima o'chishini sanab beradi (`{email}` bilan).
+2. **“Ha, butunlay o'chirish”** → `POST /api/delete-account` (brauzer o'z JWT'sini `Authorization: Bearer …` bilan yuboradi).
+3. Server avval `supabase.auth.getUser(token)` bilan **kimligini tekshiradi** (identifikator hech qachon so'rov tanasidan olinmaydi), keyin `SUPABASE_SERVICE_ROLE_KEY` bilan yaratilgan admin klient orqali `mock_results`, `learning_activity`, `user_topic_progress`, `coin_transactions`, `user_game_progress`, `topic_game_sessions` va `profiles` qatorlarini o'chiradi hamda `supabaseAdmin.auth.admin.deleteUser(userId)` bilan foydalanuvchini **Auth tizimidan butunlay** olib tashlaydi.
+4. Muvaffaqiyatda server **200** `{ ok: true, deleted: true }` qaytaradi; brauzer `supabase.auth.signOut()` bilan sessiyani tozalaydi, lokal holatni bo'shatadi va bosh sahifaga (`#/`) yo'naltiradi.
+
+Xavfsizlik/xatolar:
+
+- `SUPABASE_SERVICE_ROLE_KEY` faqat serverda yashaydi va hech qachon brauzerga (yoki `/api/config` javobiga) chiqmaydi. Kalit yo'q bo'lsa endpoint **503** qaytaradi va tugma o'rniga aniq xabar ko'rsatiladi.
+- Boshqa foydalanuvchi nomidan o'chirish mumkin emas: token egasi bo'lmagan so'rov **401** oladi.
+- Deletion amalga oshmasa (masalan, server xatosi) modal yopilmaydi, sabab ko'rsatiladi va hech narsa o'chirilgan deb e'lon qilinmaydi.
+- Amal qaytarilmaydi: bir xil email bilan qayta ro'yxatdan o'tish **yangi** (bo'sh) akkaunt yaratadi.
+
 ## 🧭 Interaktiv Roadmap, mini-o‘yinlar va Daily Streak
 
 `#/roadmap` — Duolingo uslubidagi ketma-ket o‘quv yo‘li: **40 ta mavzu, 200 ta quiz savoli va 120 ta mini-o‘yin**. Har bir mavzuda **O‘rganish → O‘ynash → Test** tablari, qisqa konspekt va nusxalashga tayyor AI-tutor prompti bor.
@@ -128,6 +146,8 @@ Yoki Vercel CLI bilan: `npm run dev`. Node.js 22+ kerak.
 
 **Muhim:** AI baholash, AI Coach va 1-Click Mock generator uchun `GROQ_API_KEY` kerak. `/api/quiz` kalit yo'q bo'lsa ham local savol bankidan ishlaydi.
 
+**Akkauntni o'chirish uchun:** `SUPABASE_SERVICE_ROLE_KEY` server environment'ida bo'lishi shart (Vercel → Settings → Environment Variables). Kalit **faqat serverda** ishlatiladi: brauzer `api/delete-account.js` ga o'z JWT'sini yuboradi, qatorlarni tozalash va `auth.admin.deleteUser()` shu kalit bilan serverda bajariladi. Kalit bo'lmasa endpoint `503` qaytaradi va Danger Zone tugmasi aniq xato xabarini ko'rsatadi.
+
 ## 🧪 Testlar
 
 ```bash
@@ -191,6 +211,7 @@ api/
   coach.js       → AI Coach suhbatdoshi
   quiz.js        → AI-generated quiz (local fallback bilan)
   generate-mock.js → 1-Click AI mock generator endpoint
+  delete-account.js → akkauntni butunlay o'chirish (JWT tekshiruvi + service-role admin o'chirish)
   .env.example
 lib/
   aiGuardrails.js → qat'iy IELTS System Instruction + mavzudan tashqari so'rovni rad etish

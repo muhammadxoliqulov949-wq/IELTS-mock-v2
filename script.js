@@ -1672,6 +1672,20 @@ function bindPremium() {
     lessonModalId = null; go('/quiz');
   });
 
+  /* Danger Zone: the button only opens the confirmation dialog; the deletion
+     itself needs a second, explicit click inside it. */
+  document.querySelectorAll('[data-delete-account]').forEach(el => {
+    el.onclick = () => openDeleteAccount();
+  });
+  const deleteBackdrop = document.querySelector('#deleteAccountBackdrop');
+  if (deleteBackdrop) {
+    const deleteCancel = deleteBackdrop.querySelector('[data-delete-account-cancel]');
+    if (deleteCancel) deleteCancel.onclick = () => closeDeleteAccount();
+    const deleteConfirm = deleteBackdrop.querySelector('[data-delete-account-confirm]');
+    if (deleteConfirm) deleteConfirm.onclick = () => confirmDeleteAccount();
+    deleteBackdrop.onclick = (e) => { if (e.target === deleteBackdrop) closeDeleteAccount(); };
+  }
+
   /* Vocabulary mastery toggle. */
   document.querySelectorAll('[data-vocab-word]').forEach(el => el.onclick = () => {
     const w = el.dataset.vocabWord;
@@ -1944,6 +1958,7 @@ function bindDocOnce() {
     if (wasMobileMenuOpen && menuOpener && menuOpener.isConnected !== false && typeof menuOpener.focus === 'function') {
       menuOpener.focus({ preventScroll: true });
     }
+    if (deleteAccountState.open) closeDeleteAccount();
     if (lessonModalId) { lessonModalId = null; render(); }
     if (roadmapState.topicId) closeRoadmapTopic();
   });
@@ -3176,6 +3191,9 @@ function quizPage() {
 /* ---------------- SETTINGS ---------------- */
 function settings() {
   const user = store.user;
+  /* The Danger Zone only appears for a verified Supabase account, i.e. when
+     there really is a server-side user the API can delete. */
+  const canDeleteAccount = cloudUserActive() && !!(CLOUD && typeof CLOUD.deleteAccount === 'function');
   return shell(`
     <section class="section">
       <div class="section-header"><div><div class="eyebrow">${t('settings_title')}</div><h1 style="margin:8px 0 0">${t('settings_title')}</h1></div></div>
@@ -3186,7 +3204,93 @@ function settings() {
         <div class="setting-row"><span>${esc(t('mascot_setting'))}</span><div class="seg"><button class="seg-btn ${!store.mascotMuted ? 'active' : ''}" data-set-mascot="on">${esc(t('mascot_unmute'))}</button><button class="seg-btn ${store.mascotMuted ? 'active' : ''}" data-set-mascot="off">${esc(t('mascot_mute'))}</button></div></div>
         <div class="setting-row"><span>Account</span>${user ? `<button class="btn btn-ghost btn-sm" data-logout>${t('nav_logout')}</button>` : `<button class="btn btn-ghost btn-sm" data-go="/login">${t('nav_login')}</button>`}</div>
       </div>
+      ${canDeleteAccount ? `<div class="glass setting-card danger-zone" data-danger-zone>
+        <div class="danger-zone-head"><span class="danger-zone-icon" aria-hidden="true">&#9888;</span>
+          <div><div class="panel-title">${esc(t('danger_zone_title'))}</div><p class="micro">${esc(t('danger_zone_hint'))}</p></div>
+        </div>
+        <button class="btn btn-danger" data-delete-account>${esc(t('delete_account'))}</button>
+      </div>` : ''}
     </section>`, 'settings');
+}
+
+/* ---------------- DELETE ACCOUNT (Danger Zone) ----------------
+ * A destructive action never happens on a single click: the Danger Zone
+ * button only opens a dialog that spells out what disappears. The API call
+ * runs after that second, explicit confirmation and only then is the browser
+ * session cleared and the learner sent home. If the server refuses, the
+ * dialog stays open with the reason — nothing is reported as deleted unless
+ * the account really is gone. */
+let deleteAccountState = { open: false, busy: false, error: '' };
+function freshDeleteAccountState() { return { open: false, busy: false, error: '' }; }
+function deleteAccountModalHtml() {
+  if (!deleteAccountState.open) return '';
+  const email = (store.user && (store.user.email || store.user.name)) || '';
+  const points = ['delete_account_point_1', 'delete_account_point_2', 'delete_account_point_3'];
+  return `<div class="modal-backdrop" id="deleteAccountBackdrop">
+    <div class="modal glass danger-modal" role="dialog" aria-modal="true" aria-labelledby="deleteAccountTitle" aria-describedby="deleteAccountBody">
+      <h2 id="deleteAccountTitle" style="font-family:var(--font-display);font-size:21px;margin:0 0 10px">${esc(t('delete_account_title'))}</h2>
+      <p id="deleteAccountBody" style="color:var(--muted);font-size:14px;line-height:1.6;margin:0 0 14px">${esc(t2('delete_account_body', { email }))}</p>
+      <ul class="danger-list">${points.map(key => `<li>${esc(t(key))}</li>`).join('')}</ul>
+      <p class="danger-warning" role="alert">${esc(t('delete_account_warning'))}</p>
+      ${deleteAccountState.error ? `<p class="danger-error" role="alert">${esc(deleteAccountState.error)}</p>` : ''}
+      <div class="danger-actions">
+        <button class="btn btn-danger" data-delete-account-confirm ${deleteAccountState.busy ? 'disabled' : ''}>${esc(deleteAccountState.busy ? t('delete_account_busy') : t('delete_account_confirm'))}</button>
+        <button class="btn btn-ghost" data-delete-account-cancel ${deleteAccountState.busy ? 'disabled' : ''}>${esc(t('delete_account_cancel'))}</button>
+      </div>
+    </div>
+  </div>`;
+}
+function openDeleteAccount() {
+  if (deleteAccountState.open) return;
+  deleteAccountState = { open: true, busy: false, error: '' };
+  render();
+}
+function closeDeleteAccount() {
+  if (!deleteAccountState.open || deleteAccountState.busy) return;
+  deleteAccountState = freshDeleteAccountState();
+  render();
+}
+/* Everything this browser cached for one account (results, mistakes, deadlines)
+   lives under `ielts-v2-store:supabase:<id>`. It is the learner's own data, so a
+   confirmed deletion removes it instead of leaving it on the device forever. */
+function purgeLocalAccountData(userId) {
+  if (!userId) return;
+  const prefix = `${STORAGE}:supabase:${userId}`;
+  try {
+    const keys = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.indexOf(prefix) === 0) keys.push(key);
+    }
+    keys.forEach(key => localStorage.removeItem(key));
+  } catch { /* localStorage can be unavailable (private mode) — nothing to purge */ }
+}
+async function confirmDeleteAccount() {
+  if (deleteAccountState.busy) return;
+  if (!CLOUD || typeof CLOUD.deleteAccount !== 'function') {
+    deleteAccountState = { open: true, busy: false, error: t('auth_unavailable') };
+    render();
+    return;
+  }
+  deleteAccountState = { open: true, busy: true, error: '' };
+  render();
+  try {
+    await CLOUD.deleteAccount();
+    const deletedId = store.user && store.user.id;
+    deleteAccountState = freshDeleteAccountState();
+    pendingRoute = null;
+    authNotice = null;
+    applyCloudUser(null);   /* clears the app state and signs the browser out */
+    /* After the sign-out: `signOut()` persists the outgoing store once more,
+       so the account's local cache is only safely removed here. */
+    purgeLocalAccountData(deletedId);
+    go('/');
+    render();
+    notify(t('delete_account_done'));
+  } catch (error) {
+    deleteAccountState = { open: true, busy: false, error: (error && error.message) || t('auth_request_failed') };
+    render();
+  }
 }
 
 /* Auth notices stay visible instead of disappearing with a short toast. */
@@ -3338,6 +3442,7 @@ function render() {
   else if (r === '/signup') html = authPage('signup');
   else html = home();
   if (lessonModalId) html += lessonModalHtml();
+  if (deleteAccountState.open) html += deleteAccountModalHtml();
   if (r === '/roadmap' && roadmapState.topicId) html += roadmapTopicModalHtml();
   const adminModal = window.IELTS_ADMIN && window.IELTS_ADMIN.modalHtml ? window.IELTS_ADMIN.modalHtml() : '';
   if (adminModal) html += adminModal;
@@ -3349,6 +3454,12 @@ function render() {
     modal.scrollTop = modalScroll;
     const target = modalFocus && modal.querySelector(modalFocus);
     if (target && !target.disabled) target.focus({ preventScroll: true });
+  }
+  /* Destructive dialog: focus the safe choice first, never the delete button. */
+  const dangerDialog = document.querySelector('#deleteAccountBackdrop');
+  if (dangerDialog && deleteAccountState.open && !deleteAccountState.busy) {
+    const safeChoice = dangerDialog.querySelector('[data-delete-account-cancel]');
+    if (safeChoice && typeof safeChoice.focus === 'function') safeChoice.focus({ preventScroll: true });
   }
   initReveal();
   if (r === '/results' && CLOUD) scheduleCloudSync();
@@ -3425,6 +3536,8 @@ function applyCloudUser(user) {
   roadmapQuizRevision++;
   roadmapState = freshRoadmapState();
   leaderboardState = { rows: [], loading: false, error: '', loadedUser: null };
+  /* A confirmation dialog for a previous account must never survive a switch. */
+  deleteAccountState = freshDeleteAccountState();
   if (user) {
     const metadata = user.user_metadata || {};
     const cloudProfile = CLOUD && CLOUD.getState ? CLOUD.getState().profile : null;
