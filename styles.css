@@ -914,6 +914,8 @@ body[data-theme="light"] .seg { background: rgba(17,21,43,0.03); }
 .field { display: block; margin: 12px 0; text-align: left; }
 .field span { display: block; font-size: 12.5px; color: var(--muted); margin-bottom: 6px; }
 .field input { width: 100%; text-align: left; }
+.auth-otp-email { margin: -4px 0 18px; color: var(--text); font-weight: 600; overflow-wrap: anywhere; }
+.auth-otp-input { text-align: center !important; font-size: 24px !important; font-weight: 700 !important; letter-spacing: .45em; }
 
 /* Responsive */
 @media (max-width: 860px) {

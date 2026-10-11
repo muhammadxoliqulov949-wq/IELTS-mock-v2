@@ -159,13 +159,31 @@ export async function loadProfile(force) {
 export async function authenticate({ mode, email, password, name }) {
   const sb = await requireClient();
   const result = mode === 'signup'
-    ? await sb.auth.signUp({ email, password, options: {
-      data: { name }, emailRedirectTo: window.location.origin + '/'
-    } })
+    ? await sb.auth.signUp({ email, password, options: { data: { name } } })
     : await sb.auth.signInWithPassword({ email, password });
   if (result.error) throw result.error;
   if (result.data.session) currentUser = result.data.user;
   if (currentUser) await loadProfile();
+  return result.data;
+}
+
+/* Complete email signup with the six-digit OTP sent by Supabase. `verifyOtp`
+ * establishes the session directly, so the learner never has to sign in again. */
+export async function verifySignupOtp({ email, token }) {
+  const sb = await requireClient();
+  const result = await sb.auth.verifyOtp({ email, token, type: 'signup' });
+  if (result.error) throw result.error;
+  if (result.data.session) currentUser = result.data.user;
+  if (currentUser) await loadProfile();
+  return result.data;
+}
+
+/* Request another signup code. The server remains responsible for OTP expiry
+ * and rate limits; this wrapper deliberately fixes the flow to `signup`. */
+export async function resendSignupOtp({ email }) {
+  const sb = await requireClient();
+  const result = await sb.auth.resend({ type: 'signup', email });
+  if (result.error) throw result.error;
   return result.data;
 }
 

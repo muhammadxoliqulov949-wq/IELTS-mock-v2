@@ -1726,13 +1726,14 @@ function bindPremium() {
       const data = await CLOUD.authenticate({ mode, email, password, name });
       if (route() !== sourceRoute) return;
       if (mode === 'signup' && !data.session) {
-        setAuthNotice('success', t('auth_confirm_sent'));
-        const passwordInput = authForm.querySelector('[name="password"]');
-        if (passwordInput) passwordInput.value = '';
+        pendingSignupOtp = { email };
+        setAuthNotice('success', t('auth_otp_sent'));
+        render(); // Replace registration fields immediately with the OTP form.
       } else if (data.session && data.user) {
+        pendingSignupOtp = null;
         const target = pendingRoute; pendingRoute = null;
         applyCloudUser(data.user);
-        // If Confirm Email is off in Supabase, don't claim an email was sent.
+        // If Confirm Email is off in Supabase, signup can return a session directly.
         if (mode === 'signup') setAuthNotice('success', t('auth_created'));
         else { authNotice = null; go(target || '/dashboard'); }
       }
@@ -1743,6 +1744,77 @@ function bindPremium() {
       updateAuthControls();
     }
   };
+
+  const signupOtpForm = document.querySelector('#signup-otp-form');
+  if (signupOtpForm) signupOtpForm.onsubmit = async (e) => {
+    e.preventDefault();
+    if (authBusy || !pendingSignupOtp) return;
+    if (!CLOUD || CLOUD.getState().status !== 'ready') {
+      setAuthNotice('error', t('auth_unavailable'));
+      return;
+    }
+    const token = String(new FormData(signupOtpForm).get('token') || '').replace(/\D/g, '').slice(0, 6);
+    if (!/^\d{6}$/.test(token)) {
+      setAuthNotice('error', t('auth_otp_invalid'));
+      return;
+    }
+    const sourceRoute = route();
+    authBusy = true;
+    setAuthNotice('loading', t('auth_wait'));
+    updateAuthControls();
+    try {
+      const data = await CLOUD.verifySignupOtp({ email: pendingSignupOtp.email, token });
+      if (route() !== sourceRoute) return;
+      if (!data.session || !data.user) throw new Error('Signup verification did not create a session.');
+      pendingSignupOtp = null;
+      authNotice = null;
+      const target = pendingRoute; pendingRoute = null;
+      applyCloudUser(data.user);
+      go(target || '/dashboard');
+    } catch (error) {
+      if (route() === sourceRoute) setAuthNotice('error', t('auth_otp_invalid'));
+    } finally {
+      authBusy = false;
+      updateAuthControls();
+    }
+  };
+
+  const signupOtpInput = document.querySelector('#signup-otp-code');
+  if (signupOtpInput) signupOtpInput.oninput = () => {
+    const digits = String(signupOtpInput.value || '').replace(/\D/g, '').slice(0, 6);
+    if (signupOtpInput.value !== digits) signupOtpInput.value = digits;
+  };
+
+  const resendSignupOtp = document.querySelector('[data-resend-signup-otp]');
+  if (resendSignupOtp) resendSignupOtp.onclick = async () => {
+    if (authBusy || !pendingSignupOtp) return;
+    if (!CLOUD || CLOUD.getState().status !== 'ready') {
+      setAuthNotice('error', t('auth_unavailable'));
+      return;
+    }
+    const sourceRoute = route();
+    authBusy = true;
+    setAuthNotice('loading', t('auth_wait'));
+    updateAuthControls();
+    try {
+      await CLOUD.resendSignupOtp({ email: pendingSignupOtp.email });
+      if (route() === sourceRoute) setAuthNotice('success', t('auth_otp_resent'));
+    } catch (error) {
+      if (route() === sourceRoute) setAuthNotice('error', error.message || t('auth_request_failed'));
+    } finally {
+      authBusy = false;
+      updateAuthControls();
+    }
+  };
+
+  const changeSignupEmail = document.querySelector('[data-change-signup-email]');
+  if (changeSignupEmail) changeSignupEmail.onclick = () => {
+    if (authBusy) return;
+    pendingSignupOtp = null;
+    authNotice = null;
+    render();
+  };
+
   const googleBtn = document.querySelector('[data-google-auth]');
   if (googleBtn) googleBtn.onclick = async () => {
     if (authBusy) return;
@@ -3121,6 +3193,7 @@ function settings() {
 let authNotice = null;
 let authBusy = false;
 let logoutBusy = false;
+let pendingSignupOtp = null;
 function authControlsDisabled() { return authBusy || !CLOUD || CLOUD.getState().status !== 'ready'; }
 function authNoticeHtml() {
   const state = CLOUD && CLOUD.getState();
@@ -3143,6 +3216,16 @@ function updateAuthControls() {
     const submit = form.querySelector('[type="submit"]');
     if (submit) { submit.disabled = authControlsDisabled(); submit.textContent = t(authBusy ? 'auth_wait' : 'auth_submit'); }
   }
+  const otpForm = document.querySelector('#signup-otp-form');
+  if (otpForm) {
+    otpForm.setAttribute('aria-busy', String(authBusy));
+    const submit = otpForm.querySelector('[type="submit"]');
+    if (submit) { submit.disabled = authControlsDisabled(); submit.textContent = t(authBusy ? 'auth_wait' : 'auth_otp_verify'); }
+  }
+  const resend = document.querySelector('[data-resend-signup-otp]');
+  if (resend) resend.disabled = authControlsDisabled();
+  const changeEmail = document.querySelector('[data-change-signup-email]');
+  if (changeEmail) changeEmail.disabled = authBusy;
   const google = document.querySelector('[data-google-auth]');
   if (google) google.disabled = authControlsDisabled();
 }
@@ -3150,6 +3233,7 @@ function updateAuthControls() {
 /* ---------------- AUTH ---------------- */
 function authPage(mode) {
   const isSignup = mode === 'signup';
+  const verifyingSignup = isSignup && !!pendingSignupOtp;
   return shell(`
     <section class="section auth-wrap">
       <div class="glass auth-card center-card">
@@ -3157,17 +3241,27 @@ function authPage(mode) {
           ${mascotImg('full', 'mascot--auth', 'eager')}
           <p>${esc(t('mascot_auth_hi'))}</p>
         </div>
-        <h1 style="margin:0 0 6px">${isSignup ? t('auth_signup_title') : t('auth_title')}</h1>
-        <p class="micro">${t('auth_secure_note')}</p>
+        <h1 style="margin:0 0 6px">${verifyingSignup ? t('auth_otp_title') : isSignup ? t('auth_signup_title') : t('auth_title')}</h1>
+        <p class="micro">${verifyingSignup ? t('auth_otp_prompt') : t('auth_secure_note')}</p>
         <div id="auth-feedback">${authNoticeHtml()}</div>
-        <form id="auth-form" data-auth-mode="${isSignup ? 'signup' : 'login'}">
-          ${isSignup ? `<label class="field"><span>${t('auth_name')}</span><input name="name" class="btn btn-ghost" autocomplete="name" maxlength="200" required placeholder="Aziz"/></label>` : ''}
-          <label class="field"><span>${t('auth_email')}</span><input name="email" type="email" class="btn btn-ghost" autocomplete="email" required placeholder="you@gmail.com"/></label>
-          <label class="field"><span>${t('auth_password')}</span><input name="password" type="password" class="btn btn-ghost" autocomplete="${isSignup ? 'new-password' : 'current-password'}" ${isSignup ? 'minlength="6"' : ''} required placeholder="••••••••"/></label>
-          <button class="btn btn-primary" type="submit" ${authControlsDisabled() ? 'disabled' : ''} style="width:100%">${t(authBusy ? 'auth_wait' : 'auth_submit')} ↗</button>
-        </form>
-        <button class="btn btn-ghost google-btn" data-google-auth ${authControlsDisabled() ? 'disabled' : ''} style="width:100%;margin-top:12px">${t('auth_google')}</button>
-        <p class="micro">${isSignup ? `<a href="#/login">${t('auth_switch')}</a>` : `<a href="#/signup">${t('auth_switch_signup')}</a>`}</p>
+        ${verifyingSignup ? `
+          <p class="auth-otp-email">${esc(pendingSignupOtp.email)}</p>
+          <form id="signup-otp-form">
+            <label class="field"><span>${t('auth_otp_label')}</span><input id="signup-otp-code" name="token" type="text" class="btn btn-ghost auth-otp-input" inputmode="numeric" pattern="[0-9]{6}" autocomplete="one-time-code" maxlength="6" minlength="6" required placeholder="000000" aria-label="${esc(t('auth_otp_label'))}"/></label>
+            <button class="btn btn-primary" type="submit" ${authControlsDisabled() ? 'disabled' : ''} style="width:100%">${t(authBusy ? 'auth_wait' : 'auth_otp_verify')} ↗</button>
+          </form>
+          <button type="button" class="btn btn-ghost" data-resend-signup-otp ${authControlsDisabled() ? 'disabled' : ''} style="width:100%;margin-top:12px">${t('auth_otp_resend')}</button>
+          <button type="button" class="btn btn-ghost" data-change-signup-email ${authBusy ? 'disabled' : ''} style="width:100%;margin-top:8px">${t('auth_otp_change_email')}</button>
+        ` : `
+          <form id="auth-form" data-auth-mode="${isSignup ? 'signup' : 'login'}">
+            ${isSignup ? `<label class="field"><span>${t('auth_name')}</span><input name="name" class="btn btn-ghost" autocomplete="name" maxlength="200" required placeholder="Aziz"/></label>` : ''}
+            <label class="field"><span>${t('auth_email')}</span><input name="email" type="email" class="btn btn-ghost" autocomplete="email" required placeholder="you@gmail.com"/></label>
+            <label class="field"><span>${t('auth_password')}</span><input name="password" type="password" class="btn btn-ghost" autocomplete="${isSignup ? 'new-password' : 'current-password'}" ${isSignup ? 'minlength="6"' : ''} required placeholder="••••••••"/></label>
+            <button class="btn btn-primary" type="submit" ${authControlsDisabled() ? 'disabled' : ''} style="width:100%">${t(authBusy ? 'auth_wait' : 'auth_submit')} ↗</button>
+          </form>
+          <button class="btn btn-ghost google-btn" data-google-auth ${authControlsDisabled() ? 'disabled' : ''} style="width:100%;margin-top:12px">${t('auth_google')}</button>
+          <p class="micro">${isSignup ? `<a href="#/login">${t('auth_switch')}</a>` : `<a href="#/signup">${t('auth_switch_signup')}</a>`}</p>
+        `}
       </div>
     </section>`, 'auth');
 }

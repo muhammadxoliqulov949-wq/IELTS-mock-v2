@@ -172,11 +172,11 @@ SQL funksiyalarni ishlatish uchun Supabase project'ga migratsiyalarni qo‘llab,
 
 1. Authentication → Providers → **Email** yoqilgan bo'lsin.
 2. Authentication → URL Configuration da **Site URL** ni haqiqiy sayt manziliga sozlang.
-3. **Redirect URLs** ro'yxatiga ishlatadigan saytlaringiz root manzilini **ikkala ko'rinishda** qo'shing (`/` bilan va `/` siz — Google OAuth `window.location.origin` ga, email tasdiqlash `origin + '/'` ga qaytaradi):
-   - lokal ish uchun `http://localhost:3000` va `http://localhost:3000/`;
-   - Arena uchun LIVE PREVIEW'dagi haqiqiy HTTPS origin va origin + `/`;
-   - production domeningiz va domen + `/`.
-4. **Authentication → Providers → Email → Confirm Email** ni yoqing. Yangi foydalanuvchi uchun sayt **“Pochtangizga tasdiqlash xati yuborildi, pochtangizni tekshiring”** xabarini ko'rsatadi; foydalanuvchi emaildagi havolani tasdiqlab, keyin login qiladi. Confirm Email o'chirilgan loyihada Supabase darhol sessiya qaytarishi mumkin: sayt bunday holda xat yuborilganini yolg'on da'vo qilmaydi, akkaunt yaratilganini ko'rsatadi. Production uchun Supabase SMTP/rate limit sozlamalarini ham tekshiring.
+3. **Redirect URLs** ro'yxatiga ishlatadigan saytlaringiz root manzilini qo'shing (Google OAuth `window.location.origin` ga qaytadi; email OTP uchun redirect link ishlatilmaydi):
+   - lokal ish uchun `http://localhost:3000`;
+   - Arena uchun LIVE PREVIEW'dagi haqiqiy HTTPS origin;
+   - production domeningiz.
+4. **Authentication → Providers → Email → Confirm Email** ni yoqing va **Authentication → Email Templates → Confirm signup** shablonida olti xonali kod ko'rinishi uchun `{{ .Token }}` dan foydalaning (tasdiqlash linki uchun `{{ .ConfirmationURL }}` emas). Ro'yxatdan o'tgach sayt ichida 6 xonali OTP formasi ochiladi; kod `verifyOtp` bilan tekshiriladi va to'g'ri koddan so'ng foydalanuvchi avtomatik tizimga kiradi. Noto'g'ri kodda "Tasdiqlash kodi noto'g'ri" ko'rsatiladi, “Kodni qayta yuborish” esa yangi signup kodini so'raydi. **Confirm Email o'chiq bo'lsa Supabase sessiyani darhol qaytarishi mumkin va OTP yubormaydi**, shuning uchun bu oqim uchun uni yoqish shart. Production uchun SMTP va Auth rate limit sozlamalarini ham tekshiring.
 5. Google login kerak bo'lsa, Supabase **Google provider** ni yoqing, uning OAuth callback manzilini Google Console'ga va sayt originini Supabase redirect ro'yxatiga kiriting. Endi Supabase yoqilgan rejimda eski kosmetik Google token login ishlatilmaydi.
 6. **"Google bilan davom etish"** bosilganda sayt `supabase.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: window.location.origin } })` chaqiriladi: brauzer Supabase authorize manziliga (PKCE `code_challenge` bilan) o'tadi, Google'da tasdiqlanadi va sayt originiga `?code=...` bilan qaytadi. Qaytish sahifasida SDK bu kodni sessiyaga almashtiradi (`detectSessionInUrl`), foydalanuvchi `auth: 'supabase'` bilan tizimga kiradi va kabinetiga (`/dashboard`) yo'naltiriladi. Google'da rad etilishi (yoki provayder o'chiq) bilan qaytgan `?error=...` login sahifasida doimiy xabar ko'rinishida chiqadi; bir martalik `?code=`/`?error=` parametrlari ishlanganidan keyin manzildan tozalanadi, shunda sahifani yangilash yoki linkni ulashish eskigan kodni qayta ishlatmaydi.
 
@@ -212,7 +212,7 @@ npm run test:learning
 npm run seed:roadmap:check
 ```
 
-`tests/supabase.test.js` public config xavfsizligini, PostgreSQL-compatible PGlite ichida mock-results migration/RLS/umumiy band hisobini, offline retry, dublikatlar va account switch holatlarini tekshiradi. `tests/roadmap.test.js` gamification migratsiyasini PGlite'da ishga tushirib, seed savollari, yopiq javob kalitlari, 80% yakunlash chegarasi, coin tier/idempotency va leaderboard maxfiyligini tekshiradi. `tests/auth.test.js` haqiqiy Supabase SDK bilan mock HTTP orqali signup, noto‘g‘ri login, logout va user ID tekshiruvlarini bajaradi. `tests/learning.test.js` yangi migration’ni PGlite’da bajaradi: 40 ta mavzuning barcha javoblari, RLS/grants, qulflangan mavzu, 3 ta grader, server timer/combo, key-only session invalidation, idempotency, UTC/missed-day streak, eski progressni saqlash va client/SDK lifecycle’larini tekshiradi. Barcha testlar **jonli Supabase loyihasiga ulanmaydi**.
+`tests/supabase.test.js` public config xavfsizligini, PostgreSQL-compatible PGlite ichida mock-results migration/RLS/umumiy band hisobini, offline retry, dublikatlar va account switch holatlarini tekshiradi. `tests/roadmap.test.js` gamification migratsiyasini PGlite'da ishga tushirib, seed savollari, yopiq javob kalitlari, 80% yakunlash chegarasi, coin tier/idempotency va leaderboard maxfiyligini tekshiradi. `tests/auth.test.js` haqiqiy Supabase SDK bilan mock HTTP orqali signup OTP yuborilishi, OTP tekshiruvi, qayta yuborish, noto‘g‘ri kod/login, avtomatik sessiya, logout va user ID tekshiruvlarini bajaradi. `tests/learning.test.js` yangi migration’ni PGlite’da bajaradi: 40 ta mavzuning barcha javoblari, RLS/grants, qulflangan mavzu, 3 ta grader, server timer/combo, key-only session invalidation, idempotency, UTC/missed-day streak, eski progressni saqlash va client/SDK lifecycle’larini tekshiradi. Barcha testlar **jonli Supabase loyihasiga ulanmaydi**.
 
 Real-browser suite ixtiyoriy (Playwright Chromium kerak; preview boshqa terminalda ishlasin):
 
@@ -227,7 +227,7 @@ Guest va account oqimlari alohida brauzerda ishlaydi. Account oqimida haqiqiy Su
 
 Loyihangiz sozlangandan keyin qo'lda tekshiring:
 
-1. Yangi akkaunt ochish → emailni tasdiqlash → login.
+1. Yangi akkaunt ochish → sayt ichida kelgan 6 xonali kodni kiritish → avtomatik kabinetga kirish; kodni qayta yuborish va noto'g'ri kod xabarini ham tekshirish.
 2. Listening'ni yakunlash → SQL Table Editor'da `mock_results` satri, `listening` va `scores` borligini tekshirish.
 3. Qolgan bo'limlarni yakunlash → o'sha satr yangilanishi va `overall_band` hisoblanishi.
 4. **Results** ni yangilash → duplicate satr paydo bo'lmasligi.
