@@ -209,6 +209,57 @@ export async function logout() {
   emit();
 }
 
+/* Permanent account deletion (Settings → Danger Zone).
+ *
+ * The browser never sees the service-role key: it sends its own access token
+ * to /api/delete-account, and the serverless function verifies that JWT,
+ * wipes every row that belongs to the learner and removes the auth user. The
+ * account is only reported as deleted after the API confirms it — a network
+ * or server failure throws, so the UI can say nothing was removed.
+ *
+ * Once the user is gone, the local session is cleared so no stale token (or
+ * cached profile) survives in this browser. `scope: 'local'` is deliberate:
+ * there is no server session left to revoke, and a global sign-out would
+ * fail against a user that no longer exists. */
+export async function deleteAccount() {
+  const sb = await requireClient();
+  if (!currentUser) throw new Error('Sign in to delete your account.');
+  const owner = currentUser.id;
+  const verified = await sb.auth.getUser();
+  if (verified.error) throw verified.error;
+  if (!verified.data.user || verified.data.user.id !== owner || currentUser?.id !== owner) {
+    throw new Error('Account changed. Please sign in again.');
+  }
+  const { data: sessionData } = await sb.auth.getSession();
+  const token = (sessionData && sessionData.session && sessionData.session.access_token) || '';
+  if (!token) throw new Error('Your session has expired. Sign in again to delete your account.');
+
+  let response;
+  try {
+    response = await fetch('/api/delete-account', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ confirm: true })
+    });
+  } catch {
+    throw new Error('The server could not be reached. Nothing was deleted.');
+  }
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || !payload.deleted) {
+    throw new Error(payload.error || 'Account deletion failed. Nothing was deleted.');
+  }
+
+  /* Best effort: the account is already gone, so a local sign-out hiccup must
+     not be reported as a failed deletion. */
+  try { await sb.auth.signOut({ scope: 'local' }); } catch { /* the deleted user cannot sign in again */ }
+  currentUser = null;
+  profile = null;
+  profileLoadedFor = null;
+  profileTask = null;
+  emit();
+  return payload;
+}
+
 export async function saveMockSection(payload, owner) {
   const sb = await requireClient();
   const verified = await sb.auth.getUser();

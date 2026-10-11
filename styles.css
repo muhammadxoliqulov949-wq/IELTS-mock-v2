@@ -475,6 +475,15 @@ body[data-theme="light"] .mobile-menu { background: rgba(246, 247, 251, 0.97); }
 }
 .btn-ai:hover { border-color: var(--cyan); box-shadow: 0 10px 30px -12px rgba(34, 211, 238, 0.55); }
 body[data-theme="light"] .btn-ai { background: linear-gradient(135deg, rgba(34, 211, 238, 0.18), rgba(109, 91, 255, 0.16)); }
+/* Destructive action (Delete account): unmistakably red, never the default. */
+.btn-danger {
+  background: linear-gradient(135deg, #ff6b6b, #e0453f);
+  color: #fff;
+  border-color: rgba(255, 107, 107, 0.5);
+  box-shadow: 0 10px 30px -12px rgba(224, 69, 63, 0.7);
+}
+.btn-danger:hover { box-shadow: 0 14px 34px -8px rgba(224, 69, 63, 0.85); }
+.btn-danger:focus-visible { outline: 2px solid var(--coral); outline-offset: 2px; }
 
 /* ---------- Glass panels ---------- */
 .glass {
@@ -909,6 +918,31 @@ body[data-theme="light"] .seg { background: rgba(17,21,43,0.03); }
 .setting-card { max-width: 640px; margin: 0 auto; padding: 6px 22px; }
 .setting-row { display: flex; justify-content: space-between; align-items: center; gap: 14px; padding: 16px 0; border-bottom: 1px solid var(--panel-border); }
 .setting-row:last-child { border-bottom: 0; }
+
+/* ---------- Danger Zone (Settings → Delete account) ---------- */
+.danger-zone { margin-top: 18px; padding: 22px; border-color: rgba(255, 107, 107, 0.35); }
+.danger-zone-head { display: flex; gap: 12px; align-items: flex-start; margin-bottom: 16px; }
+.danger-zone-head .panel-title { color: var(--coral); margin-bottom: 4px; }
+.danger-zone-head p { margin: 0; }
+.danger-zone-icon {
+  flex: none; width: 38px; height: 38px; border-radius: 12px;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(255, 107, 107, 0.14); border: 1px solid rgba(255, 107, 107, 0.35); color: var(--coral);
+}
+.danger-modal { max-width: 520px; border-color: rgba(255, 107, 107, 0.35); }
+.danger-list { margin: 0 0 16px; padding-left: 20px; color: var(--muted); font-size: 13.5px; line-height: 1.7; }
+.danger-list li::marker { color: var(--coral); }
+.danger-warning { margin: 0 0 18px; font-size: 13.5px; font-weight: 600; color: var(--coral); }
+.danger-error {
+  margin: 0 0 16px; padding: 11px 14px; border-radius: 12px; font-size: 13.5px;
+  background: rgba(255, 107, 107, 0.12); border: 1px solid rgba(255, 107, 107, 0.4); color: var(--text);
+}
+.danger-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+body[data-theme="light"] .danger-zone { border-color: rgba(214, 51, 45, 0.35); }
+body[data-theme="light"] .danger-zone-head .panel-title,
+body[data-theme="light"] .danger-warning { color: #c8332d; }
+body[data-theme="light"] .danger-zone-icon { background: rgba(214, 51, 45, 0.1); border-color: rgba(214, 51, 45, 0.3); color: #c8332d; }
+
 .auth-wrap { max-width: 620px; margin: 0 auto; }
 .auth-card { padding: 30px; }
 .field { display: block; margin: 12px 0; text-align: left; }
@@ -1821,6 +1855,8 @@ a, button { -webkit-tap-highlight-color: transparent; }
   .setting-card { padding-inline: 16px; }
   .setting-row { align-items: stretch; flex-direction: column; gap: 9px; }
   .setting-row .btn { width: 100%; }
+  .danger-actions { flex-direction: column-reverse; }
+  .danger-actions .btn { width: 100%; }
   .test-top { align-items: flex-start; gap: 8px; }
   .test-top .eyebrow { flex: 1 1 180px; line-height: 1.5; }
   .test-top .timer { margin-left: auto; flex: 0 0 auto; }

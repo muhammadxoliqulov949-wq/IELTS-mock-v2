@@ -168,6 +168,24 @@ Boshqa savollar `api/grade.js`, `api/coach.js`, `api/quiz.js` va `api/generate-m
 
 SQL funksiyalarni ishlatish uchun Supabase project'ga migratsiyalarni qo‘llab, sayt environment'iga `SUPABASE_URL` va `SUPABASE_ANON_KEY` kiriting. Roadmap progress va wallet kirgan foydalanuvchi bo‘yicha saqlanadi.
 
+### Akkauntni o‘chirish (Delete Account) va `SUPABASE_SERVICE_ROLE_KEY`
+
+`#/settings` sahifasidagi **Danger Zone → Delete account** tugmasi `POST /api/delete-account` ni chaqiradi:
+
+| Qadam | Nima bo‘ladi |
+| --- | --- |
+| 1 | Server `Authorization: Bearer <foydalanuvchi JWT>` sarlavhasini oladi va `supabase.auth.getUser(token)` bilan **kimligini tekshiradi** (so‘rov tanasi hech qachon foydalanuvchini ko‘rsatmaydi). |
+| 2 | `SUPABASE_SERVICE_ROLE_KEY` bilan yaratilgan admin klient `mock_results`, `topic_game_sessions`, `user_game_progress`, `learning_activity`, `user_topic_progress`, `coin_transactions` va `profiles` jadvallaridan shu foydalanuvchi qatorlarini o‘chiradi. |
+| 3 | `supabaseAdmin.auth.admin.deleteUser(userId)` foydalanuvchini **Auth tizimidan butunlay** o‘chiradi (`should_soft_delete = false`). |
+| 4 | 200 `{ ok: true, deleted: true, cleared: [...] }` → brauzer `supabase.auth.signOut()` qiladi, lokal holat tozalanadi va bosh sahifaga qaytadi. |
+
+Muhim eslatmalar:
+
+- `SUPABASE_SERVICE_ROLE_KEY` **faqat serverda** (Vercel Environment Variables) turadi. Brauzerga yuboriladigan `/api/config` javobida faqat `SUPABASE_URL` va public anon kalit bor.
+- Kalit yo‘q bo‘lsa endpoint `503` qaytaradi: `Set SUPABASE_SERVICE_ROLE_KEY on the server to enable account deletion.` — bu holda Danger Zone tugmasi ishlamaydi va sabab ko‘rsatiladi.
+- Amal **qaytarilmaydi**. `auth.users` qatori o‘chgach, FK cascade’lar (`on delete cascade`) qolgan qatorlarni ham olib tashlaydi; bir xil email bilan qayta ro‘yxatdan o‘tish yangi, bo‘sh akkaunt yaratadi.
+- Admin boshqa odamni o‘chirishi uchun avvalgidek `public.admin_delete_user()` RPC ishlatiladi (o‘zini o‘chirish taqiqlangan); bu endpoint esa **o‘z akkauntini** o‘chirish uchun.
+
 ## 3. Supabase Auth sozlash
 
 1. Authentication → Providers → **Email** yoqilgan bo'lsin.
