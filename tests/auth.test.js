@@ -14,16 +14,32 @@ function appHarness(status = 'ready', missingClient = false) {
   ]);
   function el() { return { innerHTML: '', textContent: '', value: '', disabled: false, dataset: {}, style: {}, classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } }, setAttribute(k, v) { this[k] = v; }, addEventListener() {}, querySelector: select, querySelectorAll: () => [] }; }
   function select(key) { if (!elements.has(key)) elements.set(key, el()); return elements.get(key); }
+  function query(key) {
+    const markup = elements.get('#app')?.innerHTML || '';
+    const needed = {
+      '#auth-form': 'id="auth-form"', '#signup-otp-form': 'id="signup-otp-form"',
+      '#signup-otp-code': 'id="signup-otp-code"', '[data-resend-signup-otp]': 'data-resend-signup-otp',
+      '[data-change-signup-email]': 'data-change-signup-email', '[data-google-auth]': 'data-google-auth'
+    }[key];
+    if (needed && !markup.includes(needed)) return null;
+    return select(key);
+  }
   const user = { id: 'real-user-uuid', email: 'aziz@gmail.com', user_metadata: { name: 'Aziz' } };
   const state = { status, user: null };
   let outcome = 'confirmation';
+  let verifyOutcome = 'success';
+  let resendOutcome = 'success';
   let calls = 0;
+  let verifyCalls = 0;
+  let resendCalls = 0;
+  let lastVerifyArgs = null;
+  let lastResendArgs = null;
   let googleCalls = 0;
   let googleFails = false;
   let logoutCalls = 0;
   let logoutFails = false;
   let release;
-  const formData = { name: 'Aziz', email: 'aziz@gmail.com', password: 'correct-password' };
+  const formData = { name: 'Aziz', email: 'aziz@gmail.com', password: 'correct-password', token: '123456' };
   const cloud = { ...helpers, getState: () => state, ready: new Promise(() => {}),
     async authenticate() {
       calls++;
@@ -33,6 +49,18 @@ function appHarness(status = 'ready', missingClient = false) {
       if (outcome === 'confirmation') return { user, session: null };
       state.user = user;
       return { user, session: { user } };
+    },
+    async verifySignupOtp(args) {
+      verifyCalls++; lastVerifyArgs = args;
+      if (verifyOutcome === 'error') throw new Error('Token has expired or is invalid');
+      if (verifyOutcome === 'pending') await new Promise(resolve => { release = resolve; });
+      state.user = user;
+      return { user, session: { user } };
+    },
+    async resendSignupOtp(args) {
+      resendCalls++; lastResendArgs = args;
+      if (resendOutcome === 'error') throw new Error('Resend failed');
+      return { user };
     },
     async logout() { logoutCalls++; if (logoutFails) throw new Error('Unable to sign out'); state.user = null; },
     async loadMockResults() { return []; }, async saveMockSection() {},
@@ -44,7 +72,7 @@ function appHarness(status = 'ready', missingClient = false) {
     location: { hash: '#/signup' },
     FormData: class { get(key) { return formData[key]; } },
     localStorage: { getItem: k => storage.get(k) || null, setItem: (k, v) => storage.set(k, v), removeItem: k => storage.delete(k) },
-    document: { querySelector: select, querySelectorAll: s => s === '[data-logout]' ? [select('logout')] : [], createElement: el, addEventListener() {} },
+    document: { querySelector: query, querySelectorAll: s => s === '[data-logout]' ? [select('logout')] : [], createElement: el, addEventListener() {} },
     window: { ...(missingClient ? {} : { IELTS_CLOUD: cloud }), addEventListener() {} }
   });
   for (const file of ['data.js', 'content2.js', 'content3.js', 'content4.js', 'i18n.js', 'services.js', 'script.js']) vm.runInContext(fs.readFileSync(path.join(root, file), 'utf8'), ctx);
@@ -52,10 +80,16 @@ function appHarness(status = 'ready', missingClient = false) {
   select('#auth-form').dataset.authMode = 'signup';
   return {
     run, state, storage, select, cloud, formData,
-    setOutcome: value => { outcome = value; }, failLogout: value => { logoutFails = value; }, release: () => release(),
+    setOutcome: value => { outcome = value; }, setVerifyOutcome: value => { verifyOutcome = value; },
+    setResendOutcome: value => { resendOutcome = value; },
+    failLogout: value => { logoutFails = value; }, release: () => release(),
     failGoogle: value => { googleFails = value; },
-    get calls() { return calls; }, get logoutCalls() { return logoutCalls; }, get googleCalls() { return googleCalls; },
+    get calls() { return calls; }, get verifyCalls() { return verifyCalls; }, get resendCalls() { return resendCalls; },
+    get lastVerifyArgs() { return lastVerifyArgs; }, get lastResendArgs() { return lastResendArgs; },
+    get logoutCalls() { return logoutCalls; }, get googleCalls() { return googleCalls; },
     submit: () => select('#auth-form').onsubmit({ preventDefault() {} }),
+    submitOtp: () => select('#signup-otp-form').onsubmit({ preventDefault() {} }),
+    resendOtp: () => select('[data-resend-signup-otp]').onclick(),
     message: () => select('#auth-feedback').innerHTML
   };
 }
@@ -65,43 +99,70 @@ async function uiTests() {
   assert.equal(h.run('store.user'), null, 'demo/legacy local identity must not authenticate');
   assert(!h.storage.has('ielts-v2-user'));
   assert.throws(() => h.run("signIn({id:'fake',auth:'supabase',email:'fake@gmail.com'})"), /valid Supabase session/);
+  h.run("I18N.setLang('uz'); render()");
   await h.submit();
-  assert(h.message().includes('Pochtangizga tasdiqlash xati yuborildi, pochtangizni tekshiring'));
+  assert(h.message().includes('Emailingizga 6 xonali tasdiqlash kodi yuborildi'));
   assert(h.message().includes('role="status"'));
   assert.equal(h.run('store.user'), null, 'unconfirmed signup does not log in');
+  assert.equal(h.run('pendingSignupOtp.email'), 'aziz@gmail.com');
+  assert(h.select('#app').innerHTML.includes('id="signup-otp-form"'), 'signup immediately switches to its in-app OTP form');
+  assert(h.select('#app').innerHTML.includes('inputmode="numeric"'));
+  assert(h.select('#app').innerHTML.includes('Kodni qayta yuborish'));
   h.run('render()');
-  assert(h.select('#app').innerHTML.includes('Pochtangizga tasdiqlash xati yuborildi'), 'notice survives rerender');
+  assert(h.select('#app').innerHTML.includes('Emailingizga 6 xonali tasdiqlash kodi yuborildi'), 'OTP notice survives rerender');
 
-  h.run("location.hash = '#/login'; render()");
-  h.select('#auth-form').dataset.authMode = 'login';
-  h.setOutcome('error');
-  await h.submit();
-  assert(h.message().includes('Invalid login credentials'));
+  h.setVerifyOutcome('error');
+  await h.submitOtp();
+  assert.equal(h.verifyCalls, 1);
+  assert.equal(h.lastVerifyArgs.email, 'aziz@gmail.com');
+  assert.equal(h.lastVerifyArgs.token, '123456');
+  assert.equal(h.run('authNotice.message'), "Tasdiqlash kodi noto'g'ri", 'invalid code is reported in Uzbek');
   assert(h.message().includes('role="alert"'));
-  assert(!h.select('[type="submit"]').disabled);
-  assert.equal(h.run('store.user'), null);
-  h.setOutcome('html-error'); await h.submit();
-  assert(h.message().includes('&lt;img'));
-  assert(!h.message().includes('<img'));
 
-  h.setOutcome('pending');
-  const login = h.submit();
-  const calls = h.calls;
-  await h.submit();
-  assert.equal(h.calls, calls, 'double click makes only one request');
-  assert(h.select('[type="submit"]').disabled);
-  h.release(); await login;
-  assert.equal(h.run('store.user.id'), 'real-user-uuid');
-  assert.equal(h.run('storageKey()'), 'ielts-v2-store:supabase:real-user-uuid');
+  await h.resendOtp();
+  assert.equal(h.resendCalls, 1);
+  assert.equal(h.lastResendArgs.email, 'aziz@gmail.com');
+  assert(h.message().includes('Yangi tasdiqlash kodi emailingizga yuborildi.'));
+
+  h.setVerifyOutcome('success');
+  await h.submitOtp();
+  assert.equal(h.run('pendingSignupOtp'), null);
+  assert.equal(h.calls, 1, 'verification does not call sign-in a second time');
+  assert.equal(h.run('store.user.id'), 'real-user-uuid', 'valid signup OTP establishes the user session automatically');
   assert.equal(h.run('location.hash'), '/dashboard');
-  h.run('render()');
-  h.failLogout(true); await h.select('logout').onclick();
-  assert.equal(h.run('store.user.id'), 'real-user-uuid', 'failed sign-out must not pretend success');
-  assert(h.select('#toast').textContent.includes('Unable to sign out'));
-  h.failLogout(false); await h.select('logout').onclick();
-  assert.equal(h.logoutCalls, 2);
-  assert.equal(h.run('store.user'), null);
-  assert.equal(h.run('location.hash'), '/login');
+  assert.equal(h.run('storageKey()'), 'ielts-v2-store:supabase:real-user-uuid');
+
+  const l = appHarness();
+  l.run("location.hash = '#/login'; render()");
+  l.select('#auth-form').dataset.authMode = 'login';
+  l.setOutcome('error');
+  await l.submit();
+  assert(l.message().includes('Invalid login credentials'));
+  assert(l.message().includes('role="alert"'));
+  assert(!l.select('[type="submit"]').disabled);
+  assert.equal(l.run('store.user'), null);
+  l.setOutcome('html-error'); await l.submit();
+  assert(l.message().includes('&lt;img'));
+  assert(!l.message().includes('<img'));
+
+  l.setOutcome('pending');
+  const login = l.submit();
+  const calls = l.calls;
+  await l.submit();
+  assert.equal(l.calls, calls, 'double click makes only one request');
+  assert(l.select('[type="submit"]').disabled);
+  l.release(); await login;
+  assert.equal(l.run('store.user.id'), 'real-user-uuid');
+  assert.equal(l.run('storageKey()'), 'ielts-v2-store:supabase:real-user-uuid');
+  assert.equal(l.run('location.hash'), '/dashboard');
+  l.run('render()');
+  l.failLogout(true); await l.select('logout').onclick();
+  assert.equal(l.run('store.user.id'), 'real-user-uuid', 'failed sign-out must not pretend success');
+  assert(l.select('#toast').textContent.includes('Unable to sign out'));
+  l.failLogout(false); await l.select('logout').onclick();
+  assert.equal(l.logoutCalls, 2);
+  assert.equal(l.run('store.user'), null);
+  assert.equal(l.run('location.hash'), '/login');
 
   for (const [status, missing] of [['disabled', false], ['loading', false], ['error', false], ['ready', true]]) {
     const closed = appHarness(status, missing);
@@ -119,7 +180,7 @@ async function uiTests() {
   restored.state.user = { id: 'restored-id', email: 'restored@gmail.com', user_metadata: { name: 'Restored' } };
   restored.run('applyCloudUser(CLOUD.getState().user)');
   assert.equal(restored.run('store.user.id'), 'restored-id');
-  console.log('✓ auth UI: no demo fallback, confirmation, persistent escaped errors, double-submit guard, login, logout, restored identity');
+  console.log('✓ auth UI: signup OTP, invalid-code feedback, resend, automatic login, escaped errors, login/logout and restored identity');
 
   // The Google button hands the browser to the Supabase Google OAuth flow.
   const g = appHarness();
@@ -146,7 +207,10 @@ async function sdkTests() {
   const user = { id: uid, email: 'aziz@gmail.com', user_metadata: { name: 'Aziz' }, email_confirmed_at: new Date().toISOString() };
   let saved;
   let signupBody;
+  let verifyBody;
+  let resendBody;
   let errorMode = false;
+  let otpErrorMode = false;
   let verifier = uid;
   const requests = [];
   global.window = { location: { origin: 'https://preview.example' } };
@@ -155,11 +219,19 @@ async function sdkTests() {
     const json = (data, status = 200) => new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } });
     if (u === '/api/config') return json({ configured: true, SUPABASE_URL: 'https://test.supabase.co', SUPABASE_ANON_KEY: 'sb_publishable_test' });
     if (u.includes('/auth/v1/signup')) { signupBody = JSON.parse(opts.body); return json({ ...user, email_confirmed_at: null, identities: [{ id: uid }] }); }
+    if (u.includes('/auth/v1/verify')) {
+      verifyBody = JSON.parse(opts.body);
+      if (otpErrorMode) return json({ msg: 'Token has expired or is invalid', error_code: 'otp_expired' }, 400);
+      return json({ access_token: 'otp.' + Buffer.from(JSON.stringify({ sub: uid, exp: Math.floor(Date.now() / 1000) + 3600 })).toString('base64url') + '.test', refresh_token: 'refresh-otp', expires_in: 3600, token_type: 'bearer', user });
+    }
+    if (u.includes('/auth/v1/resend')) { resendBody = JSON.parse(opts.body); return json({}); }
     if (u.includes('/auth/v1/token')) {
       if (errorMode) return json({ msg: 'Invalid login credentials', error_code: 'invalid_credentials' }, 400);
       return json({ access_token: 'test.' + Buffer.from(JSON.stringify({ sub: uid, exp: Math.floor(Date.now() / 1000) + 3600 })).toString('base64url') + '.test', refresh_token: 'refresh', expires_in: 3600, token_type: 'bearer', user });
     }
     if (u.includes('/auth/v1/user')) return json({ ...user, id: verifier });
+    if (u.includes('/rest/v1/rpc/update_daily_streak')) return json(null);
+    if (u.includes('/rest/v1/profiles')) return json([]);
     if (u.includes('/rest/v1/rpc/save_mock_section')) { saved = JSON.parse(opts.body); return json(null); }
     if (u.includes('/rest/v1/mock_results')) return json([{ test_id: 'test1', user_id: uid }]);
     if (u.includes('/auth/v1/logout')) return json({});
@@ -176,6 +248,21 @@ async function sdkTests() {
     assert.equal(signupBody.email, user.email);
     assert.equal(signupBody.password, 'secret-password');
     assert.equal(signupBody.data.name, 'Aziz');
+    otpErrorMode = true;
+    await assert.rejects(sdk.verifySignupOtp({ email: user.email, token: '000000' }), /Token has expired or is invalid/);
+    assert.equal(sdk.getState().user, null, 'an invalid signup OTP does not create a session');
+    otpErrorMode = false;
+    await sdk.resendSignupOtp({ email: user.email });
+    assert.equal(resendBody.type, 'signup');
+    assert.equal(resendBody.email, user.email);
+    const verified = await sdk.verifySignupOtp({ email: user.email, token: '012345' });
+    assert.equal(verifyBody.type, 'signup');
+    assert.equal(verifyBody.email, user.email);
+    assert.equal(verifyBody.token, '012345', 'the six-digit code is passed unchanged to Supabase');
+    assert.equal(verified.session.user.id, uid);
+    assert.equal(sdk.getState().user.id, uid, 'valid signup OTP establishes the verified Supabase user');
+    await sdk.logout();
+    assert.equal(sdk.getState().user, null);
     errorMode = true;
     await assert.rejects(sdk.authenticate({ mode: 'login', email: 'missing@gmail.com', password: 'wrong' }), /Invalid login credentials/);
     assert.equal(sdk.getState().user, null);
@@ -192,7 +279,7 @@ async function sdkTests() {
     await sdk.logout();
     assert.equal(sdk.getState().user, null);
     assert(requests.some(url => url.includes('/auth/v1/logout')));
-    console.log('✓ real Supabase SDK/mock HTTP: signUp, signInWithPassword errors, getUser ownership, filtered reads, signOut');
+    console.log('✓ real Supabase SDK/mock HTTP: signUp, signup OTP verify/resend, signInWithPassword errors, getUser ownership, filtered reads, signOut');
   } finally {
     if (sdk && sdk.getState().user) await sdk.logout();
     global.fetch = oldFetch;
