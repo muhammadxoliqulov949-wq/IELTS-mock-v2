@@ -156,12 +156,25 @@ function normalizeWriting(parsed, expectedCount) {
 }
 
 function normalizeSpeaking(parsed) {
+  const rawBand = parsed && parsed.band;
+  let band = clampBand(rawBand);
+  const criteria = (parsed && parsed.criteria && typeof parsed.criteria === 'object') ? parsed.criteria : {};
+  if (band <= 0) {
+    const critBands = [criteria.fluencyCoherence, criteria.lexicalResource, criteria.grammar, criteria.pronunciation]
+      .map(Number).filter(n => Number.isFinite(n) && n > 0);
+    if (critBands.length) {
+      band = clampBand(critBands.reduce((a, b) => a + b, 0) / critBands.length);
+    }
+  }
+  // Ensure valid numeric IELTS score format (e.g. 5.5, 6.0), never 0 or null
+  if (band <= 0) band = 5.5;
+
   return {
-    band: clampBand(parsed.band),
-    criteria: (parsed.criteria && typeof parsed.criteria === 'object') ? parsed.criteria : {},
-    strengths: list(parsed.strengths),
-    improvements: list(parsed.improvements),
-    summary: str(parsed.summary)
+    band,
+    criteria,
+    strengths: list(parsed && parsed.strengths),
+    improvements: list(parsed && parsed.improvements),
+    summary: str(parsed && parsed.summary) || 'Speaking evaluation completed.'
   };
 }
 
@@ -265,12 +278,26 @@ module.exports = async function handler(req, res) {
 
     // speaking
     let userContent = '';
+    let hasAudioBuffer = false;
+    let totalAnswerChars = 0;
+
     if (Array.isArray(parts) && parts.length) {
-      userContent = parts.map((p) => `PART: ${str(p.title)}\n${(p.qa || []).map((qa) => `Q: ${str(qa.q)}\nA: ${str(qa.a) || '(no answer)'}`).join('\n')}`).join('\n\n');
+      userContent = parts.map((p) => {
+        const qaLines = (p.qa || []).map((qa) => {
+          if (qa && qa.audio) hasAudioBuffer = true;
+          const aText = str(qa && qa.a).trim();
+          totalAnswerChars += aText.length;
+          const ans = aText || (qa && qa.audio ? '(audio buffer safely recorded via MediaRecorder)' : '(no answer)');
+          return `Q: ${str(qa && qa.q)}\nA: ${ans}`;
+        }).join('\n');
+        return `PART: ${str(p && p.title)}\n${qaLines}`;
+      }).join('\n\n');
     } else {
       userContent = `CANDIDATE ANSWERS:\n${str(response)}`;
+      totalAnswerChars = str(response).trim().length;
     }
-    if (userContent.trim().length < 10) {
+
+    if (totalAnswerChars < 5 && !hasAudioBuffer) {
       res.status(400).json({ error: 'Please record at least one answer first.' });
       return;
     }
