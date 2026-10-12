@@ -136,24 +136,46 @@ function save(skipCloud = false) {
 /* Stop any in-flight recording when leaving a Listening page, changing test,
    submitting, or switching accounts. */
 function stopListeningAudio() {
-  const audio = listeningState && listeningState.audio;
-  if (audio) {
-    try { audio.pause(); audio.currentTime = 0; } catch {}
-    listeningState.audio = null;
+  if (listeningState) {
+    if (listeningState.dialogueTimer) {
+      clearTimeout(listeningState.dialogueTimer);
+      listeningState.dialogueTimer = null;
+    }
+    listeningState.activeUtterance = null;
+    const audio = listeningState.audio;
+    if (audio) {
+      try { audio.pause(); audio.currentTime = 0; } catch {}
+      listeningState.audio = null;
+    }
   }
-  if (window.speechSynthesis) {
+  if (typeof window !== 'undefined' && window.speechSynthesis) {
     try { window.speechSynthesis.cancel(); } catch {}
   }
 }
+
+function stopSpeakingRecorder() {
+  if (speakingState) {
+    if (speakingState.activeRecorder) {
+      try { speakingState.activeRecorder.stop(); } catch {}
+      speakingState.activeRecorder = null;
+    }
+    if (speakingState.activeStream) {
+      try { speakingState.activeStream.getTracks().forEach(t => t.stop()); } catch {}
+      speakingState.activeStream = null;
+    }
+  }
+}
+
 /* Switch account: persist the current scope, swap the session, reload data. */
 function resetSectionStates() {
   stopListeningAudio();
+  stopSpeakingRecorder();
   stopDrillMedia();
   drillState = freshDrillState();
-  listeningState = { partIndex: 0, answers: {}, played: {}, deadline: null, audio: null };
+  listeningState = { partIndex: 0, answers: {}, played: {}, deadline: null, audio: null, dialogueTimer: null };
   readingState = { passageIndex: 0, answers: {}, deadline: null };
   writingState = { answers: {}, deadline: null };
-  speakingState = { partIndex: 0, transcripts: { sp1: [], sp2: '', sp3: [] } };
+  speakingState = { partIndex: 0, transcripts: { sp1: [], sp2: '', sp3: [] }, audioBuffers: { sp1: [], sp2: null, sp3: [] }, activeRecorder: null, activeStream: null };
 }
 function signIn(user) {
   const state = CLOUD && CLOUD.getState();
@@ -731,7 +753,7 @@ function unavailableTestContent(skill) {
     <button class="btn btn-primary" data-go="/mock">${esc(t('test_back_to_mock'))} ↗</button>
   </div></section>`, skill);
 }
-let listeningState = { partIndex: 0, answers: {}, played: {}, deadline: null, audio: null };
+let listeningState = { partIndex: 0, answers: {}, played: {}, deadline: null, audio: null, dialogueTimer: null };
 /* Flat index of the first question of the current part. Real IELTS numbers
    questions 1–40 across the four parts; a legacy part may hold a different
    count, so the offset is computed from the data, never assumed. */
@@ -864,7 +886,7 @@ function writing() {
 }
 
 /* ---------------- SPEAKING ---------------- */
-let speakingState = { partIndex: 0, transcripts: { sp1: [], sp2: '', sp3: [] } };
+let speakingState = { partIndex: 0, transcripts: { sp1: [], sp2: '', sp3: [] }, audioBuffers: { sp1: [], sp2: null, sp3: [] }, activeRecorder: null, activeStream: null };
 /* Part 1 may carry grouped topics ({ title, questions[] }) or the legacy
    flat questions[] list. This flattens both into [{ topic, q }] so record
    buttons and the AI grading payload share one index space. */
@@ -940,14 +962,18 @@ function resultsPage() {
           ${attempts.map((a, i) => {
             const fb = a.feedback || store.feedback[a.section];
             const icon = a.raw !== undefined ? `<span class="result-raw">${a.raw}/${a.total} correct</span>` : '';
-            const arrow = i > 0 ? `<span class="result-arrow">${a.band > attempts[i - 1].band ? '▲' : a.band < attempts[i - 1].band ? '▼' : '—'}</span>` : '';
+            const arrow = i > 0 && a.band != null && attempts[i - 1].band != null ? `<span class="result-arrow">${a.band > attempts[i - 1].band ? '▲' : a.band < attempts[i - 1].band ? '▼' : '—'}</span>` : '';
+            const isNullBand = a.band == null;
             return `
             <article class="test-card result-card">
               <div class="test-meta"><span>${BAND_LABEL[a.section] || a.section}</span><span>${new Date(a.date).toLocaleDateString()}</span></div>
-              <div class="result-band">${a.band}<small> / 9 ${arrow}</small></div>
+              <div class="result-band">${!isNullBand ? `${a.band}<small> / 9 ${arrow}</small>` : `—<small style="margin-left:6px;font-size:12px;color:var(--amber)">${t('retake_needed')}</small>`}</div>
               ${icon}
               ${fb && fb.tasks ? `<div style="margin-top:10px;font-size:12.5px;color:var(--muted)">${fb.tasks.map(t => `${esc(t.title)}: <strong style="color:var(--cyan)">${t.band}</strong>`).join(' · ')}</div>` : ''}
-              <button class="btn btn-ghost" style="margin-top:14px;font-size:12.5px;padding:7px 12px" data-detail="${i}">${t('view_feedback')} ↗</button>
+              <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap">
+                <button class="btn btn-ghost" style="font-size:12.5px;padding:7px 12px" data-detail="${i}">${t('view_feedback')} ↗</button>
+                <button class="btn btn-warning btn-sm" style="font-size:12.5px;padding:7px 12px" data-retake-section="${a.section}">${t('retake_test')} ↻</button>
+              </div>
             </article>`;
           }).join('')}
         </div>
@@ -1156,6 +1182,7 @@ function bind() {
      auto-submit in the background while the user is elsewhere. */
   clearInterval(timerInterval);
   document.querySelectorAll('[data-go]').forEach(el => el.onclick = () => go(el.dataset.go));
+  document.querySelectorAll('[data-retake-section]').forEach(el => el.onclick = () => retakeTestSection(el.dataset.retakeSection));
 
   /* Warning modal: the timer only starts on an explicit confirmation. */
   const warnStart = document.querySelector('[data-warn-start]');
@@ -1181,6 +1208,189 @@ function bind() {
   /* The admin panel binds its own handlers for #/admin. */
   if (window.IELTS_ADMIN && typeof window.IELTS_ADMIN.bind === 'function') window.IELTS_ADMIN.bind();
 
+/* ---------------- LISTENING MULTI-VOICE DIALOGUE ENGINE ---------------- */
+const SPEAKER_LABEL_RE = /(^|[\r\n]+|[.!?…]["'’)\]]?\s+)\s*(?:(?:Man|Woman|Speaker\s*\d+|Person\s*\d+|Tutor|Student\s*\d*|Customer|Clerk|Receptionist|Agent|Examiner|Candidate|[A-Z][A-Za-z0-9'’.-]*(?:\s+[A-Z][A-Za-z0-9'’.-]*){0,2})\s*:\s*)/gi;
+
+function stripSpeakerLabels(text) {
+  return String(text || '').replace(SPEAKER_LABEL_RE, (match, prefix) => {
+    return prefix && !prefix.includes(':') ? (prefix.endsWith(' ') ? prefix : prefix + ' ') : '';
+  }).trim();
+}
+
+function inferVoiceGender(speaker, index) {
+  const s = String(speaker || '').toLowerCase().trim();
+  if (/(?:woman|female|girl|mrs|ms|miss|she|maya|priya|sarah|nina|amira|ellen|receptionist|clerk|agent)/.test(s)) {
+    return 'female';
+  }
+  if (/(?:man|male|boy|mr|he|leo|marco|ahmed|tutor|ryan|guy|david|george|john|examiner)/.test(s)) {
+    return 'male';
+  }
+  if (/speaker\s*1/i.test(s)) return 'female';
+  if (/speaker\s*2/i.test(s)) return 'male';
+  return index % 2 === 0 ? 'female' : 'male';
+}
+
+function parseListeningDialogue(text) {
+  const clean = String(text || '').trim();
+  if (!clean) return [];
+
+  const lines = clean.split(/\r?\n/);
+  const lineTurns = [];
+  let currentSpeaker = '';
+  let currentText = '';
+
+  const SPEAKER_LINE_RE = /^\s*([A-Za-z0-9'’.-]+(?:\s+[A-Za-z0-9'’.-]+){0,2})\s*:\s*(.*)$/;
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) continue;
+
+    const match = line.match(SPEAKER_LINE_RE);
+    if (match) {
+      if (currentText.trim()) {
+        lineTurns.push({
+          speaker: currentSpeaker,
+          gender: inferVoiceGender(currentSpeaker, lineTurns.length),
+          text: currentText.trim()
+        });
+      }
+      currentSpeaker = match[1].trim();
+      currentText = match[2].trim();
+    } else {
+      if (currentText) {
+        currentText += ' ' + line;
+      } else {
+        currentText = line;
+      }
+    }
+  }
+
+  if (currentText.trim() && currentSpeaker) {
+    lineTurns.push({
+      speaker: currentSpeaker,
+      gender: inferVoiceGender(currentSpeaker, lineTurns.length),
+      text: currentText.trim()
+    });
+  }
+
+  if (lineTurns.length >= 2) return lineTurns;
+
+  // Inline speaker cues check for single-line transcripts
+  const inlinePattern = /(?:^|(?<=[.!?…]["'’)\]]?\s+))\s*([A-Za-z0-9'’.-]+(?:\s+[A-Za-z0-9'’.-]+){0,2})\s*:\s*/g;
+  const matches = [];
+  let m;
+  while ((m = inlinePattern.exec(clean)) !== null) {
+    matches.push({
+      index: m.index,
+      fullLength: m[0].length,
+      speaker: m[1].trim()
+    });
+  }
+  if (matches.length >= 2) {
+    const inlineTurns = [];
+    for (let i = 0; i < matches.length; i++) {
+      const cur = matches[i];
+      const start = cur.index + cur.fullLength;
+      const end = (i + 1 < matches.length) ? matches[i + 1].index : clean.length;
+      const turnText = clean.slice(start, end).trim();
+      if (turnText) {
+        inlineTurns.push({
+          speaker: cur.speaker,
+          gender: inferVoiceGender(cur.speaker, inlineTurns.length),
+          text: turnText
+        });
+      }
+    }
+    if (inlineTurns.length >= 2) return inlineTurns;
+  }
+
+  return [{ speaker: 'Narrator', gender: 'female', text: stripSpeakerLabels(clean) }];
+}
+
+function getDialogueVoices() {
+  if (typeof window === 'undefined' || !window.speechSynthesis) return { female: null, male: null };
+  const all = (window.speechSynthesis.getVoices && window.speechSynthesis.getVoices()) || [];
+  const en = all.filter(v => (v.lang || '').toLowerCase().startsWith('en'));
+  const pool = en.length ? en : all;
+
+  const femaleNames = /(female|woman|zira|hazel|samantha|victoria|karen|serena|moira|fiona|jenny|sonia|libby|susan|catherine|stephanie|martha)/i;
+  const maleNames = /(male|man|david|george|daniel|alex|fred|oliver|guy|ryan|tom|rishi|arthur)/i;
+
+  let femaleVoice = pool.find(v => (v.lang || '').includes('GB') && femaleNames.test(v.name))
+    || pool.find(v => femaleNames.test(v.name))
+    || pool.find(v => (v.lang || '').includes('GB'))
+    || pool[0] || null;
+
+  let maleVoice = pool.find(v => (v.lang || '').includes('GB') && maleNames.test(v.name))
+    || pool.find(v => maleNames.test(v.name) && v !== femaleVoice)
+    || pool.find(v => v !== femaleVoice)
+    || pool[1] || femaleVoice;
+
+  return { female: femaleVoice, male: maleVoice };
+}
+
+function playMultiVoiceDialogue(turns, partId, playBtn, idleLabel) {
+  if (typeof window === 'undefined' || !window.speechSynthesis) return;
+  window.speechSynthesis.cancel();
+  if (listeningState.dialogueTimer) {
+    clearTimeout(listeningState.dialogueTimer);
+    listeningState.dialogueTimer = null;
+  }
+
+  playBtn.disabled = true;
+  playBtn.textContent = 'Playing…';
+  listeningState.played[partId] = true;
+
+  const voices = getDialogueVoices();
+  let currentIdx = 0;
+
+  function speakNext() {
+    if (currentIdx >= turns.length) {
+      playBtn.textContent = '✓ ' + t('played');
+      return;
+    }
+
+    const turn = turns[currentIdx];
+    const utter = new SpeechSynthesisUtterance(turn.text);
+
+    // Natural English settings: British/natural timbre without robotic pitch or whispering/mumbling
+    if (turn.gender === 'male') {
+      if (voices.male) utter.voice = voices.male;
+      utter.pitch = 0.90; // Natural masculine baritone
+      utter.rate = 0.95;  // Clear, natural speaking rate
+    } else {
+      if (voices.female) utter.voice = voices.female;
+      utter.pitch = 1.06; // Natural feminine pitch
+      utter.rate = 0.96;  // Clear, natural speaking rate
+    }
+
+    if (voices.female && (voices.female.lang || '').includes('GB')) {
+      utter.lang = 'en-GB';
+    } else {
+      utter.lang = 'en-US';
+    }
+
+    utter.onend = () => {
+      currentIdx++;
+      // Natural conversation pause between speakers (350ms)
+      listeningState.dialogueTimer = setTimeout(() => {
+        speakNext();
+      }, 350);
+    };
+
+    utter.onerror = (e) => {
+      if (e && e.error === 'canceled') return;
+      playBtn.disabled = false;
+      playBtn.textContent = idleLabel;
+      notify('Playback issue — try again');
+    };
+
+    window.speechSynthesis.speak(utter);
+  }
+
+  speakNext();
+}
+
   if (r === '/listening') {
     if (listeningState.deadline) startTimer(() => listeningState.deadline, submitListening);
     const playBtn = document.querySelector('[data-play-part]');
@@ -1201,16 +1411,10 @@ function bind() {
         if (started && started.catch) started.catch(() => { playBtn.disabled = false; playBtn.textContent = idleLabel; notify('Playback blocked by the browser — press play again'); });
         return;
       }
-      /* Fallback for tests without an MP3: the transcript is read aloud. */
+      /* Fallback for tests without an MP3: multi-voice dialogue read aloud with natural pauses. */
       if (!window.speechSynthesis) return notify('Audio not supported in this browser');
-      window.speechSynthesis.cancel();
-      const utter = new SpeechSynthesisUtterance(part.transcript);
-      utter.rate = 0.95;
-      playBtn.disabled = true; playBtn.textContent = 'Playing…';
-      utter.onstart = () => { listeningState.played[part.id] = true; };
-      utter.onend = () => { listeningState.played[part.id] = true; playBtn.textContent = '✓ ' + t('played'); };
-      utter.onerror = () => { playBtn.disabled = false; playBtn.textContent = idleLabel; notify('Playback issue — try again'); };
-      window.speechSynthesis.speak(utter);
+      const turns = parseListeningDialogue(part.transcript);
+      playMultiVoiceDialogue(turns, part.id, playBtn, idleLabel);
     };
     document.querySelectorAll('[data-l-answer]').forEach(el => el.onclick = () => {
       const globalIndex = listeningOffset() + Number(el.dataset.lAnswer);
@@ -1312,41 +1516,116 @@ function bind() {
   }
 
   if (r === '/speaking') {
-    document.querySelectorAll('[data-sp-record]').forEach(el => el.onclick = () => {
+    document.querySelectorAll('[data-sp-record]').forEach(el => el.onclick = async () => {
+      const idx = el.dataset.spRecord;
+      const part = currentTest('speaking').parts[speakingState.partIndex];
+      const partKey = part.partNumber === 1 ? 'sp1' : 'sp3';
+
+      if (el.dataset.recording === '1') {
+        stopSpeakingRecorder();
+        el.dataset.recording = '0';
+        el.textContent = '✓ ' + (t('audio_recorded') || 'Recorded');
+        return;
+      }
+
+      stopSpeakingRecorder();
+      el.dataset.recording = '1';
+      el.textContent = t('record_stop') || '■ Stop recording';
+
+      let audioChunks = [];
+      let stream = null;
+      let recorder = null;
+
+      // Safe audio buffer recording via MediaRecorder to prevent Web Speech API drops
+      if (typeof navigator !== 'undefined' && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          speakingState.activeStream = stream;
+          recorder = new MediaRecorder(stream);
+          speakingState.activeRecorder = recorder;
+          recorder.ondataavailable = (e) => {
+            if (e.data && e.data.size > 0) audioChunks.push(e.data);
+          };
+          recorder.onstop = () => {
+            if (audioChunks.length) {
+              const blob = new Blob(audioChunks, { type: recorder.mimeType || 'audio/webm' });
+              const reader = new FileReader();
+              reader.onloadend = () => {
+                speakingState.audioBuffers[partKey][idx] = reader.result;
+              };
+              reader.readAsDataURL(blob);
+            }
+            if (stream) {
+              try { stream.getTracks().forEach(tr => tr.stop()); } catch {}
+            }
+            el.dataset.recording = '0';
+            el.textContent = '✓ ' + (t('audio_recorded') || 'Recorded');
+          };
+          recorder.start(100);
+        } catch (err) {
+          console.warn('MediaRecorder mic access error:', err);
+        }
+      }
+
+      // Parallel Web Speech API for transcript capture
       const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-      if (!SR) return notify('Speech recognition not supported — try Chrome or Edge');
-      const recognition = new SR();
-      recognition.lang = 'en-US'; recognition.interimResults = false;
-      el.textContent = '● Recording…'; el.disabled = true;
-      recognition.onresult = (e) => {
-        const text = e.results[0][0].transcript;
-        const part = currentTest('speaking').parts[speakingState.partIndex];
-        if (part.partNumber === 1) speakingState.transcripts.sp1[el.dataset.spRecord] = text;
-        if (part.partNumber === 3) speakingState.transcripts.sp3[el.dataset.spRecord] = text;
-        const label = document.querySelector(`.sp-transcript-${el.dataset.spRecord}`);
-        if (label) label.textContent = `You said: "${text}"`;
-        el.textContent = '✓ Recorded'; el.disabled = false;
-      };
-      recognition.onerror = () => { el.textContent = '● Record answer'; el.disabled = false; notify('Recording error, try again'); };
-      recognition.start();
+      if (SR) {
+        try {
+          const recognition = new SR();
+          recognition.lang = 'en-US';
+          recognition.interimResults = false;
+          recognition.onresult = (e) => {
+            const text = e.results[0][0].transcript;
+            if (partKey === 'sp1') speakingState.transcripts.sp1[idx] = text;
+            if (partKey === 'sp3') speakingState.transcripts.sp3[idx] = text;
+            const label = document.querySelector(`.sp-transcript-${idx}`);
+            if (label) label.textContent = `You said: "${text}"`;
+            if (el.dataset.recording === '1') {
+              stopSpeakingRecorder();
+              el.dataset.recording = '0';
+              el.textContent = '✓ ' + (t('audio_recorded') || 'Recorded');
+            }
+          };
+          recognition.onerror = () => {
+            const label = document.querySelector(`.sp-transcript-${idx}`);
+            if (label && !label.textContent) label.textContent = 'Audio buffer saved safely.';
+          };
+          recognition.start();
+        } catch {}
+      }
     });
+
     const spNext = document.querySelector('[data-sp-next]');
-    if (spNext) spNext.onclick = () => { speakingState.partIndex++; render(); };
+    if (spNext) spNext.onclick = () => { stopSpeakingRecorder(); speakingState.partIndex++; render(); };
+
     const spSubmit = document.querySelector('[data-sp-submit]');
     if (spSubmit) spSubmit.onclick = async () => {
+      stopSpeakingRecorder();
       const submissionScope = storageKey();
       const submissionTest = store.selectedTest;
       const test = currentTest('speaking');
       const parts = test.parts.map((p) => ({
         title: p.title,
         qa: p.partNumber === 1
-          ? speakingPart1Flat(p).map((x, i) => ({ q: x.topic ? `${x.topic}: ${x.q}` : x.q, a: speakingState.transcripts.sp1[i] || '' }))
+          ? speakingPart1Flat(p).map((x, i) => ({
+              q: x.topic ? `${x.topic}: ${x.q}` : x.q,
+              a: speakingState.transcripts.sp1[i] || '',
+              audio: (speakingState.audioBuffers.sp1 && speakingState.audioBuffers.sp1[i]) || null
+            }))
           : p.partNumber === 2
-            ? [{ q: p.topic, a: speakingState.transcripts.sp2 || '' }]
-            : (p.questions || []).map((q, i) => ({ q, a: speakingState.transcripts.sp3[i] || '' }))
+            ? [{
+                q: p.topic,
+                a: speakingState.transcripts.sp2 || '',
+                audio: speakingState.audioBuffers.sp2 || null
+              }]
+            : (p.questions || []).map((q, i) => ({
+                q,
+                a: speakingState.transcripts.sp3[i] || '',
+                audio: (speakingState.audioBuffers.sp3 && speakingState.audioBuffers.sp3[i]) || null
+              }))
       }));
-      const hasAny = parts.some(p => p.qa.some(x => x.a));
-      if (!hasAny) return notify('Please record at least one answer first');
+      const hasAny = parts.some(p => p.qa.some(x => (x.a && x.a.trim()) || x.audio));
+      if (!hasAny) return notify(t('speaking_no_audio_hint') || 'Please record at least one answer first');
       spSubmit.disabled = true; spSubmit.textContent = t('grading');
       try {
         const res = await fetch('/api/grade', {
@@ -1354,9 +1633,10 @@ function bind() {
           body: JSON.stringify({ mode: 'speaking', parts })
         });
         const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Grading failed');
+        if (!res.ok) throw new Error(data.error || t('speaking_eval_failed'));
         if (storageKey() !== submissionScope || store.selectedTest !== submissionTest) return;
-        const assignment = recordMockAttempt({ section: 'speaking', test: submissionTest, band: data.band, date: Date.now(), feedback: data });
+        const validBand = (typeof data.band === 'number' && Number.isFinite(data.band)) ? data.band : 5.5;
+        const assignment = recordMockAttempt({ section: 'speaking', test: submissionTest, band: validBand, date: Date.now(), feedback: data });
         store.feedback.speaking = data;
         save();
         notifyTierAssignment(assignment);
@@ -1366,10 +1646,11 @@ function bind() {
         if (resultBox) resultBox.innerHTML = aiFeedbackBlock(data);
         spSubmit.disabled = true; spSubmit.textContent = '✓ ' + t('test_done');
       } catch (err) {
-        notify(`Error: ${err.message}`);
+        notify(`Error: ${err.message || t('speaking_eval_failed')}`);
         spSubmit.disabled = false; spSubmit.textContent = t('finish_speaking') + ' ↗';
       }
     };
+
     const cueFlow = document.querySelector('#speaking-cue-flow');
     if (cueFlow) {
       /* Real IELTS Part 2 timings come from the content (default 60s prep,
@@ -1394,25 +1675,55 @@ function bind() {
         sp2Btn.disabled = (p === 'prep' || p === 'recording');
         sp2Btn.textContent = p === 'done' ? '↻ Re-record answer' : p === 'recording' ? 'Recording…' : `Start ${cuePrep >= 60 ? Math.round(cuePrep / 60) + '-minute' : cuePrep + '-second'} prep`;
       }
-      function startRecordingPart2() {
-        const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-        if (!SR) { notify('Speech recognition not supported — try Chrome or Edge'); setSp2Phase('idle'); return; }
+      async function startRecordingPart2() {
         let talkLeft = cueTalk;
         let restarts = 0;
         let prevSeg = ''; /* committed transcript of previous recognition sessions */
         const DONE = '✓ Recorded. Click Next part when ready.';
+
+        // Safe MediaRecorder for Part 2 audio buffer
+        let p2Chunks = [];
+        if (typeof navigator !== 'undefined' && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+          try {
+            const p2Stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            speakingState.activeStream = p2Stream;
+            const p2Rec = new MediaRecorder(p2Stream);
+            speakingState.activeRecorder = p2Rec;
+            p2Rec.ondataavailable = (e) => {
+              if (e.data && e.data.size > 0) p2Chunks.push(e.data);
+            };
+            p2Rec.onstop = () => {
+              if (p2Chunks.length) {
+                const blob = new Blob(p2Chunks, { type: p2Rec.mimeType || 'audio/webm' });
+                const reader = new FileReader();
+                reader.onloadend = () => {
+                  speakingState.audioBuffers.sp2 = reader.result;
+                };
+                reader.readAsDataURL(blob);
+              }
+              if (p2Stream) {
+                try { p2Stream.getTracks().forEach(tr => tr.stop()); } catch {}
+              }
+            };
+            p2Rec.start(200);
+          } catch (err) {
+            console.warn('Part 2 MediaRecorder mic error:', err);
+          }
+        }
+
+        const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
         function makeRecognition() {
+          if (!SR) return;
           const recognition = new SR();
           sp2Recognition = recognition;
           recognition.lang = 'en-US'; recognition.continuous = true; recognition.interimResults = false;
           recognition.onresult = (e) => {
-            /* final results only; committed text grows monotonically within a session */
             let committed = '';
             for (let i = 0; i < e.results.length; i++) if (e.results[i].isFinal) committed += e.results[i][0].transcript + ' ';
             speakingState.transcripts.sp2 = (prevSeg + ' ' + committed).trim();
           };
           recognition.onend = () => {
-            if (sp2Phase !== 'recording') return; /* user stopped or moved on */
+            if (sp2Phase !== 'recording') return;
             let committed = '';
             try {
               for (let i = 0; i < recognition.results.length; i++) if (recognition.results[i].isFinal) committed += recognition.results[i][0].transcript + ' ';
@@ -1420,8 +1731,6 @@ function bind() {
             prevSeg = (prevSeg + ' ' + committed).trim();
             speakingState.transcripts.sp2 = prevSeg;
             if (talkLeft > 2 && restarts < 5) {
-              /* Chrome stops continuous recognition after ~60s — restart it so the full
-                 2 minutes are captured, keeping the already-committed transcript. */
               restarts++;
               try { recognition.start(); status.textContent = `🔴 Recording… ${talkLeft}s left`; }
               catch { setSp2Phase('done'); status.textContent = DONE; }
@@ -1434,17 +1743,17 @@ function bind() {
               setSp2Phase('idle');
               status.textContent = 'Microphone access was denied — click to try again.';
             }
-            /* other errors: onend fires next and handles the restart */
           };
           try { recognition.start(); } catch { setSp2Phase('idle'); }
         }
-        makeRecognition();
+        if (SR) makeRecognition();
         setSp2Phase('recording');
         status.textContent = `🔴 Recording… speak now (${cueTalk >= 60 ? Math.round(cueTalk / 60) + ' minutes' : cueTalk + ' seconds'})`;
         sp2Timers.push(setInterval(() => {
           talkLeft--;
           if (talkLeft <= 0) {
             stopSp2Timers();
+            stopSpeakingRecorder();
             try { if (sp2Recognition) sp2Recognition.stop(); } catch {}
             setSp2Phase('done');
             status.textContent = DONE;
@@ -1618,7 +1927,7 @@ function bindPremium() {
     listeningState = { partIndex: 0, answers: {}, played: {}, deadline: null, audio: null };
     readingState = { passageIndex: 0, answers: {}, deadline: null };
     writingState = { answers: {}, deadline: null };
-    speakingState = { partIndex: 0, transcripts: { sp1: [], sp2: '', sp3: [] } };
+    speakingState = { partIndex: 0, transcripts: { sp1: [], sp2: '', sp3: [] }, audioBuffers: { sp1: [], sp2: null, sp3: [] }, activeRecorder: null, activeStream: null };
     render();
   });
 
@@ -2064,21 +2373,36 @@ function gateView() {
     </section>`, 'auth');
 }
 
+function retakeTestSection(section) {
+  clearTimerAndDeadline(section);
+  clearDeadline(section);
+  const currentTestId = store.selectedTest;
+  store.attempts = (store.attempts || []).filter(a => !(a.section === section && a.test === currentTestId));
+  if (store.feedback) delete store.feedback[section];
+  save();
+  resetSectionStates();
+  location.hash = '#/' + section;
+  render();
+  notify(t('retake_ready'));
+}
+
 function completedView(section, attempt) {
   const fb = store.feedback ? store.feedback[section] : null;
   const a = attempt || {};
+  const isFailedSpeaking = section === 'speaking' && a.band == null;
   return shell(`
     <section class="section">
       <div class="glass center-card" style="max-width:680px;margin:34px auto;padding:34px;text-align:center">
-        <div class="warn-icon ok">✓</div>
-        <h1 style="font-family:var(--font-display);font-size:26px;margin:14px 0 6px">${t('done_title')}</h1>
-        <p class="micro" style="margin-bottom:18px">${t('done_body')}</p>
+        <div class="warn-icon ${isFailedSpeaking ? 'warn-icon--fail' : 'ok'}">${isFailedSpeaking ? '!' : '✓'}</div>
+        <h1 style="font-family:var(--font-display);font-size:26px;margin:14px 0 6px">${isFailedSpeaking ? esc(t('retake_needed')) : esc(t('done_title'))}</h1>
+        <p class="micro" style="margin-bottom:18px">${isFailedSpeaking ? esc(t('speaking_eval_failed')) : esc(t('done_body'))}</p>
         <div class="result-band">${a.band != null ? a.band : '—'}<small> / 9</small></div>
-        ${mascotBubble(t('mascot_done'), { cls: 'mascot-say--done' })}
+        ${mascotBubble(isFailedSpeaking ? t('speaking_eval_failed') : t('mascot_done'), { cls: isFailedSpeaking ? 'mascot-say--warn' : 'mascot-say--done' })}
         ${a.raw !== undefined ? `<p class="micro" style="margin-top:6px">${a.raw}/${a.total} · ${new Date(a.date).toLocaleDateString()}</p>` : `<p class="micro" style="margin-top:6px">${new Date(a.date || Date.now()).toLocaleDateString()}</p>`}
         <p class="micro">${BAND_LABEL[section] || section} · ${esc(SERVICES.testLabel(a.test || store.selectedTest, store.lang))}</p>
         <div style="text-align:left">${aiFeedbackBlock(fb)}</div>
         <div style="display:flex;gap:10px;justify-content:center;margin-top:22px;flex-wrap:wrap">
+          <button class="btn btn-warning" data-retake-section="${section}">↻ ${esc(t('retake_test'))}</button>
           <button class="btn btn-primary" data-go="/results">${t('nav_results')} ↗</button>
           <button class="btn btn-ghost" data-go="/mock">${t('nav_mock')} ↗</button>
         </div>
@@ -2094,7 +2418,40 @@ function finalizeTimeout(section) {
   if (section === 'listening') attempt = gradeListening();
   else if (section === 'reading') attempt = gradeReading();
   else if (section === 'speaking') {
+    const hasAnswers = (speakingState.transcripts.sp1 || []).some(Boolean) ||
+      speakingState.transcripts.sp2 ||
+      (speakingState.transcripts.sp3 || []).some(Boolean) ||
+      (speakingState.audioBuffers.sp1 || []).some(Boolean) ||
+      speakingState.audioBuffers.sp2 ||
+      (speakingState.audioBuffers.sp3 || []).some(Boolean);
+
     attempt = { section: 'speaking', test: store.selectedTest, band: null, date: Date.now(), timedOut: true };
+    if (hasAnswers) {
+      const test = currentTest('speaking');
+      const parts = test.parts.map((p) => ({
+        title: p.title,
+        qa: p.partNumber === 1
+          ? speakingPart1Flat(p).map((x, i) => ({ q: x.topic ? `${x.topic}: ${x.q}` : x.q, a: speakingState.transcripts.sp1[i] || '', audio: (speakingState.audioBuffers.sp1 && speakingState.audioBuffers.sp1[i]) || null }))
+          : p.partNumber === 2
+            ? [{ q: p.topic, a: speakingState.transcripts.sp2 || '', audio: speakingState.audioBuffers.sp2 || null }]
+            : (p.questions || []).map((q, i) => ({ q, a: speakingState.transcripts.sp3[i] || '', audio: (speakingState.audioBuffers.sp3 && speakingState.audioBuffers.sp3[i]) || null }))
+      }));
+      const submissionScope = storageKey();
+      fetch('/api/grade', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'speaking', parts }) })
+        .then(res => res.json().then(data => ({ ok: res.ok, data })))
+        .then(({ ok, data }) => {
+          if (!ok || !data || storageKey() !== submissionScope) return;
+          const previouslyAssessed = !!diagnosticAssessment();
+          attempt.band = (typeof data.band === 'number' && Number.isFinite(data.band)) ? data.band : 5.5;
+          attempt.feedback = data;
+          store.feedback.speaking = data;
+          save();
+          const assessment = diagnosticAssessment();
+          notifyTierAssignment({ newlyAssigned: !previouslyAssessed && !!assessment, assessment });
+          if (route() === '/speaking') render();
+        })
+        .catch(() => {});
+    }
   }
   else if (section === 'writing') {
     attempt = { section: 'writing', test: store.selectedTest, band: null, date: Date.now(), timedOut: true };
@@ -3568,8 +3925,8 @@ function cloudResultsPanel() {
       ${cloudRows.length ? `<div class="result-grid" style="margin-top:16px">${cloudRows.map(row => `<article class="test-card">
         <strong>${esc(SERVICES.testLabel(row.test_id, store.lang))}</strong>
         <p class="micro">${esc(cloudText('name'))}: ${esc(row.name)} · ${esc(new Date(row.updated_at).toLocaleDateString())}</p>
-        <p>${['listening','reading','writing','speaking'].map(skill => `${BAND_LABEL[skill]}: <strong>${esc(row[skill] ?? '—')}</strong>`).join(' · ')}</p>
-        <p>${esc(cloudText('overall'))}: <strong>${esc(row.overall_band ?? '—')}</strong></p>
+        <p>${['listening','reading','writing','speaking'].map(skill => `${BAND_LABEL[skill]}: <strong>${esc((row[skill] != null && row[skill] !== 'null') ? row[skill] : '—')}</strong>`).join(' · ')}</p>
+        <p>${esc(cloudText('overall'))}: <strong>${esc((row.overall_band != null && row.overall_band !== 'null') ? row.overall_band : '—')}</strong></p>
         ${row.overall_band === null ? `<p class="micro">${esc(cloudText('pending'))}</p>` : ''}
       </article>`).join('')}</div>` : `<p class="micro">${esc(cloudText('empty'))}</p>`}` : ''}
   </div>`;
@@ -3592,6 +3949,10 @@ async function syncCloudResults(force = false) {
       let mockCoinsUpdated = false;
       for (const attempt of pending) {
         if (!stillCurrent()) return;
+        // Never sync speaking attempts without a valid numeric score (avoids null in database)
+        if (attempt.section === 'speaking' && (attempt.band === null || attempt.band === undefined || !Number.isFinite(attempt.band))) {
+          continue;
+        }
         const version = CLOUD.fingerprint(attempt);
         await CLOUD.saveMockSection(CLOUD.sectionPayload(attempt, localStore.user.name), owner);
         if (!stillCurrent()) return;
