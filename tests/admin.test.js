@@ -28,8 +28,10 @@ function check(name, cond) {
 /* ------------------------------------------------------------------ */
 const html = read('/index.html');
 check('admin.js exists', fs.existsSync(root + '/admin.js'));
-check('index.html loads admin.js after script.js',
-  html.indexOf('script.js') < html.indexOf('admin.js') && html.includes('admin.js'));
+check('index.html does NOT eagerly load admin.js (it downloads only on #/admin, Task 02.3)',
+  !/<script src="admin\.js/.test(html));
+check('script.js lazily injects the admin bundle on the admin route',
+  /ensureAdminScripts/.test(read('/script.js')) && /steps\.push\('admin\.js/.test(read('/script.js')));
 check('service worker precaches admin.js', read('/sw.js').includes("'/admin.js'"));
 check('build ships admin.js', read('/scripts/build.js').includes("'admin.js'"));
 check('migration file exists',

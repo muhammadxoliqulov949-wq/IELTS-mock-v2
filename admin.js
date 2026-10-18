@@ -74,7 +74,10 @@
     jsonDraft: '',
     jsonError: '',
     uploadError: '',
-    setup: null         /* null | { missing: bool, message } */
+    setup: null,        /* null | { missing: bool, message } */
+    /* Task 03.5: product telemetry card — loaded independently of the
+       overview stats so a telemetry failure never blocks the panel. */
+    productEvents: { window: '7d', data: null, loading: false, error: '', tracking: false }
   };
   const loaded = { overview: false, users: false, submissions: false, tests: false };
 
@@ -102,6 +105,9 @@
       if (tab === 'overview') {
         state.stats = await c.adminStats();
         loaded.overview = true;
+        /* Telemetry loads on its own Promise: it is never awaited here, so a
+           slow or broken product_events query cannot block the overview. */
+        loadProductEvents();
       } else if (tab === 'users') {
         const [profiles, submissions] = await Promise.all([
           c.adminListProfiles({ search: state.search.users }),
@@ -129,6 +135,28 @@
       }
     } finally {
       state.loading = null;
+      rerender();
+    }
+  }
+
+  /* Task 03.5 — product telemetry: independent loader. Errors stay local
+     to the card; everything below returns aggregate counts only. */
+  async function loadProductEvents(window) {
+    const pe = state.productEvents;
+    if (window) pe.window = window === '30d' ? '30d' : '7d';
+    /* Older bundles may not expose the helper — nothing to render then. */
+    const c = cloud();
+    if (!c || typeof c.adminProductEventStats !== 'function') return;
+    pe.tracking = true;
+    pe.loading = true;
+    pe.error = '';
+    rerender();
+    try {
+      pe.data = await c.adminProductEventStats(pe.window);
+    } catch (err) {
+      pe.error = message(err);
+    } finally {
+      pe.loading = false;
       rerender();
     }
   }
@@ -262,7 +290,44 @@
       <div class="glass admin-block">
         <div class="panel-title">${esc(t('admin_recent_submissions'))}</div>
         ${recentSubmissionsHtml()}
-      </div>`;
+      </div>${telemetryHtml()}`;
+  }
+
+  /* Task 03.5 — aggregate product telemetry card (7d / 30d). */
+  function telemetryHtml() {
+    const pe = state.productEvents;
+    if (!pe.tracking) return ''; /* helper unavailable → the card stays out entirely */
+    const windows = ['7d', '30d'].map(w =>
+      `<button class="admin-tab${pe.window === w ? ' active' : ''}" data-telemetry-window="${w}"${pe.window === w ? ' aria-current="true"' : ''}>${esc(t('admin_telemetry_window_' + w))}</button>`
+    ).join('');
+    const head = `<div class="panel-title">${esc(t('admin_telemetry_title'))}</div>
+      <nav class="admin-tabs" aria-label="${esc(t('admin_telemetry_title'))}" style="margin-top:0">${windows}</nav>`;
+    if (pe.loading) return `<div class="glass admin-block admin-telemetry">${head}
+      <p class="micro" aria-busy="true">${esc(t('admin_telemetry_loading'))}</p></div>`;
+    if (pe.error) return `<div class="glass admin-block admin-telemetry">${head}
+      <div class="admin-notice admin-notice--error" role="alert">
+        <div><strong>${esc(t('admin_error'))}</strong><p>${esc(pe.error)}</p></div>
+        <button class="btn btn-ghost btn-sm" data-telemetry-retry>${esc(t('admin_retry'))}</button>
+      </div></div>`;
+    const d = pe.data || {};
+    const val = (n) => Number.isFinite(Number(n)) ? Number(n) : 0;
+    const total = val(d.signups) + val(d.starts) + val(d.completions);
+    if (!total) return `<div class="glass admin-block admin-telemetry">${head}
+      <p class="micro">${esc(t('admin_telemetry_empty'))}</p></div>`;
+    const cards = [
+      { label: t('admin_telemetry_signups'), value: d.signups, prev: d.prevSignups, today: d.todaySignups },
+      { label: t('admin_telemetry_starts'), value: d.starts, prev: d.prevStarts, today: d.todayStarts },
+      { label: t('admin_telemetry_completions'), value: d.completions, prev: d.prevCompletions, today: d.todayCompletions }
+    ];
+    return `<div class="glass admin-block admin-telemetry">${head}
+      <div class="admin-stats">
+        ${cards.map(c => `
+          <div class="glass admin-stat">
+            <span class="admin-stat-label">${esc(c.label)}</span>
+            <strong class="admin-stat-value">${esc(val(c.value))}</strong>
+            <span class="admin-stat-hint">${esc(t2('admin_telemetry_today', { n: val(c.today) }))} · ${esc(t2('admin_telemetry_prev', { n: val(c.prev) }))}</span>
+          </div>`).join('')}
+      </div></div>`;
   }
 
   function recentSubmissionsHtml() {
@@ -1270,6 +1335,12 @@
       el.onclick = () => { state.tab = el.dataset.adminTab; state.error = ''; ensure(state.tab); rerender(); };
     });
     on('[data-admin-refresh]', el => { el.onclick = () => refresh(state.tab); });
+
+    /* Task 03.5 telemetry card: switch the window / retry after a failure. */
+    on('[data-telemetry-window]', el => {
+      el.onclick = () => loadProductEvents(el.dataset.telemetryWindow);
+    });
+    on('[data-telemetry-retry]', el => { el.onclick = () => loadProductEvents(); });
 
     on('[data-admin-search]', el => {
       const key = el.dataset.adminSearch;

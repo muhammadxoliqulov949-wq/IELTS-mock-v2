@@ -285,6 +285,45 @@ export async function loadMockResults() {
   return data || [];
 }
 
+/* ---------------- Product telemetry (Task 03.2) ----------------
+ * Minimal write-only product events for AUTHENTICATED learners. The table
+ * (202610130001_product_events.sql) accepts exactly these three events and
+ * RLS enforces user_id = auth.uid(); reading stays admin-only.
+ * Guarantees:
+ *   • guests are never tracked (early no-op before any client work)
+ *   • user_id always comes from our own verified session, never the caller
+ *   • unknown event names and oversized metadata are dropped silently
+ *   • fail-open by contract: this function never throws, so a telemetry
+ *     outage can never break a signup or a mock run
+ *   • never logs anything (no console noise in production) */
+const PRODUCT_EVENTS = Object.freeze(['signup', 'mock_started', 'mock_completed']);
+/* Small guard against accidental bulk: telemetry rows must stay tiny and
+ * free of secrets — tokens, answers, emails and free text never belong here. */
+const PRODUCT_EVENT_META_BYTES = 1024;
+const PRODUCT_EVENT_META_VALUE_LEN = 120;
+
+export async function trackEvent(event, meta = {}) {
+  try {
+    if (!PRODUCT_EVENTS.includes(event)) return;
+    if (!currentUser || !currentUser.id) return; // unauthenticated: no-op
+    if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return;
+    const cleanMeta = {};
+    for (const [key, value] of Object.entries(meta)) {
+      if (typeof key !== 'string' || !key || key.length > 40) continue;
+      if (['user_id', 'event', 'id', 'created_at'].includes(key)) continue; // column names stay server-owned
+      if (!['string', 'number', 'boolean'].includes(typeof value)) continue;
+      if (typeof value === 'string' && value.length > PRODUCT_EVENT_META_VALUE_LEN) continue;
+      cleanMeta[key] = value;
+    }
+    if (JSON.stringify(cleanMeta).length > PRODUCT_EVENT_META_BYTES) return;
+    const sb = await requireClient();
+    await sb.from('product_events')
+      .insert({ user_id: currentUser.id, event, meta: cleanMeta });
+  } catch {
+    /* Deliberately silent: telemetry failures must never surface. */
+  }
+}
+
 /* ---------------- Roadmap + gamification ----------------
  * Topic answer keys never cross the wire: submitTopicQuiz sends only the
  * learner's five choices to a SECURITY DEFINER RPC, which grades and awards
@@ -465,6 +504,17 @@ export async function getAccessToken() {
 export async function adminStats() {
   const sb = await requireAdminClient();
   const { data, error } = await sb.rpc('admin_stats');
+  if (error) throw error;
+  return data || {};
+}
+
+/* Product telemetry cards (Task 03.5): aggregate counts only over
+   public.product_events. Authorization lives in the RPC itself
+   (SECURITY DEFINER + public.is_admin()); p_window is '7d' or '30d' —
+   anything else is rejected by Postgres, never interpolated into SQL. */
+export async function adminProductEventStats(window = '7d') {
+  const sb = await requireAdminClient();
+  const { data, error } = await sb.rpc('product_event_stats', { p_window: String(window) });
   if (error) throw error;
   return data || {};
 }

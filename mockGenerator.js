@@ -552,9 +552,15 @@
     const json = JSON.stringify(body);
 
     for (let attempt = 0; ; attempt++) {
+      /* The server verifies the admin session BEFORE spending any AI quota.
+         The token is refreshed per attempt — a 429 wait can outlive a JWT. */
+      const token = await accessToken();
       const response = await fetch('/api/generate-mock', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {})
+        },
         body: json
       });
       const data = await response.json().catch(() => null);
@@ -613,15 +619,19 @@
       if (!transcript) continue;
       setStatus(`${t('admin_ai_status_audio', 'Audio tayyorlanmoqda')} ${i + 1}/${parts.length}…`);
       try {
+        const token = await accessToken();
         const response = await fetch('/api/generate-mock', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { Authorization: `Bearer ${token}` } : {})
+          },
           body: JSON.stringify({
             mode: 'audio',
             testId,
             partNumber: i + 1,
             transcript,
-            accessToken: await accessToken()
+            accessToken: token
           })
         });
         const data = await response.json().catch(() => null);

@@ -54,9 +54,15 @@ function catalogueTests() {
   assert(!read('lib/roadmapContent.js').includes('quizKeys'));
   assert(!read('scripts/build.js').includes("'scripts/roadmap-seed.js'"));
   const html = read('index.html'), build = require('../scripts/build').staticFiles, sw = read('sw.js');
-  for (const file of ['learning.css', 'miniGames.js', 'lib/learningPath.js', 'lib/roadmapContent.js', 'lib/adaptiveDrills.js']) {
+  for (const file of ['learning.css', 'miniGames.js', 'lib/learningPath.js', 'lib/adaptiveDrills.js']) {
     assert(html.includes(file) && sw.includes('/' + file) && build.includes(file));
   }
+  /* Task 02.10: the 310KB guest catalogue is lazy-loaded on #/roadmap past the
+     diagnostic gate — it stays precached and shipped, but no longer downloads
+     eagerly for every visitor. */
+  assert(!/<script src="lib\/roadmapContent\.js/.test(html)
+    && sw.includes('/lib/roadmapContent.js') && build.includes('lib/roadmapContent.js')
+    && /ensureRoadmapContent/.test(read('script.js')));
   assert(html.indexOf('miniGames.js') < html.indexOf('script.js'));
   log('40 synced lessons, 200 private-key quizzes, 120 usable games and complete build/PWA wiring');
 }

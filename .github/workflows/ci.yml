@@ -1,0 +1,118 @@
+# IELTS Mock — CI
+#
+# Runs the project's own verified checks on every pull request and on
+# every push to the primary branch (`main`, the repository default).
+# Task 02.5 / architecture report P1-4.
+#
+# Scope notes:
+#   • No secrets, credentials, paid services or production access —
+#     the test suite is self-contained (in-process DB stubs, pglite,
+#     fake-DOM boots) and needs nothing beyond `npm ci`.
+#   • Each check is its own step, so the job fails immediately at the
+#     first failing command (GitHub Actions stops a job on step failure).
+#   • Nothing here deploys or publishes.
+#   • tests/learning.browser.test.js (Playwright) runs in the separate,
+#     intentionally NON-BLOCKING `browser-tests` job below (Task 03.4):
+#     `continue-on-error: true` keeps browser flakiness from ever hiding
+#     or blocking the primary checks while the job proves itself.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  checks:
+    name: Tests, build and seed verification
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # package.json engines: node >=22; some dev deps (jsdom) pin
+      # ^22.22.2, and '22' resolves to the latest supported 22.x.
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm # keyed on package-lock.json for reproducible installs
+
+      - name: Install dependencies (reproducible, from package-lock.json)
+        run: npm ci
+
+      - name: Run the full test suite (29 suites)
+        run: npm test
+
+      - name: Build (scripts/build.js)
+        run: npm run build
+
+      - name: Verify roadmap seed integrity
+        run: node scripts/roadmap-seed.js --check
+
+      # P2-1: fail if the build unexpectedly changes committed generated artifacts.
+      - name: Guard against generated-artifact drift
+        run: git diff --exit-code -- lib/roadmapContent.js supabase/migrations/
+
+  # ── Task 03.4 ──────────────────────────────────────────────────────────
+  # Real-browser coverage: tests/learning.browser.test.js drives BOTH the
+  # guest roadmap/games flow and the signed-in account flow against the
+  # local preview server; no secrets, no production, no live Supabase —
+  # its Supabase traffic is an in-memory PGlite HTTP fixture (real SDK,
+  # real SQL/RLS, fake network only, and AI endpoints are never touched).
+  #
+  # intentionally NON-BLOCKING during rollout: `continue-on-error: true`
+  # marks the job "pending/green for merging" and, crucially, keeps this
+  # job's outcome separate from the primary `checks` job (see the
+  # workflow header). Promote to blocking only after it proves stable.
+  browser-tests:
+    name: Playwright learning browser suite (non-blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm # keyed on package-lock.json for reproducible installs
+
+      - name: Install dependencies (reproducible, from package-lock.json)
+        run: npm ci
+
+      # Only the browser this suite is written for (its header documents
+      # `npx playwright install --with-deps chromium`).
+      - name: Install Chromium (no other browsers)
+        run: npx playwright install --with-deps chromium
+
+      # `npm run preview` first runs prepreview (build --bundle-only) and
+      # then serves the site locally; the suite expects 127.0.0.1:3000.
+      - name: Start the preview server and wait for readiness
+        run: |
+          npm run preview > /tmp/learning-preview.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -fsS -o /dev/null http://127.0.0.1:3000/; then exit 0; fi
+            sleep 1
+          done
+          echo "preview server did not become ready" >&2
+          cat /tmp/learning-preview.log >&2
+          exit 1
+
+      - name: Run the learning browser suite (guest + account, PGlite fixture)
+        env:
+          PLAYWRIGHT_BASE_URL: http://127.0.0.1:3000
+          LEARNING_SCREENSHOT_DIR: test-results/learning-screenshots
+        run: npm run test:learning:browser
+
+      # Debug aid only — failure-scoped, short retention, gitignored dir.
+      - name: Upload browser screenshots on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: learning-browser-screenshots
+          path: test-results/learning-screenshots
+          if-no-files-found: ignore
+          retention-days: 7

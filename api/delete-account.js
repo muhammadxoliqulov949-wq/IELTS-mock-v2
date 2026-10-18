@@ -51,21 +51,9 @@ const OWNED_TABLES = [
  * somebody from deleting their account. */
 const MISSING_TABLE = /42P01|PGRST205|does not exist|schema cache/i;
 
-/* ---------- tiny in-memory rate limiter (per server instance) ---------- */
-const RATE_WINDOW_MS = 60 * 1000;
-const RATE_MAX = 5;
-const ipHits = new Map();
-function clientIp(req) {
-  return (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket?.remoteAddress || 'unknown';
-}
-function rateLimited(req) {
-  const ip = clientIp(req);
-  const now = Date.now();
-  const hits = (ipHits.get(ip) || []).filter((t) => now - t < RATE_WINDOW_MS);
-  if (hits.length >= RATE_MAX) { ipHits.set(ip, hits); return true; }
-  hits.push(now); ipHits.set(ip, hits);
-  return false;
-}
+/* ---------- per-IP rate limiter: 5/min — shared helper (lib/rateLimit.js) ---------- */
+const rateLimit = require('../lib/rateLimit.js');
+const limiter = rateLimit.createRateLimiter('delete-account', { windowMs: 60 * 1000, max: 5 });
 
 function serverConfig() {
   return {
@@ -92,7 +80,7 @@ function authOptions() {
 module.exports = async (req, res) => {
   try {
     if (req.method !== 'POST') { res.status(405).json({ error: 'Method not allowed' }); return; }
-    if (rateLimited(req)) { res.status(429).json({ error: 'Too many attempts. Wait a minute and try again.' }); return; }
+    if (await limiter.check(req)) { res.status(429).json({ error: 'Too many attempts. Wait a minute and try again.' }); return; }
 
     const { url, anon, serviceRole } = serverConfig();
     if (!url || !anon) {
@@ -155,4 +143,4 @@ module.exports = async (req, res) => {
 
 /* exposed for tests */
 module.exports.OWNED_TABLES = OWNED_TABLES;
-module.exports._ipHits = ipHits;
+module.exports._ipHits = limiter._ipHits;

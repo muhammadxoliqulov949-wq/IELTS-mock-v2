@@ -198,7 +198,47 @@ function loadHandler() {
   return m.exports;
 }
 const handler = loadHandler();
-const req = (body, ip) => ({ method: 'POST', headers: { 'x-forwarded-for': ip || '1.2.3.4' }, socket: {}, body });
+/* ---- admin-session fixtures: the handler verifies the caller against
+   Supabase Auth (GET /auth/v1/user) and profiles.role BEFORE any paid
+   AI/TTS work. These answer exactly the way production does. ---- */
+process.env.SUPABASE_URL = 'https://demo.supabase.co';
+process.env.SUPABASE_ANON_KEY = 'anon-key';
+const ADMIN_TOKEN = 'admin-test-token';
+const MEMBER_TOKEN = 'member-test-token';
+const authRoles = { [ADMIN_TOKEN]: 'admin', [MEMBER_TOKEN]: 'user' };
+function supabaseAuthReply(url, options) {
+  const target = String(url);
+  const headers = (options && options.headers) || {};
+  const match = /Bearer\s+(.+)$/.exec(String(headers.Authorization || headers.authorization || ''));
+  const token = match ? match[1] : '';
+  const role = authRoles[token];
+  if (target.includes('/auth/v1/user')) {
+    if (!role) return { ok: false, status: 401, json: async () => ({ error_code: 'bad_jwt', msg: 'Invalid JWT' }) };
+    return { ok: true, status: 200, json: async () => ({ id: 'user-' + token }) };
+  }
+  if (target.includes('/rest/v1/profiles')) {
+    if (!role) return { ok: true, status: 200, json: async () => [] };
+    return { ok: true, status: 200, json: async () => [{ role }] };
+  }
+  return null;
+}
+/* Wrap a fetch mock so Supabase auth lookups are answered first; the
+   wrapped mock then sees ONLY what the handler may legitimately call
+   AFTER authorization (Groq, Storage, Edge TTS). */
+function withAuth(next) {
+  return async (url, options) => {
+    const hit = supabaseAuthReply(url, options);
+    if (hit) return hit;
+    return next(url, options);
+  };
+}
+
+const req = (body, ip, headers) => ({
+  method: 'POST',
+  headers: Object.assign({ 'x-forwarded-for': ip || '1.2.3.4', authorization: 'Bearer ' + ADMIN_TOKEN }, headers || {}),
+  socket: {},
+  body
+});
 
 /* canned model answers — exactly the shape the prompts ask for */
 function listeningAnswer() {
@@ -304,10 +344,12 @@ function speakingAnswer() {
     /window\.IELTS_GENERATOR/.test(read('/admin.js')));
   check('wiring: admin exposes the editors to the generator modal',
     /openSkillEditor, openMetaEditor/.test(read('/admin.js')));
-  check('wiring: index.html loads the topic pool before the admin panel',
-    read('/index.html').indexOf('lib/topicPool.js') < read('/index.html').indexOf('admin.js'));
-  check('wiring: index.html loads the generator after the admin panel',
-    read('/index.html').indexOf('admin.js') < read('/index.html').indexOf('mockGenerator.js'));
+  check('wiring: the topic pool stays eager, so the lazily loaded generator can always build a plan',
+    read('/index.html').includes('lib/topicPool.js'));
+  check('wiring: the generator is NOT eager either — the lazy loader fetches the panel, then the generator, in order',
+    !/<script src="(admin|mockGenerator)\.js/.test(read('/index.html'))
+    && read('/script.js').indexOf("steps.push('admin.js") !== -1
+    && read('/script.js').indexOf("steps.push('admin.js") < read('/script.js').indexOf("steps.push('mockGenerator.js"));
   check('wiring: service worker precaches both new files',
     read('/sw.js').includes("'/lib/topicPool.js'") && read('/sw.js').includes("'/mockGenerator.js'"));
   check('wiring: the build ships both new files',
@@ -318,6 +360,8 @@ function speakingAnswer() {
     /export async function getAccessToken\(\)/.test(read('/supabaseClient.js')));
   check('wiring: the modal escapes user input before innerHTML',
     /function esc\(v\)/.test(read('/mockGenerator.js')) && /\$\{esc\(/.test(read('/mockGenerator.js')));
+  check('wiring: the client authenticates requests with the admin session token',
+    /Authorization:\s*`Bearer \$\{token\}`/.test(read('/mockGenerator.js')));
   check('css: the AI button and progress steps are styled',
     /\.btn-ai\b/.test(read('/styles.css')) && /\.ai-gen-step\b/.test(read('/styles.css')));
 
@@ -341,10 +385,50 @@ function speakingAnswer() {
     browserPool && browserPool.TOPICS.length === pool.TOPICS.length
     && typeof browserPool.buildPlan === 'function');
 
-  /* --- 4.3 endpoint: method + missing key + bad skill --- */
+  /* --- 4.3 endpoint: method + authorization gate + missing key + bad skill --- */
   let r = makeRes();
   await handler({ method: 'GET', headers: {} }, r);
   check('api: only POST is allowed', r.statusCode === 405);
+
+  /* Authorization FIRST (Task 02.1): no AI/TTS work without a verified
+     admin session. fetchCalls records anything the handler tries to reach
+     AFTER auth — for every rejection below it must stay empty. */
+  const fetchCalls = [];
+  global.fetch = withAuth(async (url) => { fetchCalls.push(String(url)); throw new Error('network beyond auth is not allowed here: ' + url); });
+
+  r = makeRes();
+  await handler(req({ skill: 'listening' }, '10.2.0.1', { authorization: '' }), r);
+  check('auth: no token at all → 401 UNAUTHORIZED, nothing generated',
+    r.statusCode === 401 && r.body.ok === false && r.body.code === 'UNAUTHORIZED' && fetchCalls.length === 0);
+
+  r = makeRes();
+  await handler(req({ skill: 'listening' }, '10.2.0.2', { authorization: 'Bearer forged-token' }), r);
+  check('auth: a forged session → 401 INVALID_TOKEN, no AI call made',
+    r.statusCode === 401 && r.body.code === 'INVALID_TOKEN' && fetchCalls.length === 0);
+
+  r = makeRes();
+  await handler(req({ skill: 'listening' }, '10.2.0.3', { authorization: 'Bearer ' + MEMBER_TOKEN }), r);
+  check('auth: a valid but non-admin account → 403 FORBIDDEN, no AI call made',
+    r.statusCode === 403 && r.body.code === 'FORBIDDEN' && fetchCalls.length === 0);
+
+  /* audio mode is gated the same way — a tokenless request dies before TTS */
+  let synthCalled = false;
+  const realSynth = tts.synthesize;
+  tts.synthesize = async (...args) => { synthCalled = true; return realSynth(...args); };
+  r = makeRes();
+  await handler(req({ mode: 'audio', transcript: 'x'.repeat(80) }, '10.2.0.4', { authorization: '' }), r);
+  tts.synthesize = realSynth;
+  check('auth: audio mode without a token never reaches the TTS engine',
+    r.statusCode === 401 && !synthCalled);
+
+  /* fail closed when the session cannot be validated at all */
+  const savedSb = { url: process.env.SUPABASE_URL, key: process.env.SUPABASE_ANON_KEY };
+  delete process.env.SUPABASE_URL; delete process.env.SUPABASE_ANON_KEY;
+  r = makeRes();
+  await handler(req({ skill: 'listening' }, '10.2.0.5'), r);
+  check('auth: no Supabase on the server → 503 AUTH_UNAVAILABLE (fails closed)',
+    r.statusCode === 503 && r.body.code === 'AUTH_UNAVAILABLE' && fetchCalls.length === 0);
+  process.env.SUPABASE_URL = savedSb.url; process.env.SUPABASE_ANON_KEY = savedSb.key;
 
   delete process.env.GROQ_API_KEY;
   r = makeRes();
@@ -359,9 +443,16 @@ function speakingAnswer() {
   await handler(req({ skill: 'underwater-basket-weaving' }), r);
   check('api: an unknown skill is rejected', r.statusCode === 400 && /Unknown skill/.test(r.body.error));
 
+  /* the legacy audio request shape — token only inside the body — is still
+     honoured, and the body token is verified server-side just like a header */
+  r = makeRes();
+  await handler(req({ skill: 'not-a-skill', accessToken: ADMIN_TOKEN }, '10.2.0.6', { authorization: '' }), r);
+  check('auth: the body token (legacy client shape) is verified too — reaches mode checks (400, not 401)',
+    r.statusCode === 400 && /Unknown skill/.test(r.body.error));
+
   /* --- 4.4 every skill, with Groq calls captured --- */
   const calls = [];
-  global.fetch = async (url, options) => {
+  global.fetch = withAuth(async (url, options) => {
     calls.push({ url: String(url), body: JSON.parse(options.body) });
     const body = JSON.parse(options.body);
     const userContent = body.messages[1].content;
@@ -384,7 +475,7 @@ function speakingAnswer() {
         usage: { prompt_tokens: 100, completion_tokens: 200, total_tokens: 300 }
       })
     };
-  };
+  });
 
   const skills = [
     ['listening', listeningAnswer()],
@@ -607,7 +698,7 @@ function speakingAnswer() {
     try {
       pendingAnswer = writingAnswer();
       let attempt = 0;
-      global.fetch = async () => { attempt += 1; upstream.push(attempt); return attempt <= 2 ? limited() : answered(); };
+      global.fetch = withAuth(async () => { attempt += 1; upstream.push(attempt); return attempt <= 2 ? limited() : answered(); });
       r = makeRes();
       await handler(req(chunkBody({ skill: 'writing' }), '10.1.1.1'), r);
       check('429: two upstream 429s are absorbed — the admin gets a normal 200 on the third try',
@@ -615,21 +706,21 @@ function speakingAnswer() {
       check('429: the waits before the retries are 2 s then 4 s (exponential)', waits.join(',') === '2000,4000');
 
       waits.length = 0; upstream.length = 0; attempt = 0;
-      global.fetch = async () => { attempt += 1; upstream.push(attempt); return attempt === 1 ? limited(5) : answered(); };
+      global.fetch = withAuth(async () => { attempt += 1; upstream.push(attempt); return attempt === 1 ? limited(5) : answered(); });
       r = makeRes();
       await handler(req(chunkBody({ skill: 'writing' }), '10.1.1.2'), r);
       check('429: a Retry-After of 5 s is waited out (5 s + margin), not the shorter backoff',
         r.statusCode === 200 && waits.join(',') === '5250');
 
       waits.length = 0; upstream.length = 0; attempt = 0;
-      global.fetch = async () => { attempt += 1; upstream.push(attempt); return attempt === 1 ? limited(undefined, 'Please try again in 3.5s.') : answered(); };
+      global.fetch = withAuth(async () => { attempt += 1; upstream.push(attempt); return attempt === 1 ? limited(undefined, 'Please try again in 3.5s.') : answered(); });
       r = makeRes();
       await handler(req(chunkBody({ skill: 'writing' }), '10.1.1.6'), r);
       check('429: with no header, the "try again in 3.5s" sentence of the error text is honoured (3.5 s + margin)',
         r.statusCode === 200 && waits.join(',') === '3750');
 
       waits.length = 0; upstream.length = 0;
-      global.fetch = async () => { upstream.push(1); return limited(); };
+      global.fetch = withAuth(async () => { upstream.push(1); return limited(); });
       r = makeRes();
       await handler(req(chunkBody({ skill: 'writing' }), '10.1.1.3'), r);
       check('429: when every retry is rate limited the endpoint answers 429 RATE_LIMITED, not a generic failure',
@@ -640,7 +731,7 @@ function speakingAnswer() {
       check('429: retryAfterMs is null when Groq did not say how long', r.body.retryAfterMs === null);
 
       waits.length = 0; upstream.length = 0;
-      global.fetch = async () => { upstream.push(1); return limited(90); };
+      global.fetch = withAuth(async () => { upstream.push(1); return limited(90); });
       const longRes = makeRes();
       const headers = {};
       longRes.setHeader = (name, value) => { headers[name] = value; };
@@ -651,7 +742,7 @@ function speakingAnswer() {
         longRes.body.retryAfterMs === 90000 && headers['Retry-After'] === '90');
 
       upstream.length = 0;
-      global.fetch = async () => { upstream.push(1); return { ok: false, status: 500, text: async () => 'upstream broke' }; };
+      global.fetch = withAuth(async () => { upstream.push(1); return { ok: false, status: 500, text: async () => 'upstream broke' }; });
       r = makeRes();
       await handler(req(chunkBody({ skill: 'writing' }), '10.1.1.5'), r);
       check('429: any other upstream error is still reported as before (502 GENERATION_FAILED, no waiting)',
@@ -677,14 +768,14 @@ function speakingAnswer() {
   tts.synthesize = async () => ({
     buffer: Buffer.alloc(2400, 1), mime: 'audio/mpeg', ext: 'mp3', source: 'edge-tts'
   });
-  global.fetch = async (url, options) => {
+  global.fetch = withAuth(async (url, options) => {
     const target = String(url);
     if (target.includes('/storage/v1/object/')) {
       uploaded.push({ url: target, contentType: options.headers['Content-Type'], bytes: options.body.length });
       return { ok: true, json: async () => ({}) };
     }
     throw new Error('unexpected network request: ' + target);
-  };
+  });
   process.env.SUPABASE_URL = 'https://demo.supabase.co';
   process.env.SUPABASE_ANON_KEY = 'anon-key';
   r = makeRes();

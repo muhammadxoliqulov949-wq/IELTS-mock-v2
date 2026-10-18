@@ -271,8 +271,37 @@ function applyLearningResult(result) {
 }
 
 function esc(v) { return String(v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[c])); }
-function notify(msg) { toast.textContent = msg; toast.classList.add('show'); setTimeout(() => toast.classList.remove('show'), 2400); }
+/* Every notification shares ONE #toast element, so its auto-hide shares one
+   timer too: a new toast must cancel the pending hide — otherwise an older
+   timeout would wipe the newest message before its 2400 ms are up. */
+let toastTimer = null;
+function notify(msg) {
+  toast.textContent = msg;
+  toast.classList.add('show');
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { toast.classList.remove('show'); toastTimer = null; }, 2400);
+}
 function fmtTime(seconds) { const m = Math.floor(Math.max(0, seconds) / 60); const s = Math.max(0, seconds) % 60; return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`; }
+/* Product telemetry seams (Task 03.2): exactly three lifecycle events, fired
+   fire-and-forget AFTER the real action completes. CLOUD.trackEvent enforces
+   the whitelist, skips guests and never throws; this wrapper also swallows a
+   synchronous or async stub failure so telemetry can never break a flow.
+   Exactly-once is a per-user localStorage marker (same per-user namespace as
+   the rest of the data — guests are gated before these points anyway). */
+function trackProductEvent(event, meta) {
+  try {
+    if (typeof CLOUD === 'object' && CLOUD && typeof CLOUD.trackEvent === 'function') {
+      const pending = CLOUD.trackEvent(event, meta);
+      if (pending && typeof pending.catch === 'function') pending.catch(() => {});
+    }
+  } catch { /* telemetry must never break a signup or a mock run */ }
+}
+function trackProductEventOnce(key, event, meta) {
+  const flag = `${storageKey()}:telemetry:${event}:${key}`;
+  if (localStorage.getItem(flag)) return;
+  localStorage.setItem(flag, '1');
+  trackProductEvent(event, meta);
+}
 /* Persist a per-user, per-test deadline so a page refresh cannot reset the
    timer and a timed-out test stays locked. */
 function deadlineKey(section) { return `${storageKey()}:deadline:${section}:${store.selectedTest}`; }
@@ -926,6 +955,46 @@ function diagnosticResultsHtml() {
   if (!progress.done) return '';
   return `<section class="diagnostic-progress-card"><div><span class="eyebrow">${esc(t('roadmap_diagnostic_progress'))}</span><strong>${esc(t2('roadmap_diagnostic_sections', { done: progress.done }))}</strong><p class="micro">${esc(t('roadmap_diagnostic_required_hint'))}</p></div><div class="diagnostic-progress-meter" role="progressbar" aria-valuemin="0" aria-valuemax="4" aria-valuenow="${progress.done}"><i style="width:${progress.done / progress.total * 100}%"></i></div><button class="btn btn-primary" data-go="/${progress.next || 'listening'}">${esc(t('roadmap_start_diagnostic'))} ↗</button></section>`;
 }
+/* ---------------- RESULTS — NEXT-STEP WIDGET (Task 03.7) ----------------
+ * A compact recommendation panel rendered BELOW the results grid, so it
+ * never blocks or reorders the scores themselves. Every action points at a
+ * route that already exists; the rules:
+ *  - the weakest SCORED skill (weakestSkill()) drives the advice — nothing
+ *    is guessed when no band has been graded yet;
+ *  - adaptive drills are sign-in-gated, so guests never see that CTA; their
+ *    primary action is the public roadmap (progress stays preserved);
+ *  - no "retake now" pressure — the mock hub owns that flow. */
+function resultsNextStepsHtml() {
+  const weakest = weakestSkill();
+  const signedIn = cloudUserActive();
+  let lead, primary;
+  const skillLabel = weakest ? t('skill_' + weakest) : '';
+  if (weakest) {
+    lead = t2('results_next_lead_skill', { skill: skillLabel });
+    primary = signedIn
+      ? { label: t2('results_next_practice', { skill: skillLabel }), href: '#/drills' }
+      : { label: t('results_next_roadmap'), href: '#/roadmap' };
+  } else {
+    lead = t('results_next_lead_generic');
+    primary = { label: t('results_next_roadmap'), href: '#/roadmap' };
+  }
+  const links = [{ label: t('mascot_ask'), href: '#/coach' }];
+  if (weakest && signedIn) links.push({ label: t('results_next_roadmap'), href: '#/roadmap' });
+  else if (store.mistakes.length > 0) links.push({ label: t2('results_next_mistakes', { n: store.mistakes.length }), href: '#/mistakes' });
+  return `
+    <section class="glass next-step results-next-step" aria-labelledby="results-next-title">
+      <div class="next-step-info">
+        <div class="eyebrow">${esc(t('results_next_eyebrow'))}</div>
+        <h2 id="results-next-title">${esc(t('results_next_title'))}</h2>
+        <p>${esc(lead)}</p>
+      </div>
+      <div class="next-step-actions">${[{ ...primary, cls: 'btn btn-primary' }]
+        .concat(links.slice(0, 2).map(l => ({ ...l, cls: 'btn btn-ghost' })))
+        .map(a => `<a class="${a.cls}" href="${a.href}">${esc(a.label)} ↗</a>`).join('')}
+      </div>
+    </section>`;
+}
+
 function resultsPage() {
   const attempts = [...store.attempts].sort((a, b) => b.date - a.date);
   return shell(`
@@ -951,7 +1020,8 @@ function resultsPage() {
             </article>`;
           }).join('')}
         </div>
-        <div id="result-detail" style="margin-top:18px"></div>` : `
+        <div id="result-detail" style="margin-top:18px"></div>
+        ${resultsNextStepsHtml()}` : `
         <div class="glass empty-state">
           ${mascotImg('full', 'mascot--empty')}
           <p>${esc(t('mascot_empty_results'))}</p>
@@ -1161,14 +1231,32 @@ function bind() {
   const warnStart = document.querySelector('[data-warn-start]');
   if (warnStart) warnStart.onclick = () => {
     const [sec, mins] = String(warnStart.dataset.warnStart).split(':');
-    const dl = loadDeadline(sec, Number(mins));
-    if (sec === 'listening') listeningState.deadline = dl;
+    /* A double-click race (or a stale element) must never restart a running
+       deadline: only an absent one is created here. */
+    const resumed = !!rawDeadline(sec);
+    const dl = resumed ? rawDeadline(sec) : loadDeadline(sec, Number(mins));
+    if (sec === 'listening') {
+      listeningState.deadline = dl;
+      /* Listening is the first section, so its explicit start IS the mock
+         start. Fresh starts only, and the deadline value is the dedupe key:
+         refresh/resume keeps the same one (no re-fire), a new attempt or a
+         different test always gets a brand-new deadline. */
+      if (!resumed) trackProductEventOnce(String(dl), 'mock_started', { test: store.selectedTest });
+    }
     if (sec === 'reading') readingState.deadline = dl;
     if (sec === 'writing') writingState.deadline = dl;
     render();
   };
   const warnCancel = document.querySelector('[data-warn-cancel]');
   if (warnCancel) warnCancel.onclick = () => go('/mock');
+
+  /* Lazy admin bundle: the shell's Retry button after a failed download. */
+  const lazyRetry = document.querySelector('[data-admin-lazy-retry]');
+  if (lazyRetry) lazyRetry.onclick = () => {
+    adminScriptsFailed = false;
+    kickAdminScripts();
+    render();
+  };
 
   const r = route();
   if (r !== '/listening') stopListeningAudio();
@@ -1748,8 +1836,10 @@ function bindPremium() {
         const target = pendingRoute; pendingRoute = null;
         applyCloudUser(data.user);
         // If Confirm Email is off in Supabase, signup can return a session directly.
-        if (mode === 'signup') setAuthNotice('success', t('auth_created'));
-        else { authNotice = null; go(target || '/dashboard'); }
+        if (mode === 'signup') {
+          setAuthNotice('success', t('auth_created'));
+          trackProductEventOnce('account', 'signup', {}); // account truly exists → event once per user
+        } else { authNotice = null; go(target || '/dashboard'); }
       }
     } catch (error) {
       if (route() === sourceRoute) setAuthNotice('error', error.message || t('auth_request_failed'));
@@ -1784,6 +1874,7 @@ function bindPremium() {
       authNotice = null;
       const target = pendingRoute; pendingRoute = null;
       applyCloudUser(data.user);
+      trackProductEventOnce('account', 'signup', {}); // confirmed account → event once per user
       go(target || '/dashboard');
     } catch (error) {
       if (route() === sourceRoute) setAuthNotice('error', t('auth_otp_invalid'));
@@ -1989,10 +2080,26 @@ function gradeReading() {
   return { section: 'reading', test: store.selectedTest, band, raw: correct, total, date: Date.now() };
 }
 
+/* A mock is complete for the selected test when all four sections have a
+   recorded attempt. Retakes do not create a new completion — the before/after
+   comparison in recordMockAttempt pins the event to the completing submit. */
+function mockAttemptComplete(testId) {
+  return ['listening', 'reading', 'writing', 'speaking']
+    .every(section => store.attempts.some(a => a.test === testId && a.section === section));
+}
+
 function recordMockAttempt(attempt) {
   const previouslyAssessed = !!diagnosticAssessment();
+  const completedBefore = mockAttemptComplete(store.selectedTest);
   store.attempts.push(attempt);
   save();
+  if (!completedBefore && mockAttemptComplete(store.selectedTest)) {
+    /* All four sections recorded by THIS submit: the mock truly completed.
+       The marker key is unique to the completing submit, so viewing results
+       later or replaying a single section cannot re-fire the event. */
+    trackProductEventOnce(`${attempt.section}:${attempt.date}`, 'mock_completed',
+      { test: store.selectedTest, section: attempt.section });
+  }
   const assessment = diagnosticAssessment();
   return { newlyAssigned: !previouslyAssessed && !!assessment, assessment };
 }
@@ -2403,10 +2510,55 @@ function dailyQuestStreamHtml(assessment) {
     <button class="btn btn-ghost quest-hub-link" data-go="/drills">${esc(t('roadmap_open_drills'))} ↗</button>
   </section>`;
 }
+/* Lazy guest lesson catalogue (Task 02.10): lib/roadmapContent.js is the
+   310KB public topic bank that ONLY guests of #/roadmap need — signed-in
+   learners always read their topics from Supabase (roadmapTopics above), and
+   visitors who never reach the roadmap never pay the download. index.html no
+   longer loads it eagerly; this loader mirrors the admin-bundle pattern: one
+   in-flight promise (no duplicate inserts on rapid navigation or repeated
+   renders), reset-on-failure so retries work, and a settle-triggered
+   re-render scoped to the roadmap route. */
+let roadmapContentPromise = null;
+let roadmapContentFailed = false;
+function ensureRoadmapContent() {
+  if (window.IELTS_ROADMAP_CONTENT) { roadmapContentFailed = false; return Promise.resolve(); }
+  if (roadmapContentPromise) return roadmapContentPromise;
+  roadmapContentPromise = new Promise((resolve, reject) => {
+    if (typeof document === 'undefined' || typeof document.createElement !== 'function') {
+      reject(new Error('document is not available'));
+      return;
+    }
+    const el = document.createElement('script');
+    el.src = 'lib/roadmapContent.js?v=1';
+    el.async = false;
+    if (el.dataset) el.dataset.roadmapLazy = 'catalogue';
+    el.onload = () => resolve(el.src);
+    el.onerror = () => reject(new Error('Could not load lib/roadmapContent.js'));
+    (document.body || document.documentElement).appendChild(el);
+  })
+    .then(() => { roadmapContentFailed = false; })
+    .catch((err) => {
+      /* Failure must not wedge the roadmap: reset so the retry button (or the
+         next visit) can try again. */
+      roadmapContentPromise = null;
+      roadmapContentFailed = true;
+      throw err;
+    });
+  return roadmapContentPromise;
+}
+function kickRoadmapContent() {
+  ensureRoadmapContent()
+    .then(() => { if (route() === '/roadmap') render(); })
+    .catch(() => { if (route() === '/roadmap') render(); });
+}
+
 function roadmapPage() {
   const assessment = diagnosticAssessment();
   if (!assessment) return diagnosticGatePage();
   const signedIn = cloudUserActive(), topics = roadmapTopics();
+  /* Guests past the diagnostic gate read the public catalogue — start (or
+     reuse) its lazy download now. Signed-in users already have topics. */
+  if (!signedIn && !window.IELTS_ROADMAP_CONTENT && !roadmapContentPromise && !roadmapContentFailed) kickRoadmapContent();
   const active = ROADMAP_STAGES.find(stage => stage.id === roadmapState.activeStage) || ROADMAP_STAGES[0];
   const stageTopics = topics.filter(topic => topic.stage === active.id);
   const completeCount = topics.filter(topic => roadmapTopicProgress(topic.id).completed).length;
@@ -2423,6 +2575,12 @@ function roadmapPage() {
     topicList = `<div class="glass roadmap-state roadmap-state--error" role="alert"><strong>${esc(t('roadmap_load_error'))}</strong><p class="micro">${esc(roadmapState.error)}</p><p class="micro">${esc(t('roadmap_migration_hint'))}</p><button class="btn btn-ghost" data-roadmap-retry>${esc(t('roadmap_retry'))} ↻</button></div>`;
   } else if (signedIn && (roadmapState.loading || roadmapState.loadedUser !== store.user.id)) {
     topicList = `<div class="roadmap-path-skeleton" role="status"><p>${esc(t('roadmap_loading'))}</p>${Array.from({ length: 3 }, () => '<div><i></i><span></span></div>').join('')}</div>`;
+  } else if (!signedIn && !window.IELTS_ROADMAP_CONTENT && !roadmapContentFailed) {
+    /* Guest catalogue is on its way: same skeleton, no stuck UI. */
+    topicList = `<div class="roadmap-path-skeleton" role="status"><p>${esc(t('roadmap_loading'))}</p>${Array.from({ length: 3 }, () => '<div><i></i><span></span></div>').join('')}</div>`;
+  } else if (!signedIn && !window.IELTS_ROADMAP_CONTENT) {
+    /* Guest catalogue failed to download: clear message + existing retry path. */
+    topicList = `<div class="glass roadmap-state roadmap-state--error" role="alert"><strong>${esc(t('roadmap_load_error'))}</strong><button class="btn btn-ghost" data-roadmap-retry>${esc(t('roadmap_retry'))} ↻</button></div>`;
   } else if (!stageTopics.length) {
     topicList = `<div class="glass roadmap-state"><p class="micro">${esc(t('roadmap_empty'))}</p><button class="btn btn-ghost" data-roadmap-retry>${esc(t('roadmap_retry'))} ↻</button></div>`;
   } else {
@@ -2564,7 +2722,13 @@ function bindRoadmap() {
       setRoadmapLessonTab(tabs[(index + (event.key === 'ArrowRight' ? 1 : 2)) % 3]);
     };
   });
-  document.querySelectorAll('[data-roadmap-retry]').forEach(button => button.onclick = () => loadRoadmapData(true));
+  document.querySelectorAll('[data-roadmap-retry]').forEach(button => button.onclick = () => {
+    if (cloudUserActive()) { loadRoadmapData(true); return; }
+    /* Guest: the lazy lesson catalogue failed to download — retry it. */
+    roadmapContentFailed = false;
+    kickRoadmapContent();
+    render();
+  });
   document.querySelectorAll('[data-roadmap-choice]').forEach(input => input.onchange = () => {
     roadmapState.answers[Number(input.dataset.roadmapChoice)] = input.value;
     const group = input.closest('.roadmap-options');
@@ -3371,6 +3535,66 @@ function authPage(mode) {
 }
 
 /* ---------------- RENDER / ROUTER ---------------- */
+/* Lazy admin bundle (Task 02.3): admin.js (panel) and mockGenerator.js
+   (1-Click AI generator) only matter on #/admin, so public pages never
+   download or execute them. ONE in-flight promise guarantees:
+     • no duplicate <script> insertion, even on rapid /admin ⇄ elsewhere
+       navigation or a refresh while the files are in flight
+     • no duplicate admin initialization (each file executes exactly once)
+     • a failed download resets the promise, so the next visit — or the
+       Retry button in the shell below — tries again instead of leaving
+       the interface stuck
+   Authorization note: this is a download optimization only. Access is
+   still enforced by isAdminUser() below and by row level security in
+   Postgres; a non-admin who types #/admin is bounced before any lazy
+   load is requested. */
+let adminScriptsPromise = null;
+let adminScriptsFailed = false;
+function ensureAdminScripts() {
+  if (window.IELTS_ADMIN && window.IELTS_GENERATOR) { adminScriptsFailed = false; return Promise.resolve(); }
+  if (adminScriptsPromise) return adminScriptsPromise;
+  const loadScript = (src) => new Promise((resolve, reject) => {
+    if (typeof document === 'undefined' || typeof document.createElement !== 'function') {
+      reject(new Error('document is not available'));
+      return;
+    }
+    const el = document.createElement('script');
+    el.src = src;
+    el.async = false; /* dynamic scripts otherwise race: keep execution order */
+    if (el.dataset) el.dataset.adminLazy = src;
+    el.onload = () => resolve(src);
+    el.onerror = () => reject(new Error('Could not load ' + src));
+    (document.body || document.documentElement).appendChild(el);
+  });
+  adminScriptsPromise = null;
+  /* Only fetch what is actually missing: if the panel is already present
+     and only the generator file failed, the retry loads just that file
+     instead of re-executing the whole bundle. Order is panel → generator
+     when both are missing. */
+  const steps = [];
+  if (!window.IELTS_ADMIN) steps.push('admin.js?v=2');
+  if (!window.IELTS_GENERATOR) steps.push('mockGenerator.js?v=1');
+  if (!steps.length) { adminScriptsFailed = false; adminScriptsPromise = null; return Promise.resolve(); }
+  adminScriptsPromise = steps
+    .reduce((p, src) => p.then(() => loadScript(src)), Promise.resolve())
+    .then(() => { adminScriptsFailed = false; })
+    .catch((err) => {
+      /* Failure must not wedge the UI: clear the in-flight promise so the
+         next navigation retries cleanly. */
+      adminScriptsPromise = null;
+      adminScriptsFailed = true;
+      throw err;
+    });
+  return adminScriptsPromise;
+}
+/* Start (or reuse) the lazy download and repaint the admin page when the
+   bundle lands — but only if the learner is still on #/admin. */
+function kickAdminScripts() {
+  ensureAdminScripts()
+    .then(() => { if (route() === '/admin') render(); })
+    .catch(() => { if (route() === '/admin') render(); });
+}
+
 /* Admin area. Anyone who is not an admin is redirected to the dashboard —
    the hash changes too, so a refresh or a shared link cannot bounce them
    back into the panel. The real check is row level security in Postgres. */
@@ -3380,16 +3604,25 @@ function adminPage() {
     return dashboard();
   }
   const A = window.IELTS_ADMIN;
-  /* Signed in as an admin but admin.js has not executed yet — show a shell
-     rather than bouncing, so a refresh on #/admin stays where it is. */
+  /* Signed in as an admin but the lazy bundle has not executed yet — show
+     a shell rather than bouncing, and start (or reuse) the download. */
   if (!A) {
+    if (!adminScriptsPromise && !adminScriptsFailed) kickAdminScripts();
+    const inner = adminScriptsFailed
+      ? `<p style="color:var(--muted);margin:0 0 12px">${esc(t('admin_load_failed'))}</p>`
+        + `<button class="btn" type="button" data-admin-lazy-retry>${esc(t('admin_retry'))}</button>`
+      : `<p style="color:var(--muted);margin:0">${esc(t('admin_loading'))}</p>`;
     return shell(`<section class="section">
       <div class="glass" style="padding:30px;text-align:center">
-        <p style="color:var(--muted);margin:0">${esc(t('admin_loading'))}</p>
+        ${inner}
       </div>
     </section>`, 'admin');
   }
   A.ensure(A.state.tab);
+  /* The panel is here but the generator file is not (its download failed
+     or is still in flight): give it one nudge, then stop — admin.js shows
+     a plain "module missing" message if the button is clicked meanwhile. */
+  if (!window.IELTS_GENERATOR && !adminScriptsPromise && !adminScriptsFailed) kickAdminScripts();
   return shell(A.body(), 'admin');
 }
 
@@ -3646,7 +3879,7 @@ async function syncCloudResults(force = false) {
 function registerPWA() {
   if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
   const done = () => navigator.serviceWorker.register('sw.js', { scope: '/' }).then(() => {
-    if (typeof console !== 'undefined') console.log('PWA service worker registered');
+    /* Registered silently: a per-load console.log only added production noise. */
   }).catch(() => {});
   if (document && document.readyState === 'complete') done();
   else if (window && typeof window.addEventListener === 'function') window.addEventListener('load', done);

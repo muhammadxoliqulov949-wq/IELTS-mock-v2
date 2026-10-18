@@ -23,9 +23,9 @@ const makeRes = () => {
   res.json = body => { res.body = body; return res; };
   return res;
 };
-const makeReq = (body, ip) => ({
+const makeReq = (body, ip, headers) => ({
   method: 'POST',
-  headers: { 'x-forwarded-for': ip || '30.0.0.1' },
+  headers: Object.assign({ 'x-forwarded-for': ip || '30.0.0.1' }, headers || {}),
   socket: {},
   body
 });
@@ -197,13 +197,29 @@ async function testEndpointMigration() {
 
   try {
     process.env.GROQ_API_KEY = 'integration-test-key';
-    delete process.env.SUPABASE_URL;
-    delete process.env.SUPABASE_ANON_KEY;
+    /* The generator verifies an admin session first (Task 02.1), so this
+       fixture answers Supabase Auth/profile/ai_cache lookups exactly like
+       production; the AI-client assertions below still only count actual
+       language-model requests. */
+    process.env.SUPABASE_URL = 'https://demo.supabase.co';
+    process.env.SUPABASE_ANON_KEY = 'anon-key';
     delete process.env.SUPABASE_SERVICE_ROLE_KEY;
     aiCache._memory.clear();
 
     global.fetch = async (url, options) => {
       const target = String(url);
+      const token = (/Bearer\s+(.+)$/.exec(String((((options || {}).headers) || {}).Authorization || '')) || [])[1] || '';
+      if (target.includes('/auth/v1/user')) {
+        return token === 'admin-test-token'
+          ? { ok: true, status: 200, json: async () => ({ id: 'admin-1' }) }
+          : { ok: false, status: 401, json: async () => ({}) };
+      }
+      if (target.includes('/rest/v1/profiles')) {
+        return { ok: true, status: 200, json: async () => (token === 'admin-test-token' ? [{ role: 'admin' }] : []) };
+      }
+      if (target.includes('/rest/v1/ai_cache')) {
+        return { ok: true, status: 200, json: async () => [], text: async () => '[]' };
+      }
       if (!target.startsWith(aiClient.API_BASE)) throw new Error(`Unexpected outbound request: ${target}`);
       const body = JSON.parse(options.body);
       requests.push({ url: target, headers: options.headers, body });
@@ -255,7 +271,7 @@ async function testEndpointMigration() {
     res = makeRes();
     await generateMock(makeReq({
       skill: 'speaking', testId: 'test-provider', label: 'Provider test', plan
-    }, '31.0.0.4'), res);
+    }, '31.0.0.4', { authorization: 'Bearer admin-test-token' }), res);
     assert.equal(res.statusCode, 200, res.body.error || 'mock generation failed');
     assert.equal(res.body.payload.parts.length, 3);
 

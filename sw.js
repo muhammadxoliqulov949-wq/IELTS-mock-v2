@@ -1,5 +1,8 @@
 /* Bandly AI — service worker */
-const CACHE = 'bandly-v19';
+/* Bump the cache name on EVERY sw.js change: activate() deletes only other
+   caches, so a new name per release is what guarantees one cache contains
+   exactly one deploy's assets (see the offline matcher below). */
+const CACHE = 'bandly-v20';
 const PRECACHE = [
   '/',
   '/index.html',
@@ -59,7 +62,19 @@ self.addEventListener('fetch', (event) => {
       caches.open(CACHE).then((cache) => cache.put(req, copy)).catch(() => {});
       return res;
     }).catch(() =>
-      caches.match(req).then((hit) => hit || caches.match('/index.html'))
+      /* Offline: index.html asks for fingerprinted assets (?v=n), but cache
+         keys are what was actually stored — the plain precache paths (or
+         the exact runtime URL after an online visit). Exact query matching
+         missed the precached copy for fresh installs, so match per
+         pathname instead. This is version-safe by construction: one deploy
+         = one cache name, and activate() above clears the previous
+         deploy's cache, so a single cache can never hold old and new
+         versions of the same pathname. */
+      caches.match(req, { ignoreSearch: true }).then((hit) => hit
+        /* The app-shell fallback is only for navigations — a script or
+           stylesheet request must fail like the network would, never
+           receive index.html as its body. */
+        || (req.mode === 'navigate' ? caches.match('/index.html') : undefined))
     )
   );
 });
