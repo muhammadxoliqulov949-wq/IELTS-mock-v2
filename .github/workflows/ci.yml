@@ -31,8 +31,9 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      # package.json engines: node >=22; some dev deps (jsdom) pin
-      # ^22.22.2, and '22' resolves to the latest supported 22.x.
+      # The toolchain is Node 22: development and verification run on
+      # Node 22.x, dev deps (jsdom) pin ^22.22.2, and '22' resolves to
+      # the latest supported 22.x.
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -42,7 +43,7 @@ jobs:
       - name: Install dependencies (reproducible, from package-lock.json)
         run: npm ci
 
-      - name: Run the full test suite (29 suites)
+      - name: Run the full test suite (35 suites)
         run: npm test
 
       - name: Build (scripts/build.js)
