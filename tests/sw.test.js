@@ -30,10 +30,21 @@ function check(name, cond) {
 
 const ORIGIN = 'https://ielts.test';
 const CURRENT_SW = read('/sw.js');
-/* The genuine pre-fix code: sw.js was clean at HEAD before this task. */
+/* The genuine pre-fix code, frozen as a fixture. It used to be read from
+   `git show HEAD:sw.js`, but that only worked while the fix was an
+   uncommitted working-tree change: after the fix was committed, HEAD
+   became post-fix and the bug-demo checks could no longer fail. Reading
+   the pinned snapshot keeps the demonstration reproducible at any future
+   HEAD. Fallback chain is kept for robustness, never printing errors. */
 let PREFIX_SW;
-try { PREFIX_SW = cp.execSync('git show HEAD:sw.js', { cwd: root, encoding: 'utf8' }); }
+try { PREFIX_SW = read('/tests/fixtures/sw-prefix-02.8.js'); }
 catch (e) { PREFIX_SW = null; }
+if (!PREFIX_SW) {
+  for (const rev of ['HEAD^:sw.js', 'HEAD:sw.js']) {
+    try { PREFIX_SW = cp.execSync('git show ' + rev, { cwd: root, encoding: 'utf8' }); } catch (e) { /* keep trying */ }
+    if (PREFIX_SW) break;
+  }
+}
 
 /* ------------------------------------------------------------------ */
 /* Mocked Service Worker environment                                   */

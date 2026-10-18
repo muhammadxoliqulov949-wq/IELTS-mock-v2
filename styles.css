@@ -1977,3 +1977,14 @@ a, button { -webkit-tap-highlight-color: transparent; }
 @media (prefers-reduced-motion: reduce) {
   .phone-tabbar-item { transition: none; }
 }
+
+.recording-pulse {
+  background: var(--red, #ef4444) !important;
+  color: #fff !important;
+  border-color: #dc2626 !important;
+  animation: rec-pulse 1.4s infinite ease-in-out;
+}
+@keyframes rec-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.88; transform: scale(1.02); }
+}

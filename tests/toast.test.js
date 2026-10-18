@@ -6,7 +6,7 @@
  * the SECOND toast long before its 2400 ms were up.
  *
  * Strategy: cut the REAL notify() function out of script.js — once from the
- * working tree (post-fix) and once from `git show HEAD:script.js` (pre-fix)
+ * working tree (post-fix) and once from the pinned fixture tests/fixtures/script-prefix-02.9.js (pre-fix)
  * — and run both against the same stub element + fake timers. That proves
  * the defect in the historical code and pins the fix in the current one,
  * with real source, not a re-typed copy.
@@ -64,7 +64,21 @@ function extractNotify(src, label) {
   return { notify, toast, timers, fire };
 }
 
-const pre = extractNotify(cp.execSync('git show HEAD:script.js', { cwd: root, encoding: 'utf8' }), 'HEAD');
+/* The genuine pre-fix script.js is frozen as a fixture. It used to be read
+   from `git show HEAD:script.js`, which only worked while the fix was an
+   uncommitted working-tree change: after the fix was committed, HEAD became
+   post-fix and the pre-fix bug demonstration silently decayed. The pinned
+   snapshot keeps the demonstration reproducible at any future HEAD. */
+let preSrc = null;
+try { preSrc = read('/tests/fixtures/script-prefix-02.9.js'); }
+catch (e) { preSrc = null; }
+if (!preSrc) {
+  for (const rev of ['HEAD^:script.js', 'HEAD:script.js']) {
+    try { preSrc = cp.execSync('git show ' + rev, { cwd: root, encoding: 'utf8' }); } catch (e) { /* keep trying */ }
+    if (preSrc) break;
+  }
+}
+const pre = extractNotify(preSrc, 'fixture tests/fixtures/script-prefix-02.9.js');
 const post = extractNotify(script, 'working tree');
 check('setup: real pre-fix and post-fix notify() extracted and load', typeof pre.notify === 'function' && typeof post.notify === 'function');
 
