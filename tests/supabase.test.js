@@ -92,6 +92,43 @@ async function testSQL() {
     await assert.rejects(db.query('select * from public.mock_results'), /permission denied/);
     await assert.rejects(write('reading', 7), /permission denied/);
     console.log('✓ PostgreSQL: migration, band rounding, NULL grades, atomic merges, duplicate/stale saves, RLS ownership and anonymous denial');
+
+    /* Migration 202610120001_speaking_score_guarantee.sql: speaking score format
+       guarantee + save_mock_section profile synchronization. The profiles table
+       is part of the app baseline (Supabase dashboard), so the harness creates a
+       minimal stand-in before applying the migration, mirroring production order
+       (0040001 → … → 0120001 → …). */
+    await db.exec('reset role;');
+    await db.exec(`
+      create table if not exists public.profiles (
+        id uuid primary key references auth.users(id),
+        name text,
+        updated_at timestamptz default now()
+      );
+      insert into public.profiles (id) values ('${alice}'), ('${bob}');
+      grant select, insert, update on public.profiles to authenticated, anon;
+    `);
+    await db.exec(fs.readFileSync(path.join(root, 'supabase/migrations/202610120001_speaking_score_guarantee.sql'), 'utf8'));
+    await db.exec(`set role authenticated; set request.jwt.claim.sub = '${alice}';`);
+    await assert.rejects(
+      db.query(`insert into public.profiles (id, speaking) values ('${bob}'::uuid, 6.3) on conflict (id) do update set speaking = 6.3`),
+      /profiles_speaking_score_check/);
+    await assert.rejects(
+      db.query(`update public.profiles set speaking = 9.5 where id = '${alice}'::uuid`),
+      /profiles_speaking_score_check/);
+    await write('speaking', 7.5, 3000); // newer attempt syncs row + profile
+    let prof = (await db.query(`select speaking from public.profiles where id = '${alice}'::uuid`)).rows[0];
+    assert.equal(Number(prof.speaking), 7.5);
+    assert.equal(Number((await db.query('select speaking from public.mock_results')).rows[0].speaking), 7.5);
+    await write('writing', 6.5, 3001); // non-speaking sections leave the profile alone
+    prof = (await db.query(`select speaking from public.profiles where id = '${alice}'::uuid`)).rows[0];
+    assert.equal(Number(prof.speaking), 7.5);
+    await assert.rejects(
+      db.query('select public.save_mock_section($1,$2,$3,$4,$5::jsonb,$6::uuid)',
+        ['test1', 'speaking', 7, 'Aziz', JSON.stringify({ date: 'soon', raw: 30, total: 40 }), alice]),
+      /Invalid score details/); // date must be numeric after the guarantee
+    await assert.rejects(write('speaking', 6.3, 3002), /Invalid band/);
+    console.log('✓ PostgreSQL (migration 012): speaking band format guarantee, profile sync, strict details validation');
   } finally { await db.close(); }
 }
 

@@ -13,20 +13,9 @@ const aiClient = require('../lib/aiClient.js');
 const guard = require('../lib/aiGuardrails.js');
 const aiCache = require('../lib/aiCache.js');
 
-const RATE_WINDOW_MS = 60 * 1000;
-const RATE_MAX = 20;
-const ipHits = new Map();
-function clientIp(req) {
-  return (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket?.remoteAddress || 'unknown';
-}
-function rateLimited(req) {
-  const ip = clientIp(req);
-  const now = Date.now();
-  const hits = (ipHits.get(ip) || []).filter((t) => now - t < RATE_WINDOW_MS);
-  if (hits.length >= RATE_MAX) { ipHits.set(ip, hits); return true; }
-  hits.push(now); ipHits.set(ip, hits);
-  return false;
-}
+/* ---------- per-IP rate limiter: 20/min — shared helper (lib/rateLimit.js) ---------- */
+const rateLimit = require('../lib/rateLimit.js');
+const limiter = rateLimit.createRateLimiter('quiz', { windowMs: 60 * 1000, max: 20 });
 
 /* Local fallback bank — the same quality as the client quiz. */
 const LOCAL_QUESTIONS = [
@@ -65,7 +54,7 @@ async function callAI(topic, count) {
 module.exports = async (req, res) => {
   try {
     if (req.method !== 'POST') { res.status(405).json({ error: 'Method not allowed' }); return; }
-    if (rateLimited(req)) { res.status(429).json({ error: 'Too many requests. Try again shortly.' }); return; }
+    if (await limiter.check(req)) { res.status(429).json({ error: 'Too many requests. Try again shortly.' }); return; }
 
     const body = req.body || {};
     const topic = String(body.topic || '').slice(0, 40);

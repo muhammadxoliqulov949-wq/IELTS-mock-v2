@@ -80,13 +80,15 @@
     <script src="supabase.bundle.js?v=4"></script>
     <script src="markdown.bundle.js?v=1"></script>
     <script src="lib/learningPath.js?v=1"></script>
-    <script src="lib/roadmapContent.js?v=1"></script>
+    <!-- lib/roadmapContent.js (310KB guest catalogue) is NOT eager: the app
+         injects it on demand for guests who pass the roadmap diagnostic gate
+         (ensureRoadmapContent) — signed-in users get topics from Supabase. -->
     <script src="lib/adaptiveDrills.js?v=1"></script>
     <script src="miniGames.js?v=1"></script>
     <script src="script.js?v=14"></script>
     <script src="lib/topicPool.js?v=1"></script>
     <script src="lib/aiGuardrails.js?v=1"></script>
-    <script src="admin.js?v=2"></script>
-    <script src="mockGenerator.js?v=1"></script>
+    <!-- admin.js and mockGenerator.js are NOT eager: script.js injects them
+         on demand when an admin opens #/admin (ensureAdminScripts). -->
   </body>
 </html>

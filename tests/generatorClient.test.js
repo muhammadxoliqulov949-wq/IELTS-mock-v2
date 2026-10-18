@@ -352,12 +352,14 @@ async function waitFor(predicate, label, timeout) {
 
   /* ---------- 3. the full generation run ---------- */
   const calls = [];
+  const sentAuth = [];
   let inFlight = 0;
   let maxInFlight = 0;
   global.fetch = async (url, options) => {
     const target = String(url);
     const body = JSON.parse(options.body || '{}');
     calls.push(body);
+    sentAuth.push(((options && options.headers) || {}).Authorization || '');
     /* a real round trip takes time, so overlapping requests would be seen */
     inFlight += 1;
     maxInFlight = Math.max(maxInFlight, inFlight);
@@ -404,6 +406,8 @@ async function waitFor(predicate, label, timeout) {
   check('run: the chunks are asked for one at a time (never in parallel)', maxInFlight === 1);
   const audioCalls = calls.filter(c => c.mode === 'audio');
   check('run: one TTS request per Listening part', audioCalls.length === 4);
+  check('run: every request (sections + audio) carries the admin session token, so the server-side gate accepts it',
+    sentAuth.length === calls.length && calls.length === 13 && sentAuth.every(h => h === 'Bearer admin-jwt'));
   check('run: every section was sent the same test id and label',
     calls.filter(c => c.mode !== 'audio').every(c => c.testId === 'test9' && c.label === 'Practice Test 9'));
   check('run: the chosen difficulty reached the endpoint',

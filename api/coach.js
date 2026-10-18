@@ -15,25 +15,9 @@ const aiClient = require('../lib/aiClient.js');
 const guard = require('../lib/aiGuardrails.js');
 const aiCache = require('../lib/aiCache.js');
 
-/* ---------- tiny in-memory rate limiter (per server instance) ---------- */
-const RATE_WINDOW_MS = 60 * 1000;
-const RATE_MAX = 20;
-const ipHits = new Map();
-function clientIp(req) {
-  return (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket?.remoteAddress || 'unknown';
-}
-function rateLimited(req) {
-  const ip = clientIp(req);
-  const now = Date.now();
-  const hits = (ipHits.get(ip) || []).filter((t) => now - t < RATE_WINDOW_MS);
-  if (hits.length >= RATE_MAX) {
-    ipHits.set(ip, hits);
-    return true;
-  }
-  hits.push(now);
-  ipHits.set(ip, hits);
-  return false;
-}
+/* ---------- per-IP rate limiter: 20/min — shared helper (lib/rateLimit.js) ---------- */
+const rateLimit = require('../lib/rateLimit.js');
+const limiter = rateLimit.createRateLimiter('coach', { windowMs: 60 * 1000, max: 20 });
 
 const COACH_SYSTEM = `You are "IELTS Coach", a friendly but rigorous IELTS preparation coach inside an IELTS mock-test web app. You help candidates improve their band score using the official IELTS band descriptors and smart study techniques.
 
@@ -188,7 +172,7 @@ module.exports = async function handler(req, res) {
     res.status(405).json({ error: 'Method not allowed' });
     return;
   }
-  if (rateLimited(req)) {
+  if (await limiter.check(req)) {
     res.status(429).json({ error: 'Too many requests — please wait a moment and try again.' });
     return;
   }

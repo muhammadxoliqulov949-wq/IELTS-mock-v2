@@ -53,6 +53,17 @@
  * upload it through the existing admin media endpoint (RLS still guards
  * the bucket: only admins may write).
  *
+ * AUTHORIZATION (fail-closed). Every request — section chunks, whole-skill
+ * legacy calls and audio alike — is checked BEFORE any paid AI/TTS work:
+ * the caller's Supabase access token (`Authorization: Bearer …`, or the
+ * legacy `body.accessToken` shape kept for older audio clients) is verified
+ * against Supabase Auth, and public.profiles.role must be 'admin'. Missing
+ * server-side Supabase configuration answers 503 AUTH_UNAVAILABLE, a
+ * missing token 401 UNAUTHORIZED, an unverifiable session 401
+ * INVALID_TOKEN, a non-admin account 403 FORBIDDEN. Client-supplied
+ * identity/role claims are never trusted — only the server-verified token
+ * is used, and it is never logged.
+ *
  * Section generation requires the shared GROQ_API_KEY server secret.
  * =================================================================== */
 'use strict';
@@ -70,25 +81,13 @@ const MEDIA_BUCKET = 'ielts-media';
 const SKILLS = ['listening', 'reading', 'writing', 'speaking'];
 const TEMPERATURE = 0.85; /* diversity over precision — see ADMIN.md */
 
-/* ---------- rate limiting (generation is the most expensive call) ---------- */
-const RATE_WINDOW_MS = 5 * 60 * 1000;
-/* One mock is 9 section requests + 4 audio requests, and every automatic
-   retry after a Groq 429 is one more request — 120 per 5 minutes leaves room
-   for a full run with retries. */
-const RATE_MAX = 120;
-const ipHits = new Map();
-function clientIp(req) {
-  return (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket?.remoteAddress || 'unknown';
-}
-function rateLimited(req) {
-  const ip = clientIp(req);
-  const now = Date.now();
-  const hits = (ipHits.get(ip) || []).filter(t => now - t < RATE_WINDOW_MS);
-  if (hits.length >= RATE_MAX) { ipHits.set(ip, hits); return true; }
-  hits.push(now);
-  ipHits.set(ip, hits);
-  return false;
-}
+/* ---------- rate limiting (generation is the most expensive call) ----------
+   Shared helper (lib/rateLimit.js). One mock is 9 section requests + 4 audio
+   requests, and every automatic retry after a Groq 429 is one more request —
+   120 per 5 minutes leaves room for a full run with retries. */
+const rateLimit = require('../lib/rateLimit.js');
+const { parseJson: parseJsonShared } = require('../lib/parseJson.js');
+const limiter = rateLimit.createRateLimiter('generate-mock', { windowMs: 5 * 60 * 1000, max: 120 });
 
 /* ---------- helpers ---------- */
 function str(v) { return String(v ?? '').trim(); }
@@ -96,14 +95,7 @@ function num(v, fallback) { const n = Number(v); return Number.isFinite(n) ? n :
 
 /* Be tolerant of a code fence or a short preamble around JSON. */
 function parseJson(raw) {
-  const s = String(raw || '').replace(/```(?:json)?/gi, '').trim();
-  try { return JSON.parse(s); } catch { /* fall through */ }
-  const start = s.indexOf('{');
-  const end = s.lastIndexOf('}');
-  if (start >= 0 && end > start) {
-    try { return JSON.parse(s.slice(start, end + 1)); } catch { /* fall through */ }
-  }
-  throw new Error('The model did not return valid JSON');
+  return parseJsonShared(raw, 'The model did not return valid JSON');
 }
 
 /* The model that writes the mock sections: GROQ_GENERATOR_MODEL when set,
@@ -775,6 +767,88 @@ function storagePath(testId, partNumber, ext) {
 }
 
 /* ------------------------------------------------------------------
+ * Admin authorization — server side, fail-closed.
+ *
+ * The 1-Click generator is an admin feature: every section chunk spends
+ * language-model quota and every audio minute spends TTS traffic, so the
+ * caller's Supabase session is validated BEFORE any paid operation:
+ *
+ *   1. The token comes from `Authorization: Bearer <jwt>` (or, for the
+ *      legacy audio request shape, body.accessToken). It is a credential
+ *      to VERIFY — never an identity to trust.
+ *   2. GET /auth/v1/user (Supabase Auth, anon key) resolves the token to
+ *      a user id; anything but a valid session rejects the request.
+ *   3. profiles.role must be 'admin'. The caller's OWN token performs the
+ *      read, so the existing "Profiles: read own" RLS policy scopes it —
+ *      no service-role key is needed here.
+ *   4. Validation failures end the request with a consistent,
+ *      non-sensitive error. Nothing is generated, nothing is uploaded,
+ *      and the token is never logged.
+ * ------------------------------------------------------------------ */
+const AUTH_TIMEOUT_MS = 10_000;
+
+async function requireAdmin(req, body, res) {
+  const config = supabaseConfig();
+  if (!config) {
+    res.status(503).json({
+      ok: false, code: 'AUTH_UNAVAILABLE',
+      error: 'The generator is unavailable: Supabase auth is not configured on the server.',
+      message: 'Generator hozir ishlamaydi: serverda Supabase auth sozlanmagan.',
+      hint: 'Set SUPABASE_URL and SUPABASE_ANON_KEY on the server — the generator verifies the calling admin against Supabase Auth.'
+    });
+    return null;
+  }
+  const token = accessTokenFrom(req, body);
+  if (!token) {
+    res.status(401).json({
+      ok: false, code: 'UNAUTHORIZED',
+      error: 'Admin sign-in is required before generating tests.',
+      message: 'Test yaratishdan oldin admin sifatida kiring.',
+      hint: 'Open the admin panel with an admin account — the generator verifies your session on the server before spending AI quota.'
+    });
+    return null;
+  }
+  try {
+    const authHeaders = { apikey: config.key, Authorization: `Bearer ${token}` };
+    const userRes = await fetch(`${config.url}/auth/v1/user`, {
+      headers: authHeaders, signal: AbortSignal.timeout(AUTH_TIMEOUT_MS)
+    });
+    const user = userRes.ok ? await userRes.json().catch(() => null) : null;
+    const userId = user && typeof user.id === 'string' ? user.id : '';
+    if (!userId) {
+      res.status(401).json({
+        ok: false, code: 'INVALID_TOKEN',
+        error: 'Your session could not be verified. Sign in again and retry.',
+        message: 'Sessiya tasdiqlanmadi. Qayta kirib, urinib ko\'ring.'
+      });
+      return null;
+    }
+    const profRes = await fetch(`${config.url}/rest/v1/profiles?id=eq.${encodeURIComponent(userId)}&select=role`, {
+      headers: authHeaders, signal: AbortSignal.timeout(AUTH_TIMEOUT_MS)
+    });
+    const rows = profRes.ok ? await profRes.json().catch(() => null) : null;
+    const role = Array.isArray(rows) && rows[0] ? String(rows[0].role || '') : '';
+    if (role !== 'admin') {
+      res.status(403).json({
+        ok: false, code: 'FORBIDDEN',
+        error: 'The AI generator is available to admin accounts only.',
+        message: 'AI generator faqat admin hisoblariga ochiq.'
+      });
+      return null;
+    }
+    return userId;
+  } catch (err) {
+    /* Network/timeout while checking the session → fail closed. */
+    res.status(503).json({
+      ok: false, code: 'AUTH_UNAVAILABLE',
+      error: 'Could not validate the admin session right now — nothing was generated. Try again shortly.',
+      message: 'Admin sessiyasini tekshirib bo\'lmadi — hech narsa yaratilmadi. Birozdan keyin urinib ko\'ring.'
+    });
+    return null;
+  }
+}
+
+/* ------------------------------------------------------------------
  * HANDLER
  * ------------------------------------------------------------------ */
 module.exports = async function handler(req, res) {
@@ -782,11 +856,17 @@ module.exports = async function handler(req, res) {
     res.status(405).json({ ok: false, error: 'Method not allowed — POST the generation request.' });
     return;
   }
-  if (rateLimited(req)) {
+  if (await limiter.check(req)) {
     res.status(429).json({ ok: false, code: 'TOO_MANY_REQUESTS', error: 'Too many generation requests. Wait a few minutes and try again.' });
     return;
   }
   const body = req.body || {};
+
+  /* Admin gate FIRST: no AI generation, no TTS and no storage upload
+     happens for an unauthenticated or non-admin caller. */
+  const adminId = await requireAdmin(req, body, res);
+  if (!adminId) return; /* response already sent (401 / 403 / 503) */
+
   const mode = body.mode === 'audio' ? 'audio' : 'section';
 
   /* ---------------- audio mode ---------------- */

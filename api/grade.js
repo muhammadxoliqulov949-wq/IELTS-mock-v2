@@ -11,26 +11,11 @@
 const aiClient = require('../lib/aiClient.js');
 const guard = require('../lib/aiGuardrails.js');
 const aiCache = require('../lib/aiCache.js');
+const { parseJson: parseJsonShared } = require('../lib/parseJson.js');
 
-/* ---------- tiny in-memory rate limiter (per server instance) ---------- */
-const RATE_WINDOW_MS = 60 * 1000;
-const RATE_MAX = 15;
-const ipHits = new Map();
-function clientIp(req) {
-  return (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket?.remoteAddress || 'unknown';
-}
-function rateLimited(req) {
-  const ip = clientIp(req);
-  const now = Date.now();
-  const hits = (ipHits.get(ip) || []).filter((t) => now - t < RATE_WINDOW_MS);
-  if (hits.length >= RATE_MAX) {
-    ipHits.set(ip, hits);
-    return true;
-  }
-  hits.push(now);
-  ipHits.set(ip, hits);
-  return false;
-}
+/* ---------- per-IP rate limiter: 15/min — shared helper (lib/rateLimit.js) ---------- */
+const rateLimit = require('../lib/rateLimit.js');
+const limiter = rateLimit.createRateLimiter('grade', { windowMs: 60 * 1000, max: 15 });
 
 /* ---------- helpers ---------- */
 function clampBand(v) {
@@ -41,14 +26,7 @@ function str(v) { return String(v ?? ''); }
 function list(v) { return Array.isArray(v) ? v.map(String) : []; }
 
 function parseJson(raw) {
-  const s = str(raw).replace(/```(?:json)?/gi, '').trim();
-  try { return JSON.parse(s); } catch { /* fall through */ }
-  const start = s.indexOf('{');
-  const end = s.lastIndexOf('}');
-  if (start >= 0 && end > start) {
-    try { return JSON.parse(s.slice(start, end + 1)); } catch { /* fall through */ }
-  }
-  throw new Error('Could not parse examiner response');
+  return parseJsonShared(raw, 'Could not parse examiner response');
 }
 
 async function callAI(systemPrompt, userContent, temperature = 0.25) {
@@ -206,7 +184,7 @@ module.exports = async function handler(req, res) {
     res.status(405).json({ error: 'Method not allowed' });
     return;
   }
-  if (rateLimited(req)) {
+  if (await limiter.check(req)) {
     res.status(429).json({ error: 'Too many requests — please wait a moment and try again.' });
     return;
   }

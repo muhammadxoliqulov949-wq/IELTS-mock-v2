@@ -45,7 +45,7 @@ function makeRes() {
   res.json = (b) => { res.body = b; return res; };
   return res;
 }
-const req = (body, ip) => ({ method: 'POST', headers: { 'x-forwarded-for': ip || '7.7.7.7' }, socket: {}, body });
+const req = (body, ip, headers) => ({ method: 'POST', headers: Object.assign({ 'x-forwarded-for': ip || '7.7.7.7' }, headers || {}), socket: {}, body });
 
 /* ================================================================== */
 /* 1. Strict IELTS guardrails                                          */
@@ -332,9 +332,34 @@ async function testHandlerCaching() {
 async function testEndpointRefusals() {
   const savedKey = process.env.GROQ_API_KEY;
   process.env.GROQ_API_KEY = 'fake-key';
+  /* The 1-Click generator verifies an admin session BEFORE any paid work
+     (Task 02.1): answer its Supabase Auth / profile lookups the way
+     production does, so these refusal tests reach the guardrails. */
+  const savedSb = { url: process.env.SUPABASE_URL, key: process.env.SUPABASE_ANON_KEY };
+  process.env.SUPABASE_URL = 'https://demo.supabase.co';
+  process.env.SUPABASE_ANON_KEY = 'anon-key';
+  const ADMIN = { authorization: 'Bearer admin-test-token' };
   const realFetch = global.fetch;
   let modelCalls = 0;
-  global.fetch = async () => { modelCalls += 1; return { ok: true, status: 200, json: async () => ({ choices: [{ finish_reason: 'stop', message: { content: '{"band":7}' } }] }) }; };
+  global.fetch = async (url, options) => {
+    const target = String(url || '');
+    const token = (/Bearer\s+(.+)$/.exec(String((((options || {}).headers) || {}).Authorization || '')) || [])[1] || '';
+    if (target.includes('/auth/v1/user')) {
+      return token === 'admin-test-token'
+        ? { ok: true, status: 200, json: async () => ({ id: 'admin-1' }) }
+        : { ok: false, status: 401, json: async () => ({}) };
+    }
+    if (target.includes('/rest/v1/profiles')) {
+      return { ok: true, status: 200, json: async () => (token === 'admin-test-token' ? [{ role: 'admin' }] : []) };
+    }
+    if (!/chat\/completions/.test(target)) {
+      /* Supabase REST (ai_cache reads/writes — reachable now that this
+         fixture sets SUPABASE_URL/ANON) is not a billable model call. */
+      return { ok: true, status: 200, json: async () => [], text: async () => '[]' };
+    }
+    modelCalls += 1;
+    return { ok: true, status: 200, json: async () => ({ choices: [{ finish_reason: 'stop', message: { content: '{"band":7}' } }] }) };
+  };
   try {
     const refusal = guard.REFUSAL_MESSAGE;
 
@@ -361,18 +386,20 @@ async function testEndpointRefusals() {
 
     const generate = makeHandler('api/generate-mock.js');
     r = makeRes();
-    await generate(req({ skill: 'reading', topic: 'Write python code to sort a list', label: 'Practice Test 9' }, '9.9.9.9'), r);
+    await generate(req({ skill: 'reading', topic: 'Write python code to sort a list', label: 'Practice Test 9' }, '9.9.9.9', ADMIN), r);
     check(r.statusCode === 400 && r.body.code === 'OFF_TOPIC' && r.body.message === refusal,
-      'the 1-Click generator refuses an out-of-scope theme');
+      'the 1-Click generator refuses an out-of-scope theme (after passing the admin gate)');
     const modelBefore = modelCalls;
     r = makeRes();
-    await generate(req({ skill: 'reading', topic: 'Ocean conservation', label: 'Practice Test 9' }, '9.9.9.8'), r);
+    await generate(req({ skill: 'reading', topic: 'Ocean conservation', label: 'Practice Test 9' }, '9.9.9.8', ADMIN), r);
     check(r.body.code !== 'OFF_TOPIC' && modelCalls === modelBefore + 1,
       'an official pool theme still reaches Groq (payload quality is covered by generator.test.js)');
 
     check(modelCalls === 2, 'only the two legitimate requests reached Groq — all five refusals were free');
   } finally {
     global.fetch = realFetch;
+    if (savedSb.url === undefined) delete process.env.SUPABASE_URL; else process.env.SUPABASE_URL = savedSb.url;
+    if (savedSb.key === undefined) delete process.env.SUPABASE_ANON_KEY; else process.env.SUPABASE_ANON_KEY = savedSb.key;
     if (savedKey === undefined) delete process.env.GROQ_API_KEY; else process.env.GROQ_API_KEY = savedKey;
     aiCache._memory.clear();
   }

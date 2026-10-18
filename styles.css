@@ -683,6 +683,15 @@ body[data-theme="light"] .skill-dot { background: rgba(17,21,43,0.12); }
 .next-step h2 { font-family: var(--font-display); font-size: 22px; margin: 8px 0 6px; }
 .next-step p { color: var(--muted); font-size: 14px; margin: 0; }
 
+/* ---------- Results page — next-step widget (Task 03.7) ---------- */
+.results-next-step { margin-top: 28px; }
+.results-next-step .eyebrow { margin-bottom: 2px; }
+.next-step-actions { display: flex; flex-wrap: wrap; gap: 10px; justify-content: flex-end; align-items: center; }
+@media (max-width: 700px) {
+  .next-step-actions { justify-content: stretch; width: 100%; }
+  .next-step-actions .btn { flex: 1 1 100%; justify-content: center; text-align: center; }
+}
+
 /* ---------- Test-flow icons (warning / gate / completed) ---------- */
 .warn-icon {
   width: 58px; height: 58px; margin: 0 auto;
@@ -1979,4 +1988,3 @@ a, button { -webkit-tap-highlight-color: transparent; }
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: 0.88; transform: scale(1.02); }
 }
-
